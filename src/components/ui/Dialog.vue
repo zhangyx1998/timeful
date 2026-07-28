@@ -36,7 +36,38 @@ const props = withDefaults(
 const emit = defineEmits<{ close: [] }>();
 
 const panel = ref<HTMLElement | null>(null);
-let previousBodyOverflow = "";
+
+/**
+ * The page's scroll lock, held by however many dialogs are open at once.
+ *
+ * Module scope rather than per-instance because there is one page and the last
+ * dialog to close is the one that gives it back: counting means an instance
+ * that opens while another is still closing cannot record "hidden" as the state
+ * to restore and leave the page locked for good.
+ *
+ * Both elements are locked. `body { overflow: hidden }` on its own does not
+ * stop a touch platform from dragging the document behind the dim — the root
+ * element is what owns the viewport's scroll.
+ */
+let locks = 0;
+let previousOverflow: { root: string; body: string } | null = null;
+
+function lockPage() {
+  if (locks++ > 0) return;
+  const root = document.documentElement;
+  previousOverflow = { root: root.style.overflow, body: document.body.style.overflow };
+  root.style.overflow = "hidden";
+  document.body.style.overflow = "hidden";
+}
+
+function unlockPage() {
+  if (locks === 0) return;
+  locks -= 1;
+  if (locks > 0 || !previousOverflow) return;
+  document.documentElement.style.overflow = previousOverflow.root;
+  document.body.style.overflow = previousOverflow.body;
+  previousOverflow = null;
+}
 
 function dismiss() {
   if (props.dismissible) emit("close");
@@ -52,17 +83,20 @@ watch(
     if (typeof document === "undefined") return;
     if (open) {
       document.addEventListener("keydown", onKeydown);
-      previousBodyOverflow = document.body.style.overflow;
-      document.body.style.overflow = "hidden";
+      lockPage();
       // Focus an [autofocus] element if the content marks one (dynamically
       // inserted nodes don't get native autofocus), else the panel itself.
+      // `preventScroll`, because the default is to scroll every scrollable
+      // ancestor until the target is centred — and on the event page those
+      // ancestors are the chart's pane and the drawer's own body, which would
+      // jump under the finger the moment the dialog opened.
       void nextTick(() => {
         const preferred = panel.value?.querySelector<HTMLElement>("[autofocus]");
-        (preferred ?? panel.value)?.focus();
+        (preferred ?? panel.value)?.focus({ preventScroll: true });
       });
     } else {
       document.removeEventListener("keydown", onKeydown);
-      document.body.style.overflow = previousBodyOverflow;
+      unlockPage();
     }
   },
   { immediate: true },
@@ -71,7 +105,8 @@ watch(
 onBeforeUnmount(() => {
   if (typeof document === "undefined") return;
   document.removeEventListener("keydown", onKeydown);
-  if (props.open) document.body.style.overflow = previousBodyOverflow;
+  // Only if this instance is holding one; the count is shared.
+  if (props.open) unlockPage();
 });
 </script>
 

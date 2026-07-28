@@ -6,7 +6,13 @@
          with a notch or a home indicator; everything fixed to an edge pads
          itself back off it with the `--safe-*` tokens. No `maximum-scale` and
          no `user-scalable`: pinch to zoom is not ours to take away. -->
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!-- `interactive-widget=resizes-content` puts the on-screen keyboard inside
+         the layout viewport, so `dvh` shrinks with it and a fixed layout lands
+         above the keyboard instead of behind it. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+    />
     <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="/favicon.ico" />
     <title>Timeful</title>
