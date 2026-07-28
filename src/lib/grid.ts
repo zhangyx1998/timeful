@@ -36,7 +36,7 @@ import {
 } from "./dates";
 import { FALLBACK_SLOT_AVAILABLE } from "./colors";
 import type { Rgb } from "./colors";
-import type { EventDoc, EventResponse } from "./event";
+import type { AvailabilityType, EventDoc, EventResponse } from "./event";
 
 export interface GridRow {
   /** Hours from the owning event date's start instant. */
@@ -353,6 +353,76 @@ export function rectangleSlots(model: GridModel, start: Cell, end: Cell): number
     }
   }
   return slots;
+}
+
+// ---------------------------------------------------------------------------
+// undoing a drag
+// ---------------------------------------------------------------------------
+//
+// A drag is committed the instant it lands, so the way back is not a mode the
+// grid stays in but a record of what the slots it touched used to be. The
+// rectangle is only known once the drag ends, and nothing the guest owns changes
+// while it runs — the marks move when the commit is emitted, not before — so the
+// record is taken at commit time, immediately before the emit, and describes the
+// state the press started from.
+//
+// Three buckets, because a mark is one of exactly three things: available,
+// if-needed, or nothing. A mixed rectangle is the case that matters — erasing
+// across cells that were some of each has to put each one back as it was, not
+// blanket-restore the majority.
+
+export interface SlotSnapshot {
+  /** Slots that were marked available before the drag. */
+  available: number[];
+  /** Slots that were marked if-needed before the drag. */
+  ifNeeded: number[];
+  /** Slots that carried no mark at all. */
+  empty: number[];
+}
+
+/** What the given slots were, before whatever is about to happen to them. */
+export function snapshotSlots(
+  slots: Iterable<number>,
+  availability: ReadonlySet<number>,
+  ifNeeded: ReadonlySet<number>,
+): SlotSnapshot {
+  const snapshot: SlotSnapshot = { available: [], ifNeeded: [], empty: [] };
+  for (const slot of new Set(slots)) {
+    // Available wins a slot that somehow sits in both sets, the same way the
+    // grid itself paints one: the two marks are exclusive by construction.
+    if (availability.has(slot)) snapshot.available.push(slot);
+    else if (ifNeeded.has(slot)) snapshot.ifNeeded.push(slot);
+    else snapshot.empty.push(slot);
+  }
+  return snapshot;
+}
+
+/**
+ * A revert expressed in the grid's own two emits, rather than as a private
+ * channel back to the parent. `paint` clears, `flip` marks, and the parent's
+ * handler for either already queues the autosave — so undoing a drag travels the
+ * path a drag travels and reaches the server the same way, with nothing on
+ * either side that exists only for undo.
+ *
+ * Buckets that would move nothing are dropped, so a revert of an untouched
+ * rectangle emits nothing at all.
+ */
+export type RevertOp =
+  | { emit: "paint"; type: "remove"; slots: number[] }
+  | { emit: "flip"; type: AvailabilityType; slots: number[] };
+
+export function revertOperations(snapshot: SlotSnapshot): RevertOp[] {
+  const ops: RevertOp[] = [];
+  if (snapshot.empty.length > 0) {
+    ops.push({ emit: "paint", type: "remove", slots: snapshot.empty });
+  }
+  if (snapshot.available.length > 0) {
+    ops.push({ emit: "flip", type: "available", slots: snapshot.available });
+  }
+  if (snapshot.ifNeeded.length > 0) {
+    ops.push({ emit: "flip", type: "if_needed", slots: snapshot.ifNeeded });
+  }
+  return ops;
 }
 
 // ---------------------------------------------------------------------------

@@ -16,9 +16,11 @@ import {
   isBestTime,
   maxRespondents,
   rectangleSlots,
+  revertOperations,
   scrollEdges,
   scrollStepFor,
   slotAt as slot,
+  snapshotSlots,
   type GridGeometry,
 } from "./grid";
 import type { EventDoc } from "./event";
@@ -333,6 +335,128 @@ describe("drag rectangles", () => {
     expect(inRectangle(1, 1, { row: 0, col: 0 }, { row: 2, col: 2 })).toBe(true);
     expect(inRectangle(1, 1, { row: 2, col: 2 }, { row: 0, col: 0 })).toBe(true);
     expect(inRectangle(3, 1, { row: 0, col: 0 }, { row: 2, col: 2 })).toBe(false);
+  });
+});
+
+describe("undoing a drag", () => {
+  describe("snapshotSlots", () => {
+    it("sorts a mixed rectangle into what each slot was", () => {
+      const available = new Set([1, 2]);
+      const ifNeeded = new Set([3]);
+      expect(snapshotSlots([1, 2, 3, 4], available, ifNeeded)).toEqual({
+        available: [1, 2],
+        ifNeeded: [3],
+        empty: [4],
+      });
+    });
+
+    it("records an untouched rectangle as entirely empty", () => {
+      expect(snapshotSlots([7, 8], new Set(), new Set())).toEqual({
+        available: [],
+        ifNeeded: [],
+        empty: [7, 8],
+      });
+    });
+
+    it("counts a repeated slot once", () => {
+      expect(snapshotSlots([5, 5, 5], new Set([5]), new Set())).toEqual({
+        available: [5],
+        ifNeeded: [],
+        empty: [],
+      });
+    });
+
+    it("resolves a slot in both sets as available, the way the grid paints it", () => {
+      expect(snapshotSlots([9], new Set([9]), new Set([9]))).toEqual({
+        available: [9],
+        ifNeeded: [],
+        empty: [],
+      });
+    });
+
+    it("keeps its own copy, so later edits cannot rewrite the past", () => {
+      const available = new Set([1]);
+      const snapshot = snapshotSlots([1, 2], available, new Set());
+      available.add(2);
+      expect(snapshot).toEqual({ available: [1], ifNeeded: [], empty: [2] });
+    });
+  });
+
+  describe("revertOperations", () => {
+    it("clears what was empty and re-marks what was marked", () => {
+      expect(
+        revertOperations({ available: [1], ifNeeded: [2], empty: [3] }),
+      ).toEqual([
+        { emit: "paint", type: "remove", slots: [3] },
+        { emit: "flip", type: "available", slots: [1] },
+        { emit: "flip", type: "if_needed", slots: [2] },
+      ]);
+    });
+
+    it("emits nothing for a bucket with nothing in it", () => {
+      expect(revertOperations({ available: [], ifNeeded: [], empty: [4, 5] })).toEqual([
+        { emit: "paint", type: "remove", slots: [4, 5] },
+      ]);
+      expect(revertOperations({ available: [6], ifNeeded: [], empty: [] })).toEqual([
+        { emit: "flip", type: "available", slots: [6] },
+      ]);
+    });
+
+    it("has nothing to say about a rectangle with no slots", () => {
+      expect(revertOperations({ available: [], ifNeeded: [], empty: [] })).toEqual([]);
+    });
+
+    it("round-trips a paint back to exactly what was there before", () => {
+      const availability = new Set([10]);
+      const ifNeeded = new Set([11]);
+      const rectangle = [10, 11, 12];
+
+      const snapshot = snapshotSlots(rectangle, availability, ifNeeded);
+
+      // What the parent does with a paint: every slot becomes available.
+      const apply = (op: { type: string; slots: number[] }) => {
+        for (const s of op.slots) {
+          if (op.type === "available") {
+            availability.add(s);
+            ifNeeded.delete(s);
+          } else if (op.type === "if_needed") {
+            ifNeeded.add(s);
+            availability.delete(s);
+          } else {
+            availability.delete(s);
+            ifNeeded.delete(s);
+          }
+        }
+      };
+      apply({ type: "available", slots: rectangle });
+      expect([...availability].sort()).toEqual([10, 11, 12]);
+
+      for (const op of revertOperations(snapshot)) apply(op);
+      expect([...availability]).toEqual([10]);
+      expect([...ifNeeded]).toEqual([11]);
+    });
+
+    it("round-trips an erase across a mixed rectangle", () => {
+      const availability = new Set([20, 21]);
+      const ifNeeded = new Set([22]);
+      const rectangle = [20, 21, 22, 23];
+
+      const snapshot = snapshotSlots(rectangle, availability, ifNeeded);
+      for (const s of rectangle) {
+        availability.delete(s);
+        ifNeeded.delete(s);
+      }
+      expect(availability.size + ifNeeded.size).toBe(0);
+
+      for (const op of revertOperations(snapshot)) {
+        for (const s of op.slots) {
+          if (op.type === "available") availability.add(s);
+          else if (op.type === "if_needed") ifNeeded.add(s);
+        }
+      }
+      expect([...availability].sort()).toEqual([20, 21]);
+      expect([...ifNeeded]).toEqual([22]);
+    });
   });
 });
 
