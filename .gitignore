@@ -1,0 +1,15 @@
+node_modules/
+dist/
+var/
+
+*.log
+.DS_Store
+
+docs/.vitepress/cache/
+
+# Pointer stubs into docs/. Kept in the working tree for local tooling --
+# editors, agents, GitHub's repo view -- but the real documents are the pages
+# under docs/, and these must not drift from them in git.
+/README.md
+/CLAUDE.md
+/ARCHITECTURE.md

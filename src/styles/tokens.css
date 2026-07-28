@@ -1,0 +1,129 @@
+/* Design tokens — the single source of truth for the UI palette and shape.
+   Consumed from <style scoped> blocks via var(--*). Do not hardcode colors in
+   components (ARCHITECTURE.md § Styling).
+
+   Theming (ARCHITECTURE.md § Theming)
+   -----------------------------------
+   Every color token is declared once as `light-dark(<light>, <dark>)`. Which
+   half applies is decided by the element's used color-scheme:
+
+     :root                      -> `light dark`, i.e. follow prefers-color-scheme
+     :root[data-theme="light"]  -> forced light
+     :root[data-theme="dark"]   -> forced dark
+
+   `data-theme` is written by the before-first-paint script in index.html from
+   localStorage["timeful.theme"], and thereafter by src/lib/theme.ts. Absent
+   attribute = follow the system. Setting `color-scheme` also themes native
+   widgets (scrollbars, checkboxes, date pickers) for free.
+
+   Runtime readers (the heatmap) must not parse these declarations textually —
+   `light-dark()` survives into the computed value of an unregistered custom
+   property. Resolve them through an element's computed `color` instead; see
+   src/lib/colors.ts. */
+
+:root {
+  color-scheme: light dark;
+
+  /* --- surfaces ---------------------------------------------------------- */
+  /* bg: the page. surface: cards/inputs/headers. raised: menus & dialogs.
+     subtle: hover fills and inert chips. */
+  --color-bg: light-dark(#fafafa, #1b1b1f);
+  --color-surface: light-dark(#ffffff, #202127);
+  --color-raised: light-dark(#ffffff, #26262c);
+  --color-subtle: light-dark(#f4f4f5, #2a2b31);
+
+  --color-border: light-dark(#e4e4e7, #3a3b42);
+  --color-border-strong: light-dark(#d4d4d8, #4b4c55);
+
+  /* --- text -------------------------------------------------------------- */
+  --color-text: light-dark(#18181b, #e8e8ea);
+  --color-text-muted: light-dark(#71717a, #9a9aa5);
+
+  /* --- accent ------------------------------------------------------------ */
+  /* The same green either side; lifted in dark so it stays a green and not a
+     smudge. `accent-contrast` is what sits on top of a filled accent surface. */
+  --color-accent: light-dark(#00994c, #35d07f);
+  --color-accent-hover: light-dark(#007a3d, #56dd97);
+  --color-accent-contrast: light-dark(#ffffff, #0c1a13);
+  --color-accent-soft: light-dark(#e6f5ee, #14352492);
+  --color-accent-text: light-dark(#00713a, #4bd48a);
+
+  /* --- status ------------------------------------------------------------ */
+  --color-danger: light-dark(#dc2626, #f87171);
+  --color-danger-soft: light-dark(#fee2e2, #3b1d1dcc);
+  --color-danger-contrast: light-dark(#ffffff, #290d0d);
+  --color-warning: light-dark(#b45309, #fbbf24);
+  --color-warning-soft: light-dark(#fef3c7, #3a2c10cc);
+  --color-success: light-dark(#15803d, #4ade80);
+
+  /* --- availability grid -------------------------------------------------- */
+  /* `slot-available` doubles as the heatmap base: every filled cell is this
+     color at a computed alpha, so it has to stay legible against `slot-empty`
+     in both themes. */
+  --color-slot-empty: light-dark(#f4f4f5, #26272d);
+  --color-slot-available: light-dark(#00994c, #35d07f);
+  --color-slot-if-needed: light-dark(#ffe8b8, #8a6a24);
+  --color-slot-disabled: light-dark(#fafafa, #1b1b1f);
+  /* The if-needed fill at text weight: same hue (41°) either side, but taken
+     dark enough in light mode and light enough in dark mode to carry a glyph or
+     a caption — the fill itself is a wash and disappears at that size. Use this
+     wherever if-needed is stated in ink rather than painted as an area. */
+  --color-if-needed-text: light-dark(#996900, #f0bc4c);
+
+  /* --- overlays ----------------------------------------------------------- */
+  --color-backdrop: light-dark(rgb(24 24 27 / 0.45), rgb(0 0 0 / 0.65));
+  --color-tooltip-bg: light-dark(#18181b, #45464f);
+  --color-tooltip-text: light-dark(#ffffff, #f4f4f5);
+
+  /* --- shape -------------------------------------------------------------- */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  --shadow-color-sm: light-dark(rgb(0 0 0 / 0.06), rgb(0 0 0 / 0.4));
+  --shadow-color-md: light-dark(rgb(0 0 0 / 0.1), rgb(0 0 0 / 0.55));
+  --shadow-sm: 0 1px 2px var(--shadow-color-sm);
+  --shadow-md: 0 4px 12px var(--shadow-color-md);
+
+  /* --- focus -------------------------------------------------------------- */
+  --focus-ring-width: 2px;
+  --focus-ring-color: var(--color-accent);
+  --focus-ring: var(--focus-ring-width) solid var(--focus-ring-color);
+  --focus-ring-offset: 2px;
+  /* Text fields keep their border and take a soft halo instead of an outline,
+     so the field does not visually jump on focus. */
+  --focus-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 28%, transparent);
+  /* The same halo for a field that is focused *and* wrong: what is being said
+     about the value has to survive the caret being in it. */
+  --focus-shadow-danger: 0 0 0 3px color-mix(in srgb, var(--color-danger) 28%, transparent);
+
+  /* --- metrics ------------------------------------------------------------ */
+  /* `--tap-min` is the ≥44px touch target floor from ARCHITECTURE.md § UX bar;
+     primitives apply it under coarse pointers. */
+  --tap-min: 44px;
+  --header-height: 3.25rem;
+  --page-max: 64rem;
+  --page-pad: 1rem;
+
+  --transition-fast: 120ms ease;
+  --transition-med: 220ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* --- type --------------------------------------------------------------- */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+html {
+  font-family: var(--font-sans);
+  color: var(--color-text);
+  background: var(--color-bg);
+}

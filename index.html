@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" href="/favicon.ico" />
+    <title>Timeful</title>
+    <script>
+      // Applies the stored theme override before first paint so there is no
+      // flash of the wrong theme. No stored value = follow prefers-color-scheme,
+      // which tokens.css handles on its own. Storage can throw (private mode,
+      // blocked cookies), and this file is also the SSR template for event
+      // pages, so it must never break the document. See src/lib/theme.ts.
+      (function () {
+        try {
+          var stored = window.localStorage.getItem("timeful.theme");
+          if (stored === "light" || stored === "dark") {
+            document.documentElement.setAttribute("data-theme", stored);
+          }
+        } catch (error) {
+          /* keep the system default */
+        }
+      })();
+    </script>
+    <!--app-head-->
+  </head>
+  <body>
+    <div id="app"><!--app-html--></div>
+    <script type="module" src="/src/entry-client.ts"></script>
+  </body>
+</html>

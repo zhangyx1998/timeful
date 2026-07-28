@@ -1,0 +1,665 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  allSlots,
+  buildGrid,
+  buildResponseIndex,
+  columnOffsets,
+  columnWidthFor,
+  edgeGlideStep,
+  edgeScrollDirection,
+  geometryFor,
+  gridSize,
+  heatmapAlpha255,
+  heatmapColor,
+  hitTest,
+  inRectangle,
+  isBestTime,
+  maxRespondents,
+  rectangleSlots,
+  scrollEdges,
+  scrollStepFor,
+  slotAt as slot,
+  type GridGeometry,
+} from "./grid";
+import type { EventDoc } from "./event";
+
+/** Los Angeles in August: 420 minutes west of UTC. */
+const PDT = 420;
+
+function makeEvent(overrides: Partial<EventDoc> = {}): EventDoc {
+  return {
+    id: "11111111-1111-1111-1111-111111111111",
+    slug: "test",
+    name: "Test",
+    type: "specific_dates",
+    dates: ["2026-08-01T16:00:00.000Z", "2026-08-02T16:00:00.000Z"],
+    duration: 8,
+    timeIncrement: 30,
+    startOnMonday: false,
+    createdAt: "2026-07-01T00:00:00.000Z",
+    updatedAt: "2026-07-01T00:00:00.000Z",
+    responses: {},
+    ...overrides,
+  };
+}
+
+const iso = (value: string) => Date.parse(value);
+
+describe("buildGrid — a window inside one local day", () => {
+  const model = buildGrid(makeEvent(), { timezoneOffset: PDT });
+
+  it("derives the daily window from dates[0] and duration", () => {
+    expect(model.startTimeUtc).toBe(16);
+    expect(model.crossesMidnight).toBe(false);
+    expect(model.rows).toHaveLength(16); // 8 hours at 30 minutes
+    expect(model.topRowCount).toBe(16);
+    expect(model.bottomRowCount).toBe(0);
+  });
+
+  it("labels rows in the selected timezone", () => {
+    expect(model.rows[0].localTimeNum).toBe(9);
+    expect(model.rows[0].label).toBe("9 am");
+    expect(model.rows[0].isHourStart).toBe(true);
+    expect(model.rows[1].label).toBe("9:30 am");
+    expect(model.rows[1].isHourStart).toBe(false);
+    expect(model.rows[1].isHalfHour).toBe(true);
+    expect(model.rows[15].label).toBe("4:30 pm");
+  });
+
+  it("makes one column per date, with no spillover column", () => {
+    expect(model.columns).toHaveLength(2);
+    expect(model.columns.map((c) => c.weekday)).toEqual(["Sat", "Sun"]);
+    expect(model.columns.map((c) => c.dateLabel)).toEqual(["Aug 1", "Aug 2"]);
+    expect(model.columns.every((c) => c.isConsecutive)).toBe(true);
+    expect(model.columns.every((c) => c.bottomDateMs === null)).toBe(true);
+  });
+
+  it("maps cells to absolute instants", () => {
+    expect(allSlots(model)).toHaveLength(32);
+    expect(model.rows[0].hoursOffset).toBe(0);
+    expect(slot(model, 0, 0)).toBe(iso("2026-08-01T16:00:00.000Z"));
+    expect(slot(model, 1, 0)).toBe(iso("2026-08-01T16:30:00.000Z"));
+    expect(slot(model, 15, 0)).toBe(iso("2026-08-01T23:30:00.000Z"));
+    expect(slot(model, 0, 1)).toBe(iso("2026-08-02T16:00:00.000Z"));
+  });
+
+  it("returns the same instants regardless of the viewing timezone", () => {
+    const tokyo = buildGrid(makeEvent(), { timezoneOffset: -540 });
+    expect(slot(tokyo, 0, 0)).toBe(slot(model, 0, 0));
+    // 09:00 in Los Angeles is 01:00 the next morning in Tokyo.
+    expect(tokyo.rows[0].localTimeNum).toBe(1);
+    expect(tokyo.crossesMidnight).toBe(false);
+  });
+
+  it("has no cell outside the grid", () => {
+    expect(slot(model, 16, 0)).toBeNull();
+    expect(slot(model, 0, 2)).toBeNull();
+    expect(slot(model, -1, 0)).toBeNull();
+  });
+});
+
+describe("buildGrid — a window crossing local midnight", () => {
+  // 21:00 -> 03:00 in Los Angeles.
+  const event = makeEvent({
+    dates: ["2026-08-01T04:00:00.000Z"],
+    duration: 6,
+    timeIncrement: 60,
+  });
+  const model = buildGrid(event, { timezoneOffset: PDT });
+
+  it("splits the window into a top and a bottom block", () => {
+    expect(model.crossesMidnight).toBe(true);
+    expect(model.topRowCount).toBe(3); // 00:00, 01:00, 02:00
+    expect(model.bottomRowCount).toBe(3); // 21:00, 22:00, 23:00
+    expect(model.rows.map((r) => r.localTimeNum)).toEqual([0, 1, 2, 21, 22, 23]);
+    expect(model.rows.map((r) => r.hoursOffset)).toEqual([3, 4, 5, 0, 1, 2]);
+    expect(model.rows.map((r) => r.block)).toEqual([0, 0, 0, 1, 1, 1]);
+  });
+
+  it("appends a spillover column for the tail of the last day", () => {
+    expect(model.columns).toHaveLength(2);
+    expect(model.columns.map((c) => c.dateLabel)).toEqual(["Jul 31", "Aug 1"]);
+  });
+
+  it("resolves the top block against the previous day's window", () => {
+    // The first column has no preceding day, so its top block is dead.
+    expect(slot(model, 0, 0)).toBeNull();
+    // Its bottom block is the head of the window: 21:00 local.
+    expect(slot(model, 3, 0)).toBe(iso("2026-08-01T04:00:00.000Z"));
+    expect(slot(model, 5, 0)).toBe(iso("2026-08-01T06:00:00.000Z"));
+
+    // The spillover column carries the tail: midnight to 03:00 local.
+    expect(slot(model, 0, 1)).toBe(iso("2026-08-01T07:00:00.000Z"));
+    expect(slot(model, 2, 1)).toBe(iso("2026-08-01T09:00:00.000Z"));
+    // ...and has no window of its own.
+    expect(slot(model, 3, 1)).toBeNull();
+  });
+
+  it("covers every slot of the window exactly once", () => {
+    const slots = allSlots(model).sort((a, b) => a - b);
+    expect(slots).toHaveLength(6);
+    expect(slots[0]).toBe(iso("2026-08-01T04:00:00.000Z"));
+    expect(slots[5]).toBe(iso("2026-08-01T09:00:00.000Z"));
+  });
+
+  it("shares the spillover column with the next day when dates are consecutive", () => {
+    const consecutive = buildGrid(
+      makeEvent({
+        dates: ["2026-08-01T04:00:00.000Z", "2026-08-02T04:00:00.000Z"],
+        duration: 6,
+        timeIncrement: 60,
+      }),
+      { timezoneOffset: PDT },
+    );
+    // Jul 31, Aug 1 (both a tail and a head), Aug 2 (tail only).
+    expect(consecutive.columns.map((c) => c.dateLabel)).toEqual(["Jul 31", "Aug 1", "Aug 2"]);
+    expect(consecutive.columns[1].topDateMs).not.toBeNull();
+    expect(consecutive.columns[1].bottomDateMs).not.toBeNull();
+    expect(allSlots(consecutive)).toHaveLength(12);
+  });
+
+  it("does not split a window that ends exactly at midnight", () => {
+    const untilMidnight = buildGrid(
+      makeEvent({ dates: ["2026-08-01T04:00:00.000Z"], duration: 3, timeIncrement: 60 }),
+      { timezoneOffset: PDT },
+    );
+    expect(untilMidnight.crossesMidnight).toBe(false);
+    expect(untilMidnight.columns).toHaveLength(1);
+    expect(untilMidnight.rows.map((r) => r.localTimeNum)).toEqual([21, 22, 23]);
+  });
+
+  it("splits on a slot boundary in half-hour timezones", () => {
+    // Asia/Kolkata is 330 minutes east: 21:30 -> 03:30 local.
+    const kolkata = buildGrid(
+      makeEvent({ dates: ["2026-08-01T16:00:00.000Z"], duration: 6, timeIncrement: 30 }),
+      { timezoneOffset: -330 },
+    );
+    expect(kolkata.crossesMidnight).toBe(true);
+    expect(kolkata.rows[0].localTimeNum).toBe(0);
+    expect(kolkata.bottomRowCount).toBe(5); // 21:30 .. 23:30
+    expect(kolkata.topRowCount).toBe(7); // 00:00 .. 03:00
+    expect(allSlots(kolkata)).toHaveLength(12);
+  });
+});
+
+describe("buildGrid — non-consecutive dates", () => {
+  it("flags the gap so the grid can draw a spacer", () => {
+    const model = buildGrid(
+      makeEvent({
+        dates: [
+          "2026-08-01T16:00:00.000Z",
+          "2026-08-02T16:00:00.000Z",
+          "2026-08-06T16:00:00.000Z",
+        ],
+      }),
+      { timezoneOffset: PDT },
+    );
+    expect(model.columns.map((c) => c.isConsecutive)).toEqual([true, true, false]);
+  });
+});
+
+describe("buildGrid — days-of-week events", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T12:00:00Z")); // a Wednesday
+    return () => vi.useRealTimers();
+  });
+
+  const event = makeEvent({
+    type: "dow",
+    // Monday and Wednesday of the 2018 reference week, 09:00 Los Angeles.
+    dates: ["2018-06-18T16:00:00.000Z", "2018-06-20T16:00:00.000Z"],
+    duration: 4,
+    timeIncrement: 60,
+  });
+
+  it("keeps slot instants in the stored reference week", () => {
+    const model = buildGrid(event, { timezoneOffset: PDT });
+    expect(slot(model, 0, 0)).toBe(iso("2018-06-18T16:00:00.000Z"));
+    expect(slot(model, 0, 1)).toBe(iso("2018-06-20T16:00:00.000Z"));
+  });
+
+  it("labels columns with the weekday of the viewed week", () => {
+    const model = buildGrid(event, { timezoneOffset: PDT });
+    expect(model.columns.map((c) => c.weekday)).toEqual(["Mon", "Wed"]);
+    expect(model.columns.map((c) => c.dateLabel)).toEqual(["Jul 13", "Jul 15"]);
+    expect(model.showDates).toBe(false);
+    expect(model.columns.map((c) => c.isConsecutive)).toEqual([true, false]);
+  });
+
+  it("follows the week offset", () => {
+    const model = buildGrid(event, { timezoneOffset: PDT, weekOffset: 1 });
+    expect(model.columns.map((c) => c.dateLabel)).toEqual(["Jul 20", "Jul 22"]);
+    // The instants themselves never move.
+    expect(slot(model, 0, 0)).toBe(iso("2018-06-18T16:00:00.000Z"));
+  });
+});
+
+describe("geometry and hit-testing", () => {
+  const geometry: GridGeometry = {
+    colWidth: 100,
+    rowHeight: 20,
+    gapWidth: 20,
+    gapHeight: 40,
+    columnGaps: [false, false, true],
+    topRowCount: 3,
+    bottomRowCount: 3,
+  };
+
+  it("places columns after their leading gaps", () => {
+    expect(columnOffsets(geometry)).toEqual([0, 100, 220]);
+    expect(gridSize(geometry)).toEqual({ width: 320, height: 160 });
+  });
+
+  it("maps pixels to cells", () => {
+    expect(hitTest(0, 0, geometry)).toEqual({ row: 0, col: 0 });
+    expect(hitTest(99, 19, geometry)).toEqual({ row: 0, col: 0 });
+    expect(hitTest(100, 20, geometry)).toEqual({ row: 1, col: 1 });
+    expect(hitTest(150, 59, geometry)).toEqual({ row: 2, col: 1 });
+    expect(hitTest(230, 0, geometry)).toEqual({ row: 0, col: 2 });
+  });
+
+  it("keeps the block gap from selecting a lesser row", () => {
+    // The gap spans y = 60..100; everything at or past it is the bottom block.
+    expect(hitTest(0, 60, geometry)).toEqual({ row: 3, col: 0 });
+    expect(hitTest(0, 99, geometry)).toEqual({ row: 3, col: 0 });
+    expect(hitTest(0, 100, geometry)).toEqual({ row: 3, col: 0 });
+    expect(hitTest(0, 120, geometry)).toEqual({ row: 4, col: 0 });
+    expect(hitTest(0, 159, geometry)).toEqual({ row: 5, col: 0 });
+  });
+
+  it("clamps coordinates outside the grid so dragging past the edge works", () => {
+    expect(hitTest(-40, -40, geometry)).toEqual({ row: 0, col: 0 });
+    expect(hitTest(9999, 9999, geometry)).toEqual({ row: 5, col: 2 });
+    // Inside a column gap: stays on the column before it.
+    expect(hitTest(210, 0, geometry)).toEqual({ row: 0, col: 1 });
+  });
+
+  it("has no cell when the grid is empty or unmeasured", () => {
+    expect(hitTest(0, 0, { ...geometry, columnGaps: [] })).toBeNull();
+    expect(hitTest(0, 0, { ...geometry, colWidth: 0 })).toBeNull();
+  });
+
+  it("builds geometry from the visible columns only", () => {
+    const model = buildGrid(
+      makeEvent({
+        dates: [
+          "2026-08-01T16:00:00.000Z",
+          "2026-08-05T16:00:00.000Z",
+          "2026-08-06T16:00:00.000Z",
+        ],
+      }),
+      { timezoneOffset: PDT },
+    );
+    const sizes = { colWidth: 100, rowHeight: 20, gapWidth: 20, gapHeight: 40 };
+    expect(geometryFor(model, model.columns, sizes).columnGaps).toEqual([false, true, false]);
+    // Paging past the gap: the first visible column never draws a leading gap.
+    expect(geometryFor(model, model.columns.slice(1), sizes).columnGaps).toEqual([
+      false,
+      false,
+    ]);
+  });
+});
+
+describe("drag rectangles", () => {
+  const model = buildGrid(
+    makeEvent({ duration: 2, timeIncrement: 60 }),
+    { timezoneOffset: PDT },
+  );
+
+  it("covers both corners in any drag direction", () => {
+    const forward = rectangleSlots(model, { row: 0, col: 0 }, { row: 1, col: 1 });
+    const backward = rectangleSlots(model, { row: 1, col: 1 }, { row: 0, col: 0 });
+    expect(forward).toHaveLength(4);
+    expect(new Set(backward)).toEqual(new Set(forward));
+  });
+
+  it("treats a click as a one-cell rectangle", () => {
+    expect(rectangleSlots(model, { row: 0, col: 0 }, { row: 0, col: 0 })).toEqual([
+      iso("2026-08-01T16:00:00.000Z"),
+    ]);
+  });
+
+  it("skips cells that are outside the event", () => {
+    const crossing = buildGrid(
+      makeEvent({ dates: ["2026-08-01T04:00:00.000Z"], duration: 6, timeIncrement: 60 }),
+      { timezoneOffset: PDT },
+    );
+    // The whole grid: 12 cells, but only 6 are live.
+    expect(rectangleSlots(crossing, { row: 0, col: 0 }, { row: 5, col: 1 })).toHaveLength(6);
+  });
+
+  it("reports cells inside the live drag preview", () => {
+    expect(inRectangle(1, 1, { row: 0, col: 0 }, { row: 2, col: 2 })).toBe(true);
+    expect(inRectangle(1, 1, { row: 2, col: 2 }, { row: 0, col: 0 })).toBe(true);
+    expect(inRectangle(3, 1, { row: 0, col: 0 }, { row: 2, col: 2 })).toBe(false);
+  });
+});
+
+describe("responses and heatmap", () => {
+  const event = makeEvent({
+    duration: 2,
+    timeIncrement: 60,
+    responses: {
+      Ada: {
+        availability: ["2026-08-01T16:00:00.000Z", "2026-08-01T17:00:00.000Z"],
+        ifNeeded: [],
+        updatedAt: "2026-07-02T00:00:00.000Z",
+      },
+      Grace: {
+        availability: ["2026-08-01T16:00:00.000Z"],
+        ifNeeded: ["2026-08-01T17:00:00.000Z"],
+        updatedAt: "2026-07-02T00:00:00.000Z",
+      },
+    },
+  });
+
+  it("inverts responses into slot -> respondents", () => {
+    const index = buildResponseIndex(event);
+    expect(index.names).toEqual(["Ada", "Grace"]);
+    expect(index.available.get(iso("2026-08-01T16:00:00.000Z"))).toEqual(
+      new Set(["Ada", "Grace"]),
+    );
+    // If-needed counts towards availability, and is tracked separately for tinting.
+    expect(index.available.get(iso("2026-08-01T17:00:00.000Z"))).toEqual(
+      new Set(["Ada", "Grace"]),
+    );
+    expect(index.ifNeeded.get(iso("2026-08-01T17:00:00.000Z"))).toEqual(new Set(["Grace"]));
+    expect(index.ifNeeded.get(iso("2026-08-01T16:00:00.000Z"))).toBeUndefined();
+  });
+
+  it("replaces a respondent's saved answer with their unsaved edits", () => {
+    const index = buildResponseIndex(event, {
+      name: "Grace",
+      availability: new Set([iso("2026-08-02T16:00:00.000Z")]),
+      ifNeeded: new Set(),
+    });
+    expect(index.names).toEqual(["Ada", "Grace"]);
+    expect(index.available.get(iso("2026-08-01T16:00:00.000Z"))).toEqual(new Set(["Ada"]));
+    expect(index.available.get(iso("2026-08-02T16:00:00.000Z"))).toEqual(new Set(["Grace"]));
+  });
+
+  it("counts a new guest who has not saved yet", () => {
+    const index = buildResponseIndex(event, {
+      name: "Alan",
+      availability: new Set([iso("2026-08-01T16:00:00.000Z")]),
+      ifNeeded: new Set(),
+    });
+    expect(index.names).toEqual(["Ada", "Alan", "Grace"]);
+    expect(index.available.get(iso("2026-08-01T16:00:00.000Z"))?.size).toBe(3);
+  });
+
+  it("drops a respondent whose override is empty, saved answer and all", () => {
+    // What the Clear button leaves behind: the server deletes the record, so
+    // the list must not keep showing Grace off the stale copy of the event.
+    const index = buildResponseIndex(event, {
+      name: "Grace",
+      availability: new Set(),
+      ifNeeded: new Set(),
+    });
+    expect(index.names).toEqual(["Ada"]);
+    expect(index.available.get(iso("2026-08-01T16:00:00.000Z"))).toEqual(new Set(["Ada"]));
+    expect(index.ifNeeded.get(iso("2026-08-01T17:00:00.000Z"))).toBeUndefined();
+  });
+
+  it("does not list a guest who has identified but marked nothing", () => {
+    const index = buildResponseIndex(event, {
+      name: "Alan",
+      availability: new Set(),
+      ifNeeded: new Set(),
+    });
+    expect(index.names).toEqual(["Ada", "Grace"]);
+  });
+
+  it("keeps an override that holds only if-needed slots", () => {
+    const index = buildResponseIndex(event, {
+      name: "Alan",
+      availability: new Set(),
+      ifNeeded: new Set([iso("2026-08-01T16:00:00.000Z")]),
+    });
+    expect(index.names).toEqual(["Ada", "Alan", "Grace"]);
+    expect(index.ifNeeded.get(iso("2026-08-01T16:00:00.000Z"))).toEqual(new Set(["Alan"]));
+  });
+
+  it("takes the maximum over live slots only", () => {
+    const model = buildGrid(event, { timezoneOffset: PDT });
+    expect(maxRespondents(model, buildResponseIndex(event))).toBe(2);
+
+    // A slot left behind by an edit to the event must not inflate the maximum.
+    const stale = makeEvent({
+      duration: 2,
+      timeIncrement: 60,
+      responses: {
+        Ada: {
+          availability: ["2025-01-01T00:00:00.000Z"],
+          ifNeeded: [],
+          updatedAt: "2026-07-02T00:00:00.000Z",
+        },
+      },
+    });
+    expect(maxRespondents(buildGrid(stale, { timezoneOffset: PDT }), buildResponseIndex(stale))).toBe(0);
+  });
+
+  it("scales alpha across 225 steps, saturating when everyone is free", () => {
+    expect(heatmapAlpha255(0, 3, 3)).toBe(0);
+    expect(heatmapAlpha255(1, 3, 5)).toBe(75);
+    expect(heatmapAlpha255(2, 3, 5)).toBe(150);
+    expect(heatmapAlpha255(3, 3, 5)).toBe(225);
+    // Everyone who responded is available here.
+    expect(heatmapAlpha255(3, 3, 3)).toBe(255);
+  });
+
+  it("composites the alpha onto the theme's base green", () => {
+    expect(heatmapColor(0, 3, 3)).toBeNull();
+    // Defaults to the light-theme value of --color-slot-available.
+    expect(heatmapColor(3, 3, 5)).toBe("rgba(0, 153, 76, 0.882)");
+    expect(heatmapColor(3, 3, 3)).toBe("rgba(0, 153, 76, 1.000)");
+    expect(heatmapColor(1, 40, 40)).toBe("rgba(0, 153, 76, 0.020)");
+  });
+
+  it("takes the base color from the caller, so dark mode re-tints", () => {
+    const dark = { r: 53, g: 208, b: 127 };
+    expect(heatmapColor(3, 3, 3, dark)).toBe("rgba(53, 208, 127, 1.000)");
+  });
+
+  it("treats best times as the joint maxima", () => {
+    expect(isBestTime(3, 3)).toBe(true);
+    expect(isBestTime(2, 3)).toBe(false);
+    expect(isBestTime(0, 0)).toBe(false);
+  });
+});
+
+describe("scrolling", () => {
+  describe("columnWidthFor", () => {
+    const base = { perView: 7, gapCount: 0, gapWidth: 16, peek: 15, minWidth: 34 };
+
+    it("spends the whole viewport on an event that fits", () => {
+      expect(columnWidthFor({ ...base, availableWidth: 700, columnCount: 5 })).toBe(140);
+      expect(columnWidthFor({ ...base, availableWidth: 700, columnCount: 7 })).toBe(100);
+    });
+
+    it("budgets the gap spacers when the columns have to fit", () => {
+      expect(
+        columnWidthFor({ ...base, availableWidth: 700, columnCount: 5, gapCount: 2 }),
+      ).toBe(133);
+    });
+
+    it("leaves a peek showing once the track overflows", () => {
+      // A viewport of columns plus the sliver of the next one, exactly.
+      expect(columnWidthFor({ ...base, availableWidth: 700, columnCount: 20 })).toBe(97);
+    });
+
+    it("sizes an overflowing track against perView, not the column count", () => {
+      const twenty = columnWidthFor({ ...base, availableWidth: 700, columnCount: 20 });
+      const fifty = columnWidthFor({ ...base, availableWidth: 700, columnCount: 50 });
+      expect(fifty).toBe(twenty);
+    });
+
+    it("does not let a gap narrow the columns of a scrolling track", () => {
+      // Free scrolling has no pages to keep in step: a break in the dates makes
+      // the track longer rather than the columns thinner.
+      expect(
+        columnWidthFor({ ...base, availableWidth: 700, columnCount: 20, gapCount: 3 }),
+      ).toBe(97);
+    });
+
+    it("never goes below the minimum, however narrow the viewport", () => {
+      expect(columnWidthFor({ ...base, availableWidth: 100, columnCount: 20 })).toBe(34);
+      expect(columnWidthFor({ ...base, availableWidth: 100, columnCount: 5 })).toBe(34);
+    });
+
+    it("has no width without columns", () => {
+      expect(columnWidthFor({ ...base, availableWidth: 700, columnCount: 0 })).toBe(0);
+    });
+  });
+
+  describe("scrollStepFor", () => {
+    it("steps a viewport, less the peek, so the half-shown column lands", () => {
+      expect(scrollStepFor(700, 97, 15)).toBe(685);
+    });
+
+    it("never steps less than a column", () => {
+      expect(scrollStepFor(120, 200, 15)).toBe(200);
+      expect(scrollStepFor(0, 0, 15)).toBe(1);
+    });
+  });
+
+  describe("scrollEdges", () => {
+    it("clips the far end of a track resting at its start", () => {
+      expect(scrollEdges(0, 2000, 700)).toEqual({
+        atStart: true,
+        atEnd: false,
+        overflowing: true,
+      });
+    });
+
+    it("clips the near end of a track resting at its end", () => {
+      expect(scrollEdges(1300, 2000, 700)).toEqual({
+        atStart: false,
+        atEnd: true,
+        overflowing: true,
+      });
+    });
+
+    it("clips both ends anywhere in between", () => {
+      expect(scrollEdges(650, 2000, 700)).toEqual({
+        atStart: false,
+        atEnd: false,
+        overflowing: true,
+      });
+    });
+
+    it("clips nothing when the track fits", () => {
+      expect(scrollEdges(0, 700, 700)).toEqual({
+        atStart: true,
+        atEnd: true,
+        overflowing: false,
+      });
+    });
+
+    it("absorbs sub-pixel layout and overscroll past either end", () => {
+      expect(scrollEdges(0.6, 2000, 700).atStart).toBe(true);
+      expect(scrollEdges(1299.4, 2000, 700).atEnd).toBe(true);
+      // Touch platforms allow the track past its own ends; that is still an end.
+      expect(scrollEdges(-40, 2000, 700).atStart).toBe(true);
+      expect(scrollEdges(1420, 2000, 700).atEnd).toBe(true);
+    });
+  });
+
+  describe("edgeScrollDirection", () => {
+    const middle = { zone: 30, canScrollBack: true, canScrollForward: true };
+
+    it("stands still through the middle of the chart", () => {
+      expect(edgeScrollDirection(200, 600, middle)).toBe(0);
+      expect(edgeScrollDirection(31, 600, middle)).toBe(0);
+      expect(edgeScrollDirection(569, 600, middle)).toBe(0);
+    });
+
+    it("asks for more track inside either zone", () => {
+      expect(edgeScrollDirection(30, 600, middle)).toBe(-1);
+      expect(edgeScrollDirection(0, 600, middle)).toBe(-1);
+      expect(edgeScrollDirection(570, 600, middle)).toBe(1);
+      expect(edgeScrollDirection(600, 600, middle)).toBe(1);
+    });
+
+    it("counts a pointer dragged clean off the chart as still asking", () => {
+      expect(edgeScrollDirection(-120, 600, middle)).toBe(-1);
+      expect(edgeScrollDirection(940, 600, middle)).toBe(1);
+    });
+
+    it("says nothing at the ends of the track", () => {
+      const first = { ...middle, canScrollBack: false };
+      expect(edgeScrollDirection(0, 600, first)).toBe(0);
+      expect(edgeScrollDirection(590, 600, first)).toBe(1);
+
+      const last = { ...middle, canScrollForward: false };
+      expect(edgeScrollDirection(600, 600, last)).toBe(0);
+      expect(edgeScrollDirection(10, 600, last)).toBe(-1);
+    });
+
+    it("holds an engaged direction through a wider zone", () => {
+      const held = { ...middle, active: 1 as const, hysteresis: 15 };
+      // Past the plain zone, but not past the one it keeps while running.
+      expect(edgeScrollDirection(560, 600, held)).toBe(1);
+      expect(edgeScrollDirection(554, 600, held)).toBe(0);
+      // The hysteresis belongs to the engaged direction only.
+      expect(edgeScrollDirection(40, 600, held)).toBe(0);
+      expect(edgeScrollDirection(40, 600, { ...held, active: -1 })).toBe(-1);
+    });
+
+    it("leaves a still centre on a viewport narrower than two zones", () => {
+      const narrow = { ...middle, zone: 40, active: -1 as const, hysteresis: 20 };
+      expect(edgeScrollDirection(24, 50, narrow)).toBe(-1);
+      expect(edgeScrollDirection(26, 50, narrow)).toBe(1);
+      expect(edgeScrollDirection(25, 50, narrow)).toBe(-1);
+    });
+
+    it("does nothing without a zone or a viewport to measure", () => {
+      expect(edgeScrollDirection(0, 0, middle)).toBe(0);
+      expect(edgeScrollDirection(0, 600, { ...middle, zone: 0 })).toBe(0);
+    });
+  });
+
+  describe("edgeGlideStep", () => {
+    const glide = { speed: 600, carry: 0 };
+
+    it("travels at the given speed, in the direction asked for", () => {
+      expect(edgeGlideStep(1, 16, glide).delta).toBeCloseTo(9.6, 5);
+      expect(edgeGlideStep(-1, 16, glide).delta).toBeCloseTo(-9.6, 5);
+    });
+
+    it("covers the same ground however the frames fall", () => {
+      const long = edgeGlideStep(1, 32, glide).delta;
+      const short = edgeGlideStep(1, 16, glide).delta * 2;
+      expect(long).toBeCloseTo(short, 5);
+    });
+
+    it("carries nothing while gliding freely", () => {
+      expect(edgeGlideStep(1, 16, glide).carry).toBe(0);
+    });
+
+    it("jumps whole columns under reduced motion, carrying the remainder", () => {
+      const first = edgeGlideStep(1, 100, { ...glide, snap: 90 });
+      expect(first.delta).toBe(0);
+      expect(first.carry).toBeCloseTo(60, 5);
+
+      const second = edgeGlideStep(1, 100, { ...glide, snap: 90, carry: first.carry });
+      expect(second.delta).toBe(90);
+      expect(second.carry).toBeCloseTo(30, 5);
+    });
+
+    it("snaps backwards the same way", () => {
+      expect(edgeGlideStep(-1, 100, { ...glide, snap: 90 }).delta).toBe(0);
+      expect(edgeGlideStep(-1, 100, { ...glide, snap: 90, carry: -60 }).delta).toBe(-90);
+    });
+
+    it("clamps a stalled frame rather than lurching across the track", () => {
+      expect(edgeGlideStep(1, 5000, glide).delta).toBeCloseTo(60, 5);
+    });
+
+    it("stands still without a direction or a speed", () => {
+      expect(edgeGlideStep(0, 16, glide)).toEqual({ delta: 0, carry: 0 });
+      expect(edgeGlideStep(1, 16, { speed: 0, carry: 40 })).toEqual({ delta: 0, carry: 0 });
+    });
+  });
+});

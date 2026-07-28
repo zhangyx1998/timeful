@@ -1,0 +1,59 @@
+name: Publish
+
+# Publishes dist/ to npm as the `timeful` package.
+#
+# Before this can ever run:
+#
+#   1. The FIRST publish must be done by hand, locally. npm will not create a
+#      new package from a token that has never been associated with one, and
+#      the package has to exist before it can have a publishing policy:
+#
+#          npm run build && npm publish dist/ --access public
+#
+#   2. Create an npm **automation** token (Access Tokens -> Generate ->
+#      Automation; classic tokens of other kinds are refused by 2FA-enabled
+#      accounts) and add it to the repository as the secret NPM_TOKEN.
+#
+#   3. Optionally, on npmjs.com, add this repository as a trusted publisher for
+#      the package. Provenance attestation (--provenance) is only produced from
+#      a CI run with an OIDC identity — it cannot be generated from a laptop,
+#      which is the point of it.
+#
+# The version published is whatever is in the root package.json. Nothing here
+# bumps it: edit package.json, commit, tag, and then create the release. A
+# release whose version already exists on npm fails the publish step.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # required for --provenance
+
+jobs:
+  publish:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+
+      # The same gates as CI. A tag is a bad place to discover a broken test.
+      - run: npm run typecheck
+      - run: npx vitest run
+      - run: npm run build
+
+      # dist/ is the package: its own generated package.json, no dependencies
+      # to install, and the CLI as its bin. The root package is private.
+      - run: npm publish dist/ --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

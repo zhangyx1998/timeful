@@ -1,0 +1,67 @@
+name: Docs
+
+# Publishes the VitePress site to GitHub Pages.
+#
+# One-time repository setup: Settings -> Pages -> "Build and deployment" ->
+# Source must be set to "GitHub Actions". Without that, deploy-pages fails and
+# nothing this workflow does will appear at the site URL.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time, and never cancel one halfway: a cancelled deploy
+# can leave the site on a partial upload.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - uses: actions/configure-pages@v5
+
+      - run: npm ci
+        working-directory: docs
+
+      # A project site lives under the repository name, so every asset and
+      # link has to be prefixed. The config reads DOCS_BASE and defaults to
+      # "/" so local builds and previews still work.
+      - run: npm run build
+        working-directory: docs
+        env:
+          DOCS_BASE: /timeful/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/.vitepress/dist
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

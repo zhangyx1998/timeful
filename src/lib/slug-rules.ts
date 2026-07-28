@@ -1,0 +1,41 @@
+/**
+ * What makes a slug legal. Pure rules, no crypto and no I/O, so **both halves
+ * import this one module**: the server validates with it before writing
+ * anything, and the event form validates with it as the admin types.
+ *
+ * They used to be the server's alone, which meant the form could only find out
+ * a path was illegal by sending it — and the wording of the two answers could
+ * drift apart the moment either side was edited. One definition means the
+ * inline message is literally the message the server would have returned.
+ *
+ * Generation (the random capability slug) stays on the server in `slugs.ts`,
+ * which re-exports these so nothing else has to know they moved.
+ */
+
+export const MAX_SLUG_LENGTH = 80;
+
+/**
+ * Paths the server itself owns. Compared case-insensitively: Express routes and
+ * the static mounts are not case sensitive, so `/API` is `/api`.
+ */
+export const RESERVED_SLUGS: ReadonlySet<string> = new Set(["api", "assets"]);
+
+/**
+ * Letters, digits and hyphens, starting with a letter or a digit. Everything
+ * else a path might carry — a slash, a dot, a space, a percent-escape — is out,
+ * which is what keeps a slug a single path segment.
+ */
+const SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
+
+/** Returns an error string, or null when the slug is usable. */
+export function slugProblem(slug: string): string | null {
+  if (!slug) return "Slug is required";
+  if (slug.length > MAX_SLUG_LENGTH)
+    return `Slug must be at most ${MAX_SLUG_LENGTH} characters`;
+  if (slug.startsWith("_") || slug.startsWith("."))
+    return "Slug may not start with '_' or '.'";
+  if (!SLUG_RE.test(slug))
+    return "Slug may only contain letters, numbers and hyphens";
+  if (RESERVED_SLUGS.has(slug.toLowerCase())) return `'${slug}' is a reserved slug`;
+  return null;
+}
