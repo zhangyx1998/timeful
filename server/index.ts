@@ -33,6 +33,17 @@ async function createRenderer(): Promise<Renderer> {
   return createDevRenderer(fileURLToPath(new URL("..", import.meta.url)));
 }
 
+// Nothing in this process or Vite's middleware mode sends termination signals,
+// so one arriving means something outside did (a service manager stopping the
+// unit — or, in dev, an editor/debugger/shell hook killing the job). Say so
+// before going: an attributed exit beats a bare `zsh: terminated`.
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+  process.once(signal, () => {
+    if (isDev) console.error(`[timeful] ${signal} received from outside (parent pid ${process.ppid}) — exiting.`);
+    process.exit(signal === "SIGTERM" ? 143 : 130);
+  });
+}
+
 await serve({
   host,
   port,
