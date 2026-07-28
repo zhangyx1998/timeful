@@ -28,9 +28,30 @@ export interface EventDoc {
   /** Slot granularity, in minutes. */
   timeIncrement: number;
   startOnMonday: boolean;
+  /**
+   * Whether this event pushes live updates to open pages.
+   *
+   * **Optional, and absent means on.** Every event file written before the
+   * realtime channel existed lacks the field, and none of them are rewritten
+   * to add it — so "not there" has to read the same as `true`. Ask
+   * `realtimeAllowed()` rather than testing the field, or an old event
+   * silently loses the feature.
+   */
+  realtime?: boolean;
   createdAt: string;
   updatedAt: string;
   responses: Record<string, EventResponse>;
+}
+
+/**
+ * Does this event push live updates?
+ *
+ * The one place the default lives, shared by both halves: the server consults
+ * it before admitting a subscriber or broadcasting, and the admin form shows
+ * it as a checkbox. Only an explicit `false` turns it off.
+ */
+export function realtimeAllowed(event: Pick<EventDoc, "realtime">): boolean {
+  return event.realtime !== false;
 }
 
 /** In-memory form of a response: slot-start instants as epoch milliseconds. */

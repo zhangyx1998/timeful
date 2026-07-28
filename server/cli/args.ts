@@ -249,8 +249,9 @@ Options:
 Settings are read from timeful.config.json in the current directory; the
 options above and the PORT, HOST and VAR_DIR environment variables override it.
 
-TIMEFUL_REALTIME=0 turns off the realtime update channel (config key
-"realtime"), which is on by default. Turning it off costs nothing but live
-updates: the pages keep working on the REST API alone.
+Live updates are configured per event, in the event's own settings. The
+config key "realtime" and TIMEFUL_REALTIME=0 are a server-wide kill switch
+above that: off means no event gets them, whatever its own setting says.
+Either way the pages keep working on the REST API alone.
 `;
 }

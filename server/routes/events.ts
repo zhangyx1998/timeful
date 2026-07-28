@@ -4,7 +4,7 @@ import type { Request, Response } from "express";
 import { requireAdmin } from "../auth.ts";
 import { asRecord, BadRequest, param } from "../http.ts";
 import { consumeLease, isLeased } from "../leases.ts";
-import { broadcastEvent, broadcastGone } from "../realtime.ts";
+import { broadcastEvent, broadcastGone, closeRoom } from "../realtime.ts";
 import { randomSlug, slugProblem } from "../slugs.ts";
 import {
   deleteEvent,
@@ -113,6 +113,16 @@ function requireTimeIncrement(value: unknown): number {
   return increment;
 }
 
+/**
+ * The live-updates switch. Strict where `startOnMonday` coerces, on purpose:
+ * this one decides whether a channel is served, and `Boolean("false")` being
+ * true is not a mistake worth making about that.
+ */
+function requireRealtime(value: unknown): boolean {
+  if (typeof value !== "boolean") throw new BadRequest("realtime must be true or false");
+  return value;
+}
+
 function guestName(raw: unknown): string {
   const name = String(raw ?? "").trim();
   if (!name) throw new BadRequest("Guest name is required");
@@ -174,6 +184,9 @@ eventsRouter.post("/events", requireAdmin, async (req, res) => {
   const duration = requireDuration(body.duration);
   const timeIncrement = requireTimeIncrement(body.timeIncrement);
   const startOnMonday = Boolean(body.startOnMonday);
+  // Written out even though it matches the default, so the file says what it
+  // does; an older file that omits it still reads as on.
+  const realtime = body.realtime === undefined ? true : requireRealtime(body.realtime);
 
   const explicitSlug =
     body.slug !== undefined && body.slug !== null && body.slug !== "";
@@ -213,6 +226,7 @@ eventsRouter.post("/events", requireAdmin, async (req, res) => {
     duration,
     timeIncrement,
     startOnMonday,
+    realtime,
     createdAt: now,
     updatedAt: now,
     responses: {},
@@ -251,6 +265,7 @@ eventsRouter.patch("/events/:id", requireAdmin, async (req, res) => {
     patch.timeIncrement = requireTimeIncrement(body.timeIncrement);
   if (body.startOnMonday !== undefined)
     patch.startOnMonday = Boolean(body.startOnMonday);
+  if (body.realtime !== undefined) patch.realtime = requireRealtime(body.realtime);
 
   let nextSlug = existing.slug;
   if (body.slug !== undefined) {
@@ -290,8 +305,13 @@ eventsRouter.patch("/events/:id", requireAdmin, async (req, res) => {
     return;
   }
   // Subscribers get the whole new document, the renamed slug included: a page
-  // watching this event corrects its own address bar off the snapshot.
+  // watching this event corrects its own address bar off the snapshot. A no-op
+  // when this same PATCH just switched live updates off.
   broadcastEvent(updated);
+  // Switched off: hang up on whoever is still watching. Not `gone` — the event
+  // is very much still there, and still answerable over REST. They will try to
+  // reconnect, be refused, and give up.
+  if (!updated.realtime) closeRoom(updated.id);
   res.json(updated);
 });
 

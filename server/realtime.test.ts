@@ -33,6 +33,7 @@ import { createApp, type Renderer } from "./app.ts";
 import { createSession, setCredential } from "./auth.ts";
 import { attachRealtime, clientCount, roomCount, type RealtimeServer } from "./realtime.ts";
 import { resolveEvent } from "./routes/events.ts";
+import { updateEvent } from "./storage.ts";
 import { missTarpit } from "./tarpit.ts";
 import type { RealtimeMessage, StoredEvent } from "./types.ts";
 
@@ -111,7 +112,10 @@ async function adminCookie(): Promise<string> {
   return `session=${await createSession({})}`;
 }
 
-async function createEvent(cookie: string): Promise<StoredEvent> {
+async function createEvent(
+  cookie: string,
+  extra: Record<string, unknown> = {},
+): Promise<StoredEvent> {
   const res = await call("POST", "/api/events", {
     cookie,
     body: {
@@ -121,6 +125,7 @@ async function createEvent(cookie: string): Promise<StoredEvent> {
       duration: 8,
       timeIncrement: 30,
       startOnMonday: true,
+      ...extra,
     },
   });
   expect(res.status).toBe(201);
@@ -377,6 +382,112 @@ describe("the realtime channel", () => {
     second.socket.close();
     await until(() => roomCount() === 0, "the room to be dropped");
     expect(clientCount(event.id)).toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // the per-event switch
+  // -------------------------------------------------------------------------
+
+  describe("with live updates off for the event", () => {
+    it("stores the flag, and defaults it on", async () => {
+      const cookie = await adminCookie();
+      expect((await createEvent(cookie)).realtime).toBe(true);
+      expect((await createEvent(cookie, { realtime: false })).realtime).toBe(false);
+
+      // Strict where startOnMonday coerces: this one decides whether a channel
+      // is served, and "false" the string must not read as true.
+      const bad = await call("POST", "/api/events", {
+        cookie,
+        body: {
+          name: "Nope",
+          type: "specific_dates",
+          dates: ["2026-08-03T00:00:00.000Z"],
+          duration: 8,
+          timeIncrement: 30,
+          realtime: "false",
+        },
+      });
+      expect(bad.status).toBe(400);
+    });
+
+    it("refuses the upgrade, without spending a tarpit delay on it", async () => {
+      attach();
+      const event = await createEvent(await adminCookie(), { realtime: false });
+
+      const elapsed = await refusedAfter(event.slug);
+
+      // Whoever asked already proved they hold the capability URL, so this is
+      // not a scan and must not be queued behind one.
+      expect(elapsed).toBeLessThan(MISS_DELAY_MS);
+      expect(roomCount()).toBe(0);
+
+      // And the event itself is entirely unaffected: REST still serves it.
+      expect((await call("GET", `/api/events/${event.slug}`)).status).toBe(200);
+    });
+
+    it("treats an event written before the flag existed as on", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      // Old files have no `realtime` key and are never rewritten to add one.
+      await updateEvent(event.id, (current) => {
+        delete current.realtime;
+        return current;
+      });
+
+      const watcher = await subscribe(event.slug);
+      await call("PUT", `/api/events/${event.id}/responses/Frank`, {
+        body: { availability: SLOTS },
+      });
+      expect((await watcher.take(1))[0].type).toBe("event");
+    });
+
+    it("hangs up on the room when the owner switches it off", async () => {
+      attach();
+      const cookie = await adminCookie();
+      const event = await createEvent(cookie);
+      const watcher = await subscribe(event.slug);
+      const closed = new Promise<CloseEvent>((resolve) => {
+        watcher.socket.addEventListener("close", (e: Event) => resolve(e as CloseEvent));
+      });
+
+      expect(
+        (await call("PATCH", `/api/events/${event.id}`, {
+          cookie,
+          body: { realtime: false },
+        })).status,
+      ).toBe(200);
+
+      await closed;
+      // Hung up on, not told the event is gone — it is still there, and still
+      // answerable over REST.
+      expect(watcher.received.some((m) => m.type === "gone")).toBe(false);
+      await until(() => roomCount() === 0, "the room to close");
+
+      // Nothing is broadcast for it afterwards, and reconnecting is refused.
+      await call("PUT", `/api/events/${event.id}/responses/Gina`, {
+        body: { availability: SLOTS },
+      });
+      expect(roomCount()).toBe(0);
+      await expect(subscribe(event.slug)).rejects.toThrow("upgrade refused");
+    });
+
+    it("starts pushing again when the owner switches it back on", async () => {
+      attach();
+      const cookie = await adminCookie();
+      const event = await createEvent(cookie, { realtime: false });
+      await expect(subscribe(event.slug)).rejects.toThrow("upgrade refused");
+
+      await call("PATCH", `/api/events/${event.id}`, {
+        cookie,
+        body: { realtime: true },
+      });
+
+      const watcher = await subscribe(event.slug);
+      await call("PUT", `/api/events/${event.id}/responses/Hank`, {
+        body: { availability: SLOTS },
+      });
+      expect((await watcher.take(1))[0].type).toBe("event");
+    });
   });
 
   it("keeps a healthy socket through several heartbeats", async () => {

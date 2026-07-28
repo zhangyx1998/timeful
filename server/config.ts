@@ -49,9 +49,10 @@ export function envFlag(name: string, fallback: boolean): boolean {
 }
 
 /**
- * Whether to serve the realtime WebSocket channel. On by default.
+ * The server-wide kill switch for live updates. On by default.
  *
- * Off means no upgrade listener is registered at all: the event page keeps
- * working exactly as it does without a socket, on the REST API alone.
+ * Live updates are configured per event; this sits above that. Off means no
+ * upgrade listener is registered at all, so no event gets a channel whatever
+ * its own setting says, and every page works on the REST API alone.
  */
 export const realtimeEnabled = (): boolean => envFlag("TIMEFUL_REALTIME", true);

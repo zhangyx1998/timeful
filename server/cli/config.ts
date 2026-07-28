@@ -28,7 +28,12 @@ export interface FileConfig {
   host?: string;
   varDir?: string;
   trustedProxy?: string | string[];
-  /** Serve the realtime WebSocket channel. Default true. */
+  /**
+   * Server-wide kill switch for live updates. Default true.
+   *
+   * The primary control is per event; this sits above it, and `false` means no
+   * event gets a realtime channel whatever its own setting says.
+   */
   realtime?: boolean;
 }
 

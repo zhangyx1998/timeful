@@ -41,6 +41,7 @@ import Spinner from "../ui/Spinner.vue";
 import TextInput from "../ui/TextInput.vue";
 import IconRotateCw from "../../assets/icons/rotate-cw.svg";
 import { slugProblem } from "../../lib/slug-rules";
+import { realtimeAllowed } from "../../lib/event";
 import type { EventPayload } from "../../lib/api";
 import type { EventDoc, EventType } from "../../lib/event";
 import {
@@ -84,6 +85,9 @@ const endTime = ref(
 );
 const timeIncrement = ref<number>(props.event?.timeIncrement ?? 15);
 const slug = ref(props.event?.slug ?? "");
+// Absent on an event written before live updates existed, and that reads as on
+// — `realtimeAllowed` is the one place that rule is written down.
+const realtime = ref(props.event ? realtimeAllowed(props.event) : true);
 
 const saving = ref(false);
 const error = ref("");
@@ -224,6 +228,7 @@ function buildPayload(): EventPayload {
     duration: duration.value,
     timeIncrement: Number(timeIncrement.value),
     startOnMonday: type.value === "dow" ? startOnMonday.value : false,
+    realtime: realtime.value,
     // An empty field is sent as no slug at all, and the server mints a
     // capability slug. It is never filled in from the name.
     ...(custom ? { slug: custom } : {}),
@@ -411,6 +416,21 @@ async function submit(): Promise<void> {
         title="A path someone could guess can be found without being shared"
       >
         Custom paths are easy to share, and easy to guess.
+      </p>
+    </div>
+
+    <!-- Whether a page left open on this event keeps up on its own. Nothing
+         depends on it: with it off the event behaves exactly as it always did,
+         and a respondent sees other people's answers the next time the page
+         loads. It sits last because it is the only setting here that changes
+         nothing about what the event *is*. -->
+    <div class="field">
+      <label class="checkbox">
+        <input v-model="realtime" type="checkbox" />
+        Live updates
+      </label>
+      <p class="hint" title="Turning this off changes nothing else — answers still save the moment they are made">
+        Open pages show new answers as they arrive, without being reloaded.
       </p>
     </div>
 

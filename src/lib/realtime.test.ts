@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BASE_RETRY_MS,
   connectRealtime,
+  MAX_FAILED_ATTEMPTS,
   MAX_RETRY_MS,
   parseRealtimeMessage,
   retryDelay,
@@ -271,6 +272,44 @@ describe("connectRealtime", () => {
     expect(onEvent).not.toHaveBeenCalled();
 
     handle.close(); // idempotent
+  });
+
+  it("gives up once a run of attempts never connects", () => {
+    // An event can have live updates switched off while a page is watching it:
+    // the server hangs up and refuses every reconnection after that. Backoff
+    // alone would leave the page knocking every 30s for as long as it stayed
+    // open, so a run of failures with no success between them stops it.
+    vi.useFakeTimers();
+    connect();
+
+    for (let i = 0; i < MAX_FAILED_ATTEMPTS + 4; i += 1) {
+      if (sockets.length) latest().dropped();
+      vi.advanceTimersByTime(MAX_RETRY_MS);
+    }
+
+    expect(sockets).toHaveLength(MAX_FAILED_ATTEMPTS);
+    // And it stays stopped.
+    vi.advanceTimersByTime(60 * MAX_RETRY_MS);
+    expect(sockets).toHaveLength(MAX_FAILED_ATTEMPTS);
+  });
+
+  it("gets its full budget back whenever a connection succeeds", () => {
+    vi.useFakeTimers();
+    connect();
+
+    // One short of giving up …
+    for (let i = 0; i < MAX_FAILED_ATTEMPTS - 2; i += 1) {
+      latest().dropped();
+      vi.advanceTimersByTime(MAX_RETRY_MS);
+    }
+    // … and then the server comes back.
+    latest().opened();
+
+    for (let i = 0; i < MAX_FAILED_ATTEMPTS - 2; i += 1) {
+      latest().dropped();
+      vi.advanceTimersByTime(MAX_RETRY_MS);
+      expect(sockets.length).toBeGreaterThan(MAX_FAILED_ATTEMPTS - 1);
+    }
   });
 
   it("treats a constructor that throws as a failed attempt", () => {

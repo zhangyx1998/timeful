@@ -11,9 +11,10 @@
  * **The socket is read-only.** It carries server→client notifications and
  * nothing else. Every write in the app still goes through the REST API, and the
  * server ignores anything a client sends down this pipe (see server/realtime.ts).
- * That is what keeps this a pure enhancement: with realtime disabled, the
- * connection refused, or the network gone, the page is exactly the app it was
- * before — the same REST calls, the same features, one fewer courtesy.
+ * That is what keeps this a pure enhancement: with the event's live updates
+ * switched off, the server-wide switch off, the connection refused, or the
+ * network gone, the page is exactly the app it was before — the same REST
+ * calls, the same features, one fewer courtesy.
  *
  * The message types are shared with the server through `server/types.ts`, which
  * re-exports them type-only, so the two halves cannot drift.
@@ -62,6 +63,20 @@ export const BASE_RETRY_MS = 1000;
 
 /** Ceiling on the reconnect wait. A tab left open all day sits here. */
 export const MAX_RETRY_MS = 30_000;
+
+/**
+ * Consecutive attempts that never connected before the page stops trying.
+ *
+ * An event can have live updates switched off while a page is watching it: the
+ * server hangs up and then refuses every reconnection. Backoff alone would
+ * leave that page knocking every 30 seconds for as long as it stayed open, so
+ * the connector gives up instead. Any successful open resets the count, and at
+ * the current schedule eight failures span about two minutes — long enough to
+ * ride out a restart, short enough not to be a background hum. The cost of
+ * being wrong is a page that has to be reloaded to get live updates back,
+ * which is the behaviour it would have had without them at all.
+ */
+export const MAX_FAILED_ATTEMPTS = 8;
 
 /**
  * How long to wait before reconnect attempt number `attempt` (0-based).
@@ -148,6 +163,8 @@ export function connectRealtime(
   let timer: ReturnType<typeof setTimeout> | null = null;
   /** Consecutive failed attempts; zeroed the moment a connection opens. */
   let attempt = 0;
+  /** The same count, against `MAX_FAILED_ATTEMPTS` rather than the schedule. */
+  let failures = 0;
   /** Set by `close()` and by `gone`. Both are final. */
   let stopped = false;
 
@@ -165,9 +182,11 @@ export function connectRealtime(
     socket = current;
 
     current.addEventListener("open", () => {
-      // Reaching the server resets the schedule: the next outage starts its own
-      // backoff at 1s rather than inheriting the last one's ceiling.
+      // Reaching the server resets both counters: the next outage starts its
+      // own backoff at 1s rather than inheriting the last one's ceiling, and
+      // gets the full budget of attempts again.
       attempt = 0;
+      failures = 0;
     });
 
     current.addEventListener("message", (event: MessageEvent) => {
@@ -200,6 +219,13 @@ export function connectRealtime(
 
   function retry(): void {
     if (stopped || timer !== null) return;
+    failures += 1;
+    if (failures >= MAX_FAILED_ATTEMPTS) {
+      // Nothing here is coming back on its own — most likely this event's live
+      // updates were switched off. Stop rather than knock forever.
+      stopped = true;
+      return;
+    }
     const delay = retryDelay(attempt, random());
     attempt += 1;
     timer = setTimeout(() => {

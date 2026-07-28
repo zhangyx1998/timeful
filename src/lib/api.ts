@@ -161,6 +161,8 @@ export interface EventPayload {
   duration: number;
   timeIncrement: number;
   startOnMonday: boolean;
+  /** Live updates for this event. Omitted on create means on. */
+  realtime?: boolean;
   slug?: string;
 }
 

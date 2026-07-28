@@ -17,10 +17,15 @@
  * heartbeat, and close. The REST API remains the sole write path; this module
  * adds no write capability and no new authentication surface.
  *
- * **It is optional.** With realtime off no upgrade listener is registered at
- * all, and Node's default handling closes any upgrade attempt. Everything the
- * app does still works: the page falls back to the behaviour it had before this
- * file existed — REST for every read and every write, with zero feature loss.
+ * **It is optional, at two levels.** Each event carries a `realtime` flag the
+ * owner sets in the edit dialog — absent means on, so no existing event file
+ * has to be rewritten — and an event with it off is refused at the upgrade and
+ * never broadcast to. Above that sits a server-wide kill switch
+ * (`TIMEFUL_REALTIME`, config key `realtime`): with it off no upgrade listener
+ * is registered at all and Node's default handling closes any upgrade attempt,
+ * whatever the individual events say. Either way everything the app does still
+ * works — the page falls back to the behaviour it had before this file
+ * existed, REST for every read and every write, with zero feature loss.
  *
  * **The capability URL is still the whole of the auth boundary.** Subscribing
  * requires resolving the event's uuid or slug, exactly as `GET` does, and an
@@ -32,6 +37,10 @@
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
+// The one runtime import the server takes from `src/lib`, and a deliberate
+// exception to the type-only rule in `server/types.ts`: "absent means on" is a
+// default that must have exactly one definition, and this is it.
+import { realtimeAllowed } from "../src/lib/event.ts";
 import { missTarpit } from "./tarpit.ts";
 import type { EventDoc, RealtimeMessage, StoredEvent } from "./types.ts";
 
@@ -101,7 +110,25 @@ function send(eventId: string, message: RealtimeMessage): void {
  * one code path for "the event changed" rather than one per kind of change.
  */
 export function broadcastEvent(event: StoredEvent): void {
+  // An event with live updates switched off has no room to talk to — the
+  // check is here rather than at each of the four call sites so there is no
+  // way to add a fifth that forgets it.
+  if (!realtimeAllowed(event)) return;
   send(event.id, { type: "event", event: event as EventDoc });
+}
+
+/**
+ * Turns an event's room off without saying the event is gone.
+ *
+ * This is what a `realtime: false` rename means: the event is still there and
+ * still answerable over REST, so `gone` would be a lie. The subscribers are
+ * simply hung up on; they will try to reconnect, be refused, and give up.
+ */
+export function closeRoom(eventId: string): void {
+  const room = rooms.get(eventId);
+  if (!room) return;
+  rooms.delete(eventId);
+  for (const socket of room) socket.close(1000, "Live updates disabled");
 }
 
 /**
@@ -210,6 +237,19 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
     }
     // The client may have given up while the lookup or the delay ran.
     if (socket.destroyed) return;
+
+    // Live updates are off for this event. Refused with a plain 403 and *no*
+    // tarpit delay: whoever asked has already proved they hold the capability
+    // URL by naming an event that resolved, so this is not a scan and queueing
+    // it would only punish a page that is behaving. The browser cannot read
+    // the status — a failed upgrade is just a close to `WebSocket` — so the
+    // client gives up after a few refusals rather than on the code.
+    if (!realtimeAllowed(event)) {
+      socket.end(
+        "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+      );
+      return;
+    }
 
     wss.handleUpgrade(req, socket, head, (ws) => {
       subscribe(ws, event.id);
