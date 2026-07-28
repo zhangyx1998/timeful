@@ -40,10 +40,13 @@ defineSlots<{
 </template>
 
 <style scoped>
+/* The bar's fill runs under the status bar or the notch; its contents start
+   below them. */
 .app-header {
   position: sticky;
   top: 0;
   z-index: 30;
+  padding-top: var(--safe-top);
   background: var(--color-surface);
   border-bottom: 1px solid var(--color-border);
 }
@@ -56,7 +59,9 @@ defineSlots<{
   min-height: var(--header-height);
   max-width: var(--page-max);
   margin: 0 auto;
-  padding: 0.35rem var(--page-pad);
+  /* Landscape puts the camera cutout beside the bar, not above it. */
+  padding: 0.35rem calc(var(--page-pad) + var(--safe-right)) 0.35rem
+    calc(var(--page-pad) + var(--safe-left));
 }
 
 /* Shrinks and clips before the actions do: a long event name gives up room,

@@ -98,6 +98,19 @@
      about the value has to survive the caret being in it. */
   --focus-shadow-danger: 0 0 0 3px color-mix(in srgb, var(--color-danger) 28%, transparent);
 
+  /* --- display insets ----------------------------------------------------- */
+  /* What the display itself takes: the notch or status bar, the home indicator,
+     and — in landscape — whichever side the camera is on. Zero on a screen that
+     has none, and zero on any screen unless the document asked for the whole
+     display (`viewport-fit=cover` in index.html), so anything fixed to an edge
+     can refer to them unconditionally and cost nothing where they do not apply.
+     Named as tokens rather than written as env() at each site so the phone
+     layout can be checked at made-up inset values. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+
   /* --- metrics ------------------------------------------------------------ */
   /* `--tap-min` is the ≥44px touch target floor from ARCHITECTURE.md § UX bar;
      primitives apply it under coarse pointers. */

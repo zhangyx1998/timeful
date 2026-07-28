@@ -227,16 +227,19 @@ const emit = defineEmits<{ change: []; pick: []; retry: [] }>();
    needs no fixed positioning of its own to stay on screen while you paint. It
    bleeds to both edges by cancelling the shell's own padding.
 
-   The safe-area inset is 0 unless the browser hands the page the full display
-   (installed PWAs, edge-to-edge Android); where it is not, this costs nothing,
-   and where it is, the row clears the home indicator instead of hiding under
-   it. */
+   The `--safe-*` tokens are 0 unless the display actually takes something —
+   a home indicator under this row, a camera cutout beside it in landscape —
+   so where they do not apply this costs nothing, and where they do the row
+   clears them instead of hiding under them. */
 @media (max-width: 820px) {
   .identity {
     flex: none;
-    margin: 0 calc(var(--page-pad) * -1);
-    padding: 0.5rem var(--page-pad);
-    padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
+    /* Out past the shell's own padding, insets and all, so the fill reaches the
+       physical edges; the contents are padded back inside them. */
+    margin-right: calc((var(--page-pad) + var(--safe-right)) * -1);
+    margin-left: calc((var(--page-pad) + var(--safe-left)) * -1);
+    padding: 0.5rem calc(var(--page-pad) + var(--safe-right))
+      calc(0.5rem + var(--safe-bottom)) calc(var(--page-pad) + var(--safe-left));
     border-width: 1px 0 0;
     border-radius: 0;
     box-shadow: 0 -2px 10px var(--shadow-color-md);

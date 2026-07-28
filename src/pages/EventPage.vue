@@ -147,7 +147,8 @@ onMounted(() => {
 .main {
   max-width: var(--page-max);
   margin: 0 auto;
-  padding: 1.25rem var(--page-pad) 3rem;
+  padding: 1.25rem calc(var(--page-pad) + var(--safe-right)) 3rem
+    calc(var(--page-pad) + var(--safe-left));
   font-family: var(--font-sans);
   color: var(--color-text);
 }
@@ -212,7 +213,8 @@ onMounted(() => {
     /* The centring margins are what would otherwise opt this item out of
        stretching to the column's width, leaving it max-content wide. */
     width: 100%;
-    padding: 0.5rem var(--page-pad) 0;
+    padding: 0.5rem calc(var(--page-pad) + var(--safe-right)) 0
+      calc(var(--page-pad) + var(--safe-left));
   }
 }
 </style>

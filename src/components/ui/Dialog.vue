@@ -118,7 +118,10 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 1rem;
+  /* The dim covers the whole display; the panel it holds stays clear of
+     whatever the display takes out of it. */
+  padding: calc(1rem + var(--safe-top)) calc(1rem + var(--safe-right))
+    calc(1rem + var(--safe-bottom)) calc(1rem + var(--safe-left));
   background: var(--color-backdrop);
 }
 
@@ -127,7 +130,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   width: 100%;
   max-width: 26rem;
-  max-height: calc(100dvh - 2rem);
+  max-height: calc(100dvh - 2rem - var(--safe-top) - var(--safe-bottom));
   background: var(--color-raised);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
@@ -152,8 +155,12 @@ onBeforeUnmount(() => {
    rather than as a card that happens to be low. */
 .panel--sheet {
   max-width: none;
-  max-height: 88dvh;
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+  /* It rises from the bottom edge, so it is the top of the display it has to
+     stop short of — and in landscape, the cutout beside it. */
+  max-height: calc(88dvh - var(--safe-top));
+  padding-right: var(--safe-right);
+  padding-bottom: var(--safe-bottom);
+  padding-left: var(--safe-left);
   border-width: 1px 0 0;
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
 }
