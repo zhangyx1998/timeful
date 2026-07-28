@@ -110,7 +110,7 @@ async function submit(): Promise<void> {
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: clamp(2rem, 10vh, 5rem) var(--page-pad) 3rem;
+  padding: clamp(2rem, 10dvh, 5rem) var(--page-pad) 3rem;
 }
 
 .panel {

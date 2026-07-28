@@ -87,7 +87,7 @@ export const NOT_FOUND_HTML = `<!DOCTYPE html>
       :root { color-scheme: light dark; }
       :root[data-theme="light"] { color-scheme: light; }
       :root[data-theme="dark"] { color-scheme: dark; }
-      body { margin: 0; min-height: 100vh; display: flex; align-items: center;
+      body { margin: 0; min-height: 100dvh; display: flex; align-items: center;
         justify-content: center; font: 16px/1.5 system-ui, -apple-system, sans-serif;
         color: light-dark(#18181b, #e8e8ea); background: light-dark(#fafafa, #1b1b1f); }
       main { text-align: center; padding: 2rem; }

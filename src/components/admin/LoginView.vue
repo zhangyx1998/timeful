@@ -91,7 +91,7 @@ async function submit(): Promise<void> {
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: clamp(2rem, 12vh, 6rem) var(--page-pad) 3rem;
+  padding: clamp(2rem, 12dvh, 6rem) var(--page-pad) 3rem;
 }
 
 .panel {
