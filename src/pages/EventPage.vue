@@ -7,7 +7,7 @@
  * it depends on the browser's timezone and localStorage, which the server
  * cannot know without producing a hydration mismatch.
  */
-import { computed, inject, onMounted, ref } from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, ref } from "vue";
 import CopyLinkButton from "../components/ui/CopyLinkButton.vue";
 import EventScheduler from "../components/event/EventScheduler.vue";
 import EventFormDialog from "../components/shared/EventFormDialog.vue";
@@ -23,6 +23,7 @@ import {
   getScheduleTimezoneOffset,
 } from "../lib/dates";
 import type { EventDoc } from "../lib/event";
+import { connectRealtime, type RealtimeHandle } from "../lib/realtime";
 
 defineProps<{ slug?: string }>();
 
@@ -40,6 +41,12 @@ const isAdmin = ref(false);
 
 const editOpen = ref(false);
 
+/** Set when the event is deleted out from under an open page. */
+const gone = ref(false);
+
+/** The realtime subscription, while the page is mounted. */
+let realtime: RealtimeHandle | null = null;
+
 /** SSR has no timezone, so the subtitle renders in UTC and is refined on mount. */
 const subtitleOffset = ref(0);
 
@@ -47,32 +54,59 @@ const subtitle = computed(() =>
   event.value ? formatEventDateRange(event.value, subtitleOffset.value) : "",
 );
 
+/**
+ * Adopts a new copy of the event, whoever brought it: the owner's edit dialog,
+ * a refresh, or a snapshot pushed over the realtime channel. Everything the
+ * page draws comes off `event`, so replacing it *is* the update — the title,
+ * the date range, the heatmap and the respondents list all follow, and there is
+ * exactly one path for "the event changed" rather than one per source.
+ *
+ * A renamed slug moves the event's URL, and the old one is dead the moment the
+ * rename lands — so the address bar is corrected in place rather than pushed,
+ * leaving no back-button entry pointing at a 404.
+ *
+ * What this deliberately does *not* touch is the visitor's own half-finished
+ * answer. The grid's marks live in `EventScheduler`, which only re-seeds them
+ * from a new document when it asked for one (`awaitingIdentityRefresh`), and
+ * the current name is layered back over the group's answers by the response-
+ * index override. So a snapshot arriving mid-drag updates everyone else and
+ * leaves the drag alone.
+ */
+function applyEvent(next: EventDoc): void {
+  const before = event.value?.slug;
+  event.value = next;
+  document.title = `${next.name} · Timeful`;
+  if (next.slug && next.slug !== before) {
+    window.history.replaceState(window.history.state, "", `/${next.slug}`);
+  }
+}
+
 async function refresh() {
   const target = event.value?.slug ?? event.value?.id;
   if (!target) return;
   try {
-    event.value = (await api.get(`/events/${encodeURIComponent(target)}`)) as EventDoc;
+    applyEvent((await api.get(`/events/${encodeURIComponent(target)}`)) as EventDoc);
   } catch {
     // Keep showing what we already have; the grid stays usable either way.
   }
 }
 
-/**
- * The edit landed. Everything the page draws comes off `event`, so replacing it
- * is the refresh: the title, the date range and the grid all follow.
- *
- * A renamed slug moves the event's URL, and the old one is dead the moment the
- * PATCH returns — so the address bar is corrected in place rather than pushed,
- * leaving no back-button entry pointing at a 404.
- */
 function onEdited(saved: EventDoc): void {
-  const before = event.value?.slug;
-  event.value = saved;
+  applyEvent(saved);
   editOpen.value = false;
-  document.title = `${saved.name} · Timeful`;
-  if (saved.slug && saved.slug !== before) {
-    window.history.replaceState(window.history.state, "", `/${saved.slug}`);
-  }
+}
+
+/**
+ * The event was deleted while this page had it open. There is nothing left to
+ * answer, so the scheduler goes rather than sitting there autosaving into a
+ * 404 — the page says what happened and stops, which is the same thing the
+ * standalone 404 page says to someone arriving at a dead link.
+ */
+function onGone(): void {
+  gone.value = true;
+  event.value = null;
+  editOpen.value = false;
+  document.title = "Event not found · Timeful";
 }
 
 onMounted(() => {
@@ -84,6 +118,17 @@ onMounted(() => {
   void fetchIsAdmin().then((admin) => {
     isAdmin.value = admin;
   });
+
+  // A silent enhancement: no indicator, nothing to configure, and a page whose
+  // socket never opens behaves exactly like one from before this existed.
+  // Subscribed by uuid rather than slug so a rename cannot strand it.
+  const id = event.value?.id;
+  if (id) realtime = connectRealtime(id, { onEvent: applyEvent, onGone });
+});
+
+onBeforeUnmount(() => {
+  realtime?.close();
+  realtime = null;
 });
 </script>
 
@@ -124,6 +169,14 @@ onMounted(() => {
         <EventScheduler v-if="mounted" :event="event" @refresh="refresh" />
         <p v-else class="loading">Loading availability…</p>
       </template>
+
+      <div v-else-if="gone" class="gone">
+        <h2 class="gone__title">Event deleted</h2>
+        <p class="gone__text">
+          This event was removed while you had it open. Nothing further can be
+          filled in here.
+        </p>
+      </div>
 
       <p v-else class="loading">No event data.</p>
     </main>
@@ -187,6 +240,29 @@ onMounted(() => {
 
 .loading {
   font-size: 0.875rem;
+  color: var(--color-text-muted);
+}
+
+/* The event went away under an open page. Centred and quiet: it is the whole
+   of what is left to say, and it says the same thing the standalone 404 page
+   says to someone who arrives at a dead link. */
+.gone {
+  padding: 3rem 0;
+  text-align: center;
+}
+
+.gone__title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-text);
+}
+
+.gone__text {
+  max-width: 26rem;
+  margin: 0.5rem auto 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
   color: var(--color-text-muted);
 }
 
