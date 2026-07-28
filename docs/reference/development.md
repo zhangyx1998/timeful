@@ -63,6 +63,7 @@ server/
   storage.ts          atomic JSON store (temp file + rename, per-file queue)
   auth.ts             scrypt hashing, session tokens, requireAdmin
   slugs.ts leases.ts tarpit.ts proxy.ts config.ts http.ts
+  realtime.ts         per-event WebSocket rooms and the upgrade listener
   routes/             auth, sessions, leases, events
   cli/                the `npx timeful` CLI, bundled into dist/cli.js
     index.ts          entry: webroot detection, wizard, service subcommands
@@ -160,9 +161,14 @@ resolves relative specifiers literally. Strict mode is on and
 ### Shared types live on the client side
 
 `server/types.ts` re-exports the event document and API shapes from
-`src/lib/event.ts` and `src/lib/api.ts` as type-only imports, erased before Node
-ever sees them. One definition, both halves — the wire format cannot drift. Edit
-those files, not a server-side copy.
+`src/lib/event.ts`, `src/lib/api.ts` and `src/lib/realtime.ts` as type-only
+imports, erased before Node ever sees them. One definition, both halves — the
+wire format cannot drift. Edit those files, not a server-side copy.
+
+One runtime import crosses the same boundary on purpose: `server/realtime.ts`
+imports `realtimeAllowed` from `src/lib/event.ts`, because "an event with no
+`realtime` field has live updates on" is a default the server and the admin form
+must agree on exactly. Adding a second such import wants a reason as good.
 
 ### Styling: scoped CSS with semantic class names
 

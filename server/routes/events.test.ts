@@ -58,7 +58,12 @@ beforeEach(async () => {
 afterEach(async () => {
   if (originalVarDir === undefined) delete process.env.VAR_DIR;
   else process.env.VAR_DIR = originalVarDir;
-  await fs.rm(varDir, { recursive: true, force: true });
+  // Retries because a request can outlive its own response: `touchSession`
+  // refreshes `lastSeenAt` fire-and-forget (ARCHITECTURE.md § Passwords and
+  // sessions), so an authenticated call may still be landing a write in here
+  // when the directory goes. Without the retries that surfaces, rarely and
+  // only under load, as ENOTEMPTY from a test that has already passed.
+  await fs.rm(varDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
 });
 
 // ---------------------------------------------------------------------------

@@ -28,17 +28,25 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Live updates ride a WebSocket, and nginx only forwards an upgrade
+        # when it is told to. Without these three lines event pages still
+        # work — they just stop updating on their own.
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
     }
 }
 ```
 
-Both `proxy_set_header` lines matter:
+The forwarded headers matter:
 
 - **`X-Forwarded-For`** is how the per-IP tarpit sees real client addresses
   instead of charging every miss in the world to `127.0.0.1`.
 - **`X-Forwarded-Proto`** is how Timeful knows the connection the browser
   actually made was TLS, and therefore that the session cookie should carry
-  `Secure`.
+  `Secure`. It is also what makes the page open a `wss://` socket rather than a
+  `ws://` one a browser on an HTTPS page would refuse.
 
 `$proxy_add_x_forwarded_for` appends the real peer address to whatever the
 client sent. Timeful reads the chain from the right and stops at the first entry
@@ -89,11 +97,17 @@ anything the app does.
 
 Nothing here is nginx-specific. Caddy, Traefik, HAProxy or an Apache
 `ProxyPass` all work the same way: forward to the loopback port, set the two
-forwarded headers, and make sure `trustedProxy` names the proxy's address. A
-Caddyfile is two lines, and Caddy sets both headers itself:
+forwarded headers, pass WebSocket upgrades through, and make sure
+`trustedProxy` names the proxy's address. A Caddyfile is two lines — Caddy sets
+both headers and handles upgrades itself:
 
 ```text
 timeful.example.com {
     reverse_proxy 127.0.0.1:3000
 }
 ```
+
+A proxy that does not forward upgrades is not a broken deployment, only a
+quieter one: the pages fall back to plain REST and everything still works. If
+you would rather not run the channel at all, turn it off explicitly with
+`realtime: false` — see [Configuration](/guide/configuration#live-updates).

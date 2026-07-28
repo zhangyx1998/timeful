@@ -42,6 +42,7 @@ server/
   slugs.ts      slug alphabet, generation, validation, reserved names
   leases.ts     in-memory slug reservations
   tarpit.ts     per-IP serial miss queue
+  realtime.ts   per-event WebSocket rooms, broadcast, the upgrade listener
   proxy.ts      --trusted-proxy parsing
   config.ts     env-only runtime knobs
   http.ts       small helpers
@@ -52,9 +53,14 @@ server/
 ```
 
 `server/types.ts` re-exports the event document and the API shapes from
-`src/lib/event.ts` and `src/lib/api.ts` as **type-only** imports, erased before
-Node sees them. There is one definition of the wire format and both halves of
-the app share it.
+`src/lib/event.ts`, `src/lib/api.ts` and `src/lib/realtime.ts` as **type-only**
+imports, erased before Node sees them. There is one definition of the wire
+format and both halves of the app share it.
+
+There is exactly one exception, and it is deliberate: `server/realtime.ts`
+imports `realtimeAllowed` from `src/lib/event.ts` at **runtime**. "An event with
+no `realtime` field has live updates on" is a default that must have a single
+definition, and both the server and the admin form need to ask it.
 
 ## Storage
 
@@ -100,6 +106,7 @@ interface EventDoc {
   duration: number;                 // hours; the daily window from dates[n]
   timeIncrement: number;            // minutes per slot row
   startOnMonday: boolean;
+  realtime?: boolean;               // live updates; ABSENT MEANS TRUE
   createdAt: string;                // ISO
   updatedAt: string;                // ISO
   responses: Record<string, EventResponse>;   // keyed by guest name
@@ -115,6 +122,12 @@ interface EventResponse {
 Each entry in `dates` is a day's start instant, one per grid column; `duration`
 in hours defines the daily window. Availability entries are slot-start
 timestamps aligned to `timeIncrement`.
+
+`realtime` is the only optional field, and its absence is meaningful: every
+event written before [live updates](#realtime-updates) existed lacks it, none of
+them are rewritten, and **absent reads as `true`**. Code asks
+`realtimeAllowed(event)` (`src/lib/event.ts`) rather than testing the field, so
+the default has one definition that both halves of the app share.
 
 The `id` must match
 `/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i`. Non-uuid
@@ -212,6 +225,7 @@ Admin-only. See [Slug leases](#slug-leases-1) for what they are for.
 | `GET /api/events/:idOrSlug` | **public** | the full event document — this is what the event page reads |
 | `PUT /api/events/:id/responses/:name` | **public** | `{ availability?, ifNeeded? }` → `{ ok, name, response \| null }` |
 | `DELETE /api/events/:id/responses/:name` | **public** | `{ ok: true }`; `404 "Response not found"` if the event exists but the guest does not |
+| `GET /api/events/:idOrSlug/ws` | **public** | WebSocket upgrade — [live updates](#realtime-updates), read-only. A non-upgrade `GET` is a plain `404` |
 
 The public response routes accept **either** the uuid or the slug; the
 admin-only `PATCH`/`DELETE` accept only the uuid.
@@ -241,6 +255,7 @@ Rejected with `400` and a message:
 | `duration` | finite, `0 < d ≤ 24` (fractional allowed) |
 | `timeIncrement` | integer, `0 < i ≤ 240`, and a divisor of 1440 |
 | `startOnMonday` | coerced with `Boolean()`; defaults to `false` |
+| `realtime` | must be a real boolean — **not** coerced; omitted on create means `true` |
 | guest `:name` | trimmed, non-empty, ≤ 100 chars |
 | `availability` / `ifNeeded` | ISO strings, ≤ 20000 entries each |
 | the whole body | ≤ 2 MB |
@@ -264,6 +279,139 @@ would be guessable, and a guessable capability URL is not a capability URL.
 `src/lib/api.ts` prefixes `/api` when absent, sends `credentials: "include"`,
 and throws `ApiError { message, status, body }` on any non-2xx, taking the
 message from the `{ error }` field. `fetchIsAdmin()` fails **closed**.
+
+## Realtime updates
+
+An event page left open keeps itself current: someone else's answer changes the
+heatmap and the respondents list without a reload. It is a **read-only
+server→client notification channel** over one WebSocket, and it is optional at
+two levels.
+
+### The contract
+
+::: danger The socket is read-only. The REST API is the sole write path.
+No `message` listener is ever registered on an accepted socket. Bytes a client
+sends are read off the wire by the protocol layer and dropped: they reach no
+state, no handler and no storage. The only inbound traffic that means anything
+is protocol-level — pong frames answering the heartbeat, and close.
+
+Nothing here adds a write capability or an authentication surface. Disabling
+realtime, or any WebSocket failure at all, degrades to standard REST behaviour
+with **zero feature loss**.
+:::
+
+`GET /api/events/:idOrSlug/ws` takes the upgrade. It never reaches Express: the
+listener is on the HTTP server, registered by `serve()` in `server/app.ts`.
+A plain `GET` of that path is not an upgrade and falls through to the events
+catch-all as a `404`.
+
+### Messages
+
+Server to client, JSON text frames, defined once in `src/lib/realtime.ts` and
+re-exported type-only by `server/types.ts`:
+
+```ts
+type RealtimeMessage =
+  | { type: "event"; event: EventDoc }   // the whole document, responses inline
+  | { type: "gone" };                    // the event was deleted; terminal
+```
+
+**Full snapshots, never deltas.** The `event` payload is byte-for-byte what
+`GET /api/events/:idOrSlug` would return, so the client has one path for "the
+event changed" rather than one per kind of change — the same path a refresh
+takes. A snapshot goes out after every successful mutation, and only after it is
+persisted:
+
+| Mutation | Broadcast |
+| -------- | --------- |
+| `PUT /api/events/:id/responses/:name` | snapshot — including the zero-record delete-by-empty, when it removed something |
+| `DELETE /api/events/:id/responses/:name` | snapshot |
+| `PATCH /api/events/:id` | snapshot, carrying a renamed slug if it changed |
+| `DELETE /api/events/:id` | `gone`, then the room closes |
+
+A create broadcasts nothing: nobody can be subscribed to an event that did not
+exist a moment ago.
+
+### Rooms, and the two switches
+
+Rooms live in an in-memory `Map<eventId, Set<WebSocket>>`, keyed by the **uuid**
+and never the slug — a rename must not orphan its subscribers. A room is deleted
+when its last member leaves. The server pings every socket every 30s and
+terminates any that did not answer the previous round.
+
+**Per event.** `EventDoc.realtime` is the primary control, set by the owner in
+the create/edit dialog and defaulting to on ([absent means
+true](#events-uuid-json)). An event with it off is refused at the upgrade and
+never broadcast to — the check sits inside `broadcastEvent`, so a new call site
+cannot forget it. Switching it off via `PATCH` closes that event's room with a
+normal close rather than `gone`: the event still exists and is still answerable
+over REST, so `gone` would be a lie.
+
+**Server-wide.** `realtime` in `timeful.config.json`, overridden by
+`TIMEFUL_REALTIME`, is a kill switch above that. Off means **no upgrade listener
+is registered at all**, whatever the individual events say.
+
+### Security
+
+The capability URL remains the entire auth boundary, and subscribing is
+deliberately no cheaper to scan than fetching:
+
+- an upgrade must resolve a uuid or slug through the same lookup the public
+  `GET` uses;
+- an upgrade that **fails to resolve** joins the same per-IP
+  [miss tarpit](#the-tarpit) an HTTP miss does — the shared `missTarpit`, not a
+  second copy — and the socket is destroyed after the delay, or immediately once
+  that IP is over the queue cap. Because the tarpit runs before any HTTP status
+  is written, a scanner cannot tell "no such event" from "realtime is off" any
+  faster than it can guess the slug;
+- an upgrade that resolves an event whose live updates are **off** gets a plain
+  `403` and **no** delay. Whoever asked has already proved they hold the
+  capability URL by naming an event that resolved, so it is not a scan, and
+  queueing it would only punish a page that is behaving;
+- accounting uses `req.socket.remoteAddress`. An upgrade never reaches Express,
+  so there is no `req.ip` and no trust-proxy evaluation behind it. Behind a
+  reverse proxy that groups every client under the proxy's address — which costs
+  a shared queue on **misses only** and never delays a real subscriber — and it
+  is unspoofable in exchange;
+- inbound frames are capped at 1 KiB. Nothing a client sends is read, so this is
+  not a protocol limit, only how much of a hostile frame is buffered before the
+  connection is closed. permessage-deflate stays off.
+
+Slugs are never logged here either.
+
+### The client
+
+`connectRealtime(eventId, { onEvent, onGone })` in `src/lib/realtime.ts` returns
+a handle with `close()`. It is silent by design — there is no connection
+indicator anywhere in the UI, because a page whose socket never opened has to
+look exactly like one that never had a socket.
+
+- **Never during SSR.** No `window` means no URL to derive and no connection; a
+  socket per server-rendered page would be a denial of service against
+  ourselves.
+- **Backoff.** Reconnects at 1s, 2s, 4s … capped at 30s, each spread over ±25%
+  jitter. A restart drops every open page at the same instant, and without the
+  jitter they would all come back at the same instant too.
+- **It gives up.** After `MAX_FAILED_ATTEMPTS` (8) consecutive attempts that
+  never connected, it stops for good; any successful open resets the count. The
+  browser cannot see the `403` from a switched-off event — a refused upgrade is
+  just a close — so without this a page would knock every 30 seconds for as long
+  as it stayed open.
+- **Terminal states.** An explicit `close()` and a `gone` message both stop it
+  permanently.
+
+`EventPage.vue` connects on mount by uuid (stable across renames) and feeds
+snapshots through `applyEvent`, the same function the edit dialog and `refresh`
+use: it swaps the document, updates the title, and corrects the address bar with
+`replaceState` on a renamed slug. `gone` clears the event and shows a short
+"Event deleted" panel instead of leaving the scheduler autosaving into a 404.
+
+An incoming snapshot deliberately **does not** touch a visitor's half-finished
+answer. The marks live in `EventScheduler`, which re-seeds from a new document
+only when it asked for one (`awaitingIdentityRefresh`), and the current name is
+layered back over the group's answers by the response-index override. The edit
+dialog is safe for a related reason: its form seeds from the prop once and never
+watches it.
 
 ## Security
 
@@ -529,6 +677,21 @@ repository, homepage, bugs, keywords — plus `type: "module"`,
 install. Node builtins are the only externals. A debug build
 (`npm run build:debug`) emits a `private: true` stub instead, so a debug `dist/`
 cannot be published.
+
+### `ws` and its optional native addons
+
+There are two runtime dependencies, `express` and `ws`, and both are bundled.
+`ws` reaches for two optional native addons — `bufferutil` and `utf-8-validate`
+— inside `try`/`catch`, falling back to its own JavaScript when they are absent.
+They are always absent: they are native builds, and a bundle installs nothing.
+
+`rollup.config.ts` therefore pins `commonjs({ ignoreTryCatch: true })`. That is
+the plugin's own default, pinned because the bundle now depends on it:
+converting those `require` calls would resolve them as externals, and a bare
+`import "bufferutil"` at the top of `cli.js` is a crash on startup rather than a
+fallback. Left unconverted, `require` is simply not defined in an ESM bundle,
+the `try`/`catch` catches that, and `ws` uses its own code. Express's dependency
+chain relies on the same behaviour for `ejs` and `supports-color`.
 
 Because the package declares no dependencies, the SSR build sets
 `ssr.noExternal`: an installed copy has no `node_modules` for

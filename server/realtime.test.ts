@@ -71,7 +71,10 @@ afterEach(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   if (originalVarDir === undefined) delete process.env.VAR_DIR;
   else process.env.VAR_DIR = originalVarDir;
-  await fs.rm(varDir, { recursive: true, force: true });
+  // Retried for the same reason as in routes/events.test.ts: an authenticated
+  // request refreshes `lastSeenAt` fire-and-forget, so a write can still be
+  // landing here after the response that triggered it has been read.
+  await fs.rm(varDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
 });
 
 // ---------------------------------------------------------------------------

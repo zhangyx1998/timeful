@@ -13,7 +13,8 @@ Written by the [first-run wizard](/guide/), and yours to edit afterwards:
   "port": 3000,
   "host": "127.0.0.1",
   "varDir": "./var",
-  "trustedProxy": ["127.0.0.1", "::1"]
+  "trustedProxy": ["127.0.0.1", "::1"],
+  "realtime": true
 }
 ```
 
@@ -23,16 +24,17 @@ Written by the [first-run wizard](/guide/), and yours to edit afterwards:
 | `host`         | `127.0.0.1`            | Interface to bind. Keep this on loopback when something else terminates TLS in front of you.                        |
 | `varDir`       | `"./var"`              | Data directory. Relative paths resolve against the webroot; absolute paths are taken as-is.                         |
 | `trustedProxy` | `["127.0.0.1", "::1"]` | Peers allowed to speak `X-Forwarded-For` on a client's behalf. `"none"` ignores forwarded headers; `"loopback"` is shorthand for the default pair. |
+| `realtime`     | `true`                 | Server-wide switch for [live updates](#live-updates). `false` turns them off for every event, whatever the events themselves say. |
 
 The file's presence is what makes a directory a webroot. Delete it and the next
 `npx timeful` will offer to set the directory up again.
 
 ## Precedence
 
-Each of the four settings can be overridden per run. Lowest priority first:
+Each setting can be overridden per run. Lowest priority first:
 
 1. `timeful.config.json`
-2. environment variables — `PORT`, `HOST`, `VAR_DIR`
+2. environment variables — `PORT`, `HOST`, `VAR_DIR`, `TIMEFUL_REALTIME`
 3. command-line flags — `--port`, `--host`, `--var-dir`, `--trusted-proxy`
 
 ```sh
@@ -55,6 +57,7 @@ the defaults are sensible for a group of humans sharing a link.
 | `PORT`           | `3000`    | Port to listen on. Overrides `port`.                                |
 | `HOST`           | `127.0.0.1` | Interface to bind. Overrides `host`.                              |
 | `VAR_DIR`        | `<cwd>/var` | Data directory. Overrides `varDir`.                               |
+| `TIMEFUL_REALTIME` | `1`     | Live updates, server-wide. Overrides `realtime`. Accepts `1`/`0`, `true`/`false`, `on`/`off`, `yes`/`no`. |
 | `MISS_DELAY_MS`  | `100`     | How long each failed lookup waits before its 404.                   |
 | `MISS_QUEUE_CAP` | `10`      | How many failed lookups one IP may have queued before it gets 429s. |
 | `LEASE_TTL_MS`   | `900000`  | Lifetime of a slug reservation while an event is being created (15 minutes). |
@@ -62,6 +65,37 @@ the defaults are sensible for a group of humans sharing a link.
 Raising `MISS_DELAY_MS` makes URL guessing slower and costs a guest who
 mistypes a link nothing they will notice. Lowering `MISS_QUEUE_CAP` makes
 Timeful start refusing a scanner sooner.
+
+## Live updates
+
+An event page left open keeps itself current: when somebody else answers, the
+heatmap and the respondents list change under you, without a reload. It works
+over a WebSocket at `/api/events/:idOrSlug/ws`, and the whole of it is optional.
+
+**The event owns the setting.** Every event has a **Live updates** checkbox in
+its create and edit dialog, on by default. Turn it off and pages watching that
+event are disconnected and refused if they try again; the event carries on
+working exactly as it did, and a respondent sees other people's answers the next
+time the page loads. Events created before this existed have no such field
+stored, and that reads as on.
+
+**The config key is a kill switch above it.** `realtime: false` — or
+`TIMEFUL_REALTIME=0` — means no event gets a channel whatever its own setting
+says, and the server registers no upgrade listener at all.
+
+::: tip Nothing depends on it
+The socket only ever carries notifications *from* the server. Every write still
+goes through the ordinary REST API, so turning live updates off — at either
+level — costs you the live updates and nothing else. See
+[the realtime channel](/reference/architecture#realtime-updates) for the
+message shapes and the security reasoning.
+:::
+
+If you run Timeful behind a reverse proxy, it needs to be told to pass
+WebSocket upgrades through, or pages will simply never connect and quietly fall
+back. For nginx that is `proxy_set_header Upgrade $http_upgrade;` and
+`proxy_set_header Connection "upgrade";` on the location block — see
+[Deployment](/guide/deployment).
 
 ## `--trusted-proxy`
 
