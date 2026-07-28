@@ -107,6 +107,8 @@ const selectId = computed(() => props.id || generatedId);
 @media (pointer: coarse) {
   .select-field__select {
     min-height: var(--tap-min);
+    /* iOS Safari auto-zooms any focused control under 16px on focus. */
+    font-size: 1rem;
   }
 }
 

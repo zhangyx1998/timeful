@@ -178,6 +178,9 @@ const messageId = computed(() => `${inputId.value}-message`);
 @media (pointer: coarse) {
   .text-field__input {
     min-height: var(--tap-min);
+    /* iOS Safari auto-zooms any focused text control under 16px; staying at
+       1rem keeps the page still without forbidding the user to zoom. */
+    font-size: 1rem;
   }
 }
 
