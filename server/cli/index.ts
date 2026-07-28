@@ -211,6 +211,7 @@ async function start(config: ResolvedConfig, args: CliArgs): Promise<void> {
     host: config.host,
     port: config.port,
     trustProxy: config.trustedProxy,
+    realtime: config.realtime,
     renderer: createStaticRenderer(assets),
   });
   console.log(`Data directory: ${config.varDir}`);

@@ -28,6 +28,8 @@ export interface FileConfig {
   host?: string;
   varDir?: string;
   trustedProxy?: string | string[];
+  /** Serve the realtime WebSocket channel. Default true. */
+  realtime?: boolean;
 }
 
 /** A fully resolved configuration, ready to start a server with. */
@@ -39,11 +41,19 @@ export interface ResolvedConfig {
   /** Absolute, resolved against the webroot. */
   varDir: string;
   trustedProxy: TrustProxySetting;
+  realtime: boolean;
 }
 
 export const DEFAULT_PORT = 3000;
 export const DEFAULT_HOST = "127.0.0.1";
 export const DEFAULT_VAR_DIR = "./var";
+
+/**
+ * Realtime is on unless it is turned off. It degrades to nothing — a page
+ * without a socket is the same page, refreshed by hand — so the safe default
+ * is the useful one.
+ */
+export const DEFAULT_REALTIME = true;
 
 export const configPath = (cwd: string): string => path.join(cwd, CONFIG_FILE);
 
@@ -53,7 +63,23 @@ export function envOverrides(env: NodeJS.ProcessEnv = process.env): Overrides {
   if (env.PORT) overrides.port = readPort(env.PORT, "PORT");
   if (env.HOST) overrides.host = env.HOST;
   if (env.VAR_DIR) overrides.varDir = env.VAR_DIR;
+  if (env.TIMEFUL_REALTIME) overrides.realtime = envFlag(env.TIMEFUL_REALTIME);
   return overrides;
+}
+
+/**
+ * `TIMEFUL_REALTIME` as a boolean. Off is `0`, `false`, `no` or `off`, and on
+ * is `1`, `true`, `yes` or `on`; anything else is an error rather than a guess,
+ * because an operator who wrote something here meant something by it.
+ */
+function envFlag(raw: string): boolean {
+  const value = raw.trim().toLowerCase();
+  if (value === "0" || value === "false" || value === "no" || value === "off")
+    return false;
+  if (value === "1" || value === "true" || value === "yes" || value === "on") return true;
+  throw new CliError(
+    `TIMEFUL_REALTIME: expected a boolean (1/0, true/false, on/off), got ${JSON.stringify(raw)}`,
+  );
 }
 
 function readPort(value: unknown, source: string): number {
@@ -101,6 +127,13 @@ export async function readConfigFile(cwd: string): Promise<FileConfig | null> {
   if (raw.port !== undefined) config.port = readPort(raw.port, `${CONFIG_FILE} port`);
   if (raw.host !== undefined) config.host = readString(raw.host, `${CONFIG_FILE} host`);
   if (raw.varDir !== undefined) config.varDir = readString(raw.varDir, `${CONFIG_FILE} varDir`);
+  if (raw.realtime !== undefined) {
+    if (typeof raw.realtime !== "boolean")
+      throw new CliError(
+        `${CONFIG_FILE} realtime: expected true or false, got ${JSON.stringify(raw.realtime)}`,
+      );
+    config.realtime = raw.realtime;
+  }
   if (raw.trustedProxy !== undefined) {
     const value = raw.trustedProxy;
     if (typeof value !== "string" && !Array.isArray(value))
@@ -123,6 +156,7 @@ export function mergeConfig({ cwd, file, env, flags }: MergeInput): ResolvedConf
   const host = flags?.host ?? env?.host ?? file?.host ?? DEFAULT_HOST;
   const varDirRaw = flags?.varDir ?? env?.varDir ?? file?.varDir ?? DEFAULT_VAR_DIR;
   const trustedProxyRaw = flags?.trustedProxy ?? file?.trustedProxy;
+  const realtime = flags?.realtime ?? env?.realtime ?? file?.realtime ?? DEFAULT_REALTIME;
 
   return {
     port: readPort(port, "port"),
@@ -130,6 +164,7 @@ export function mergeConfig({ cwd, file, env, flags }: MergeInput): ResolvedConf
     varDirRaw: readString(varDirRaw, "varDir"),
     varDir: path.resolve(cwd, readString(varDirRaw, "varDir")),
     trustedProxy: resolveTrustedProxy(trustedProxyRaw),
+    realtime,
   };
 }
 
@@ -166,6 +201,7 @@ export function serializeConfig(config: ResolvedConfig): string {
     host: config.host,
     varDir: config.varDirRaw,
     trustedProxy: trustedProxyToConfig(config.trustedProxy),
+    realtime: config.realtime,
   };
   return JSON.stringify(body, null, 2) + "\n";
 }

@@ -31,3 +31,27 @@ export const missQueueCap = (): number =>
 
 export const leaseTtlMs = (): number =>
   Math.max(1, envInt("LEASE_TTL_MS", LEASE_TTL_DEFAULT_MS));
+
+/**
+ * A boolean from the environment, or `fallback`.
+ *
+ * Off is `0`, `false`, `no` or `off`; on is `1`, `true`, `yes` or `on`. An
+ * empty or unset variable means "not configured here", and anything else is
+ * ignored rather than guessed at — a typo should not quietly turn a feature
+ * off.
+ */
+export function envFlag(name: string, fallback: boolean): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (raw === undefined || raw === "") return fallback;
+  if (raw === "0" || raw === "false" || raw === "no" || raw === "off") return false;
+  if (raw === "1" || raw === "true" || raw === "yes" || raw === "on") return true;
+  return fallback;
+}
+
+/**
+ * Whether to serve the realtime WebSocket channel. On by default.
+ *
+ * Off means no upgrade listener is registered at all: the event page keeps
+ * working exactly as it does without a socket, on the REST API alone.
+ */
+export const realtimeEnabled = (): boolean => envFlag("TIMEFUL_REALTIME", true);

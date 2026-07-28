@@ -115,6 +115,7 @@ describe("timeful --yes", () => {
       host: "127.0.0.1",
       varDir: "./var",
       trustedProxy: ["127.0.0.1", "::1"],
+      realtime: true,
     });
     expect((await entries()).sort()).toEqual([CONFIG_FILE, "var"]);
   }, 30000);

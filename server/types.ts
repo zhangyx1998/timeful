@@ -9,8 +9,16 @@
  */
 import type { EventDoc, EventResponse, EventType } from "../src/lib/event.ts";
 import type { EventSummary, SessionInfo } from "../src/lib/api.ts";
+import type { RealtimeMessage } from "../src/lib/realtime.ts";
 
-export type { EventDoc, EventResponse, EventType, EventSummary, SessionInfo };
+export type {
+  EventDoc,
+  EventResponse,
+  EventType,
+  EventSummary,
+  SessionInfo,
+  RealtimeMessage,
+};
 
 /** An event exactly as stored in `var/events/<uuid>.json`. */
 export type StoredEvent = EventDoc;

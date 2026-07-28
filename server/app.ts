@@ -13,11 +13,13 @@ import { pathToFileURL } from "node:url";
 import express from "express";
 import type { Express, NextFunction, Request, Response } from "express";
 import { cookieParser } from "./auth.ts";
+import { realtimeEnabled } from "./config.ts";
 import { statusOf } from "./http.ts";
 import type { AssetPaths } from "./paths.ts";
 import { describeTrustedProxies, type TrustProxySetting } from "./proxy.ts";
+import { attachRealtime } from "./realtime.ts";
 import { authRouter } from "./routes/auth.ts";
-import { eventsRouter } from "./routes/events.ts";
+import { eventsRouter, resolveEvent } from "./routes/events.ts";
 import { leasesRouter } from "./routes/leases.ts";
 import { sessionsRouter } from "./routes/sessions.ts";
 import { readEvent, readLinks } from "./storage.ts";
@@ -329,17 +331,31 @@ export interface ServeOptions extends AppOptions {
   port: number;
   /** Named in the startup line, e.g. "dev" or "production". */
   mode?: string;
+  /**
+   * Serve the realtime WebSocket channel. Defaults to the `TIMEFUL_REALTIME`
+   * reading; the CLI passes the value it resolved from the config file instead.
+   * When false, no upgrade listener is registered at all.
+   */
+  realtime?: boolean;
 }
 
 /** Builds the app and listens. Resolves once the socket is open. */
 export function serve(options: ServeOptions): Promise<Server> {
   const app = createApp(options);
+  const realtime = options.realtime ?? realtimeEnabled();
   return new Promise((resolve, reject) => {
     const server = app.listen(options.port, options.host, () => {
+      // Attached to the listening server, never to the app: an upgrade is a
+      // property of the HTTP connection and never reaches Express at all.
+      if (realtime) {
+        const hub = attachRealtime(server, { resolveEvent });
+        server.on("close", () => void hub.close());
+      }
       console.log(
         `Timeful ${options.mode ?? "production"} server on http://${options.host}:${options.port}`,
       );
       console.log(`Trusted proxies: ${describeTrustedProxies(options.trustProxy)}`);
+      console.log(`Realtime updates: ${realtime ? "on" : "off"}`);
       resolve(server);
     });
     server.on("error", reject);

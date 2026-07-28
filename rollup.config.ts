@@ -95,7 +95,19 @@ export default defineConfig((commandLineArgs) => {
 
   const plugins = [
     nodeResolve({ preferBuiltins: true, exportConditions: ["node"] }),
-    commonjs(),
+    // `ignoreTryCatch: true` is the plugin's own default, pinned here because
+    // the bundle now depends on it. `ws` reaches for two optional native
+    // addons — bufferutil and utf-8-validate — inside try/catch, and falls
+    // back to its JavaScript implementations when they are absent. They are
+    // absent: they are native builds, and a published bundle installs nothing.
+    //
+    // Converting those requires would resolve them as externals, and a bare
+    // `import 'bufferutil'` at the top of cli.js is a crash on startup, not a
+    // fallback. Left unconverted, the `require` is simply not defined in an ESM
+    // bundle, the try/catch catches that, and ws uses its own code — which is
+    // the outcome an operator without a compiler wants anyway. Express's
+    // chain does the same thing with `ejs` and `supports-color`.
+    commonjs({ ignoreTryCatch: true }),
     // express's dependency chain requires JSON data files (statuses, mime-db).
     json(),
     esbuild({

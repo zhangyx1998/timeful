@@ -4,6 +4,7 @@ import type { Request, Response } from "express";
 import { requireAdmin } from "../auth.ts";
 import { asRecord, BadRequest, param } from "../http.ts";
 import { consumeLease, isLeased } from "../leases.ts";
+import { broadcastEvent, broadcastGone } from "../realtime.ts";
 import { randomSlug, slugProblem } from "../slugs.ts";
 import {
   deleteEvent,
@@ -288,6 +289,9 @@ eventsRouter.patch("/events/:id", requireAdmin, async (req, res) => {
     res.status(404).json({ error: "Event not found" });
     return;
   }
+  // Subscribers get the whole new document, the renamed slug included: a page
+  // watching this event corrects its own address bar off the snapshot.
+  broadcastEvent(updated);
   res.json(updated);
 });
 
@@ -305,6 +309,8 @@ eventsRouter.delete("/events/:id", requireAdmin, async (req, res) => {
     return links;
   });
   await deleteEvent(existing.id);
+  // Only once it is actually gone from disk; the room is closed with it.
+  broadcastGone(existing.id);
   res.json({ ok: true });
 });
 
@@ -333,11 +339,14 @@ eventsRouter.get("/events/:idOrSlug", async (req, res) => {
  * Removes a guest's record from an event, under the event's file lock.
  * Resolves to false when the event vanished mid-request; a name that was not
  * there is a successful no-op.
+ *
+ * `event` is the document as it stands afterwards — unchanged when nothing was
+ * removed — which is what the caller broadcasts to the event's subscribers.
  */
 async function dropResponse(
   id: string,
   name: string,
-): Promise<{ ok: boolean; removed: boolean }> {
+): Promise<{ ok: boolean; removed: boolean; event: StoredEvent | null }> {
   let removed = false;
   const updated = await updateEvent(id, (current) => {
     if (!current.responses?.[name]) return undefined;
@@ -346,7 +355,7 @@ async function dropResponse(
     current.updatedAt = new Date().toISOString();
     return current;
   });
-  return { ok: updated !== null, removed };
+  return { ok: updated !== null, removed, event: updated };
 }
 
 // PUT /api/events/:id/responses/:name — public guest autosave
@@ -376,11 +385,14 @@ eventsRouter.put("/events/:id/responses/:name", async (req, res) => {
   // the path a guest's "Clear" takes — and it has to be a no-op when they were
   // never on the list.
   if (availability.length === 0 && ifNeeded.length === 0) {
-    const { ok } = await dropResponse(existing.id, name);
+    const { ok, removed, event } = await dropResponse(existing.id, name);
     if (!ok) {
       await eventMiss(req, res);
       return;
     }
+    // A clear that cleared nothing changed nothing, and a room should only
+    // ever be woken for something that actually happened.
+    if (removed && event) broadcastEvent(event);
     res.json({ ok: true, name, response: null });
     return;
   }
@@ -397,6 +409,7 @@ eventsRouter.put("/events/:id/responses/:name", async (req, res) => {
     await eventMiss(req, res);
     return;
   }
+  broadcastEvent(updated);
   res.json({ ok: true, name, response });
 });
 
@@ -415,7 +428,7 @@ eventsRouter.delete("/events/:id/responses/:name", async (req, res) => {
     await eventMiss(req, res);
     return;
   }
-  const { ok, removed } = await dropResponse(existing.id, name);
+  const { ok, removed, event } = await dropResponse(existing.id, name);
   if (!ok) {
     await eventMiss(req, res);
     return;
@@ -424,6 +437,7 @@ eventsRouter.delete("/events/:id/responses/:name", async (req, res) => {
     res.status(404).json({ error: "Response not found" });
     return;
   }
+  if (event) broadcastEvent(event);
   res.json({ ok: true });
 });
 

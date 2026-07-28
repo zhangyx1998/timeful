@@ -29,6 +29,12 @@ export interface Overrides {
   varDir?: string;
   /** Raw value; validated with the rest of the config so errors read alike. */
   trustedProxy?: string;
+  /**
+   * Realtime updates. There is no flag for this one — it comes from
+   * `timeful.config.json` or from `TIMEFUL_REALTIME`, and rides the same
+   * precedence chain as the rest.
+   */
+  realtime?: boolean;
 }
 
 export interface CliArgs {
@@ -68,8 +74,17 @@ const ALL_ACTIONS: readonly ServiceAction[] = [
   "status",
 ];
 
+/**
+ * The `Overrides` keys a flag fills with a raw string. `port` parses to a
+ * number and `realtime` has no flag at all, so neither belongs here; deriving
+ * the set rather than listing it keeps that true as `Overrides` grows.
+ */
+type StringOverride = {
+  [K in keyof Overrides]-?: string extends Overrides[K] ? K : never;
+}[keyof Overrides];
+
 /** Flags that take a value, mapped to the `Overrides` key they fill. */
-const VALUE_FLAGS: Record<string, keyof Overrides> = {
+const VALUE_FLAGS: Record<string, StringOverride | "port"> = {
   "--port": "port",
   "--host": "host",
   "--var-dir": "varDir",
@@ -233,5 +248,9 @@ Options:
 
 Settings are read from timeful.config.json in the current directory; the
 options above and the PORT, HOST and VAR_DIR environment variables override it.
+
+TIMEFUL_REALTIME=0 turns off the realtime update channel (config key
+"realtime"), which is on by default. Turning it off costs nothing but live
+updates: the pages keep working on the REST API alone.
 `;
 }
