@@ -19,8 +19,12 @@ html {
   text-size-adjust: 100%;
 }
 
+/* `dvh`, not `vh`: on a phone `vh` is the viewport with the browser's chrome
+   collapsed, so a `100vh` body is taller than what you can actually see while
+   the URL bar is showing — the page scrolls by exactly the height of that bar,
+   which on a layout that is meant to be fixed reads as a broken app. */
 body {
-  min-height: 100vh;
+  min-height: 100dvh;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
@@ -52,7 +56,42 @@ h6 {
   overflow-wrap: break-word;
 }
 
+/* Taps on controls act immediately: no waiting to see whether a second tap is
+   on its way, which is what costs a touch platform ~300ms and what turns a
+   quick double press of a button into a zoom. Only the controls are named —
+   the page itself keeps `touch-action: auto`, so pinch to zoom stays available
+   everywhere, and the grid keeps setting its own value while it is painted on. */
+button,
+input,
+select,
+textarea,
+label,
+a,
+summary,
+[role="button"] {
+  touch-action: manipulation;
+}
+
 /* Keep component stacking contexts from escaping the app root. */
 #app {
   isolation: isolate;
+}
+
+/* The event page is an app surface rather than a document: at phone widths its
+   shell is exactly the viewport, and everything that scrolls does so inside its
+   own box. The document has to be told that itself — a child sized to `100dvh`
+   still leaves the body free to be taller than the viewport, and leaves a touch
+   platform free to rubber-band the whole page past either end of it.
+
+   Keyed off the page's own marker class (see EventPage.vue) so that '/' — a
+   normal scrolling document, and not the app surface — is left alone. */
+@media (max-width: 820px) {
+  html:has(.event-page),
+  html:has(.event-page) body {
+    height: 100dvh;
+    overflow: hidden;
+    /* Nothing is left for the document to do with a gesture that runs off the
+       end of an inner scroller, so it does nothing rather than bouncing. */
+    overscroll-behavior: none;
+  }
 }

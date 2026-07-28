@@ -88,7 +88,10 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="page">
+  <!-- `event-page` carries no scoped styles: it is the marker the global sheet
+       keys the phone layout's document-level scroll lock off, which is a rule
+       about <html> and <body> and so cannot live in a scoped block. -->
+  <div class="page event-page">
     <AppHeader>
       <template #lead>
         <h1 v-if="event" class="name" :title="event.name">{{ event.name }}</h1>
