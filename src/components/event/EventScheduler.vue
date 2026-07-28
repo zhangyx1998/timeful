@@ -1046,4 +1046,14 @@ function onPin(slot: number | null) {
     height: 0.9rem;
   }
 }
+
+/* Held sideways there are about 360 pixels of height and the switch, the foot
+   and the identity row are all at their tap floor already — so what is left to
+   give is the space between them. */
+@media (max-height: 480px) and (max-width: 820px) {
+  .scheduler.compact,
+  .compact .layout {
+    gap: 0.25rem;
+  }
+}
 </style>

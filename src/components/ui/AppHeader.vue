@@ -109,4 +109,16 @@ defineSlots<{
   gap: 0.5rem;
   min-width: 0;
 }
+
+/* A phone held sideways has about 360px of height to spend and the fixed
+   layout's chrome takes most of it, so the bar gives back everything that is
+   not a tap target: it keeps the 44px floor its buttons stand on and loses the
+   air around them. */
+@media (max-height: 480px) and (max-width: 820px) {
+  .app-header__inner {
+    min-height: 0;
+    padding-top: 0.15rem;
+    padding-bottom: 0.15rem;
+  }
+}
 </style>

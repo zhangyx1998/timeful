@@ -292,4 +292,13 @@ const emit = defineEmits<{ change: []; pick: []; retry: [] }>();
     flex: none;
   }
 }
+
+/* Sideways: the row is already as short as its own controls allow, so only the
+   padding around them goes. The home-indicator inset stays whatever it is. */
+@media (max-height: 480px) and (max-width: 820px) {
+  .identity {
+    padding-top: 0.2rem;
+    padding-bottom: calc(0.2rem + var(--safe-bottom));
+  }
+}
 </style>

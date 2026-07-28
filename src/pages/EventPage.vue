@@ -217,4 +217,12 @@ onMounted(() => {
       calc(var(--page-pad) + var(--safe-left));
   }
 }
+
+/* Sideways, the chart is what is left after the chrome and there is barely any
+   of it, so the shell spends nothing on air it can do without. */
+@media (max-height: 480px) and (max-width: 820px) {
+  .main {
+    padding-top: 0.25rem;
+  }
+}
 </style>
