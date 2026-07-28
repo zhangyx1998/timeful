@@ -69,6 +69,14 @@
      a caption — the fill itself is a wash and disappears at that size. Use this
      wherever if-needed is stated in ink rather than painted as an area. */
   --color-if-needed-text: light-dark(#996900, #f0bc4c);
+  /* The ring drawn round the rectangle a drag is spanning, and kept there while
+     the options that apply to it are still on screen. Blue says a selection is
+     being made, red that one is being taken away — and neither may be confused
+     with the fills it is drawn over, which is why the blue is a hue the grid
+     uses nowhere else and the red is the danger colour at ink weight rather
+     than the wash `--color-danger-soft` paints the cells themselves with. */
+  --color-selection-create: light-dark(#1d4ed8, #6ba5ff);
+  --color-selection-delete: var(--color-danger);
 
   /* --- overlays ----------------------------------------------------------- */
   --color-backdrop: light-dark(rgb(24 24 27 / 0.45), rgb(0 0 0 / 0.65));

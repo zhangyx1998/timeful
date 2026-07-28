@@ -60,13 +60,16 @@ import {
   inRectangle,
   isBestTime,
   rectangleSlots,
+  revertOperations,
   scrollEdges,
   scrollStepFor,
   slotAt,
+  snapshotSlots,
   type Cell,
   type EdgeDirection,
   type GridModel,
   type ResponseIndex,
+  type SlotSnapshot,
 } from "../../lib/grid";
 import { useSlotBaseColor } from "../../lib/colors";
 import { formatSlotRange } from "../../lib/dates";
@@ -74,6 +77,8 @@ import IconChevronLeft from "../../assets/icons/chevron-left.svg";
 import IconChevronRight from "../../assets/icons/chevron-right.svg";
 import IconCheck from "../../assets/icons/check.svg";
 import IconHourglass from "../../assets/icons/hourglass.svg";
+import IconClose from "../../assets/icons/close-sm.svg";
+import IconRevert from "../../assets/icons/rotate-ccw.svg";
 import type { AvailabilityType, EventDoc } from "../../lib/event";
 
 const props = defineProps<{
@@ -121,16 +126,25 @@ const HEADER_HEIGHT = 42;
 /** Matches `.tooltip { max-width }`; used to keep the bubble on screen. */
 const TOOLTIP_MAX_WIDTH = 180;
 /**
- * The menu that follows a paint. Its width and height are what the layout is
+ * The menu that rides a drag. Its width and height are what the layout is
  * measured against — it is placed before it is drawn, so the numbers have to
- * come from here rather than from the box.
+ * come from here rather than from the box. Two widths, because the menu a
+ * creation gets carries three controls and the one an erase gets carries one.
  */
-const MENU_WIDTH = 200;
-const MENU_WIDTH_TOUCH = 230;
+const MENU_WIDTH = { create: 238, erase: 122 };
+const MENU_WIDTH_TOUCH = { create: 286, erase: 146 };
 const MENU_HEIGHT = 38;
 const MENU_HEIGHT_TOUCH = 50;
-/** Clearance between the menu and the rectangle it belongs to. */
+/** Clearance between the menu and the edges of the chart it is clamped into. */
 const MENU_GAP = 8;
+/**
+ * How far the menu keeps off the pointer itself. A cursor points at a spot and
+ * hides almost none of it, so the menu sits just below. A finger covers what it
+ * touches and everything for a few millimetres around, so the menu goes above
+ * it and further out.
+ */
+const MENU_CURSOR_CLEARANCE = 18;
+const MENU_TOUCH_CLEARANCE = 26;
 /** How long it waits to be used before it takes itself away. */
 const MENU_LINGER_MS = 5000;
 /** How much of the neighbouring column shows past the clipped edge. */
@@ -161,6 +175,7 @@ const body = ref<HTMLElement | null>(null);
 const viewportWidth = ref(0);
 const viewportHeight = ref(0);
 const viewportLeft = ref(0);
+const viewportTop = ref(0);
 const gutterWidth = ref(0);
 const scrollLeft = ref(0);
 const scrollTop = ref(0);
@@ -252,6 +267,7 @@ function measure() {
   viewportWidth.value = element.clientWidth;
   viewportHeight.value = element.clientHeight;
   viewportLeft.value = element.offsetLeft;
+  viewportTop.value = element.offsetTop;
   gutterWidth.value = gutter.value?.offsetWidth ?? 0;
   readScroll();
 }
@@ -526,6 +542,7 @@ function onPointerDown(event: PointerEvent) {
   dragging.value = true;
   dragStart.value = cell;
   dragCur.value = cell;
+  openMenu(cell, marked ? "erase" : "create", event);
 
   body.value?.setPointerCapture?.(event.pointerId);
   window.addEventListener("pointerup", endDrag);
@@ -537,6 +554,7 @@ function onPointerMove(event: PointerEvent) {
   if (dragging.value) {
     if (cell) dragCur.value = cell;
     lastPointer = { x: event.clientX, y: event.clientY };
+    followMenu(event);
     updateEdgeScroll(event);
     event.preventDefault();
     return;
@@ -559,13 +577,16 @@ function endDrag(event?: PointerEvent) {
   window.removeEventListener("pointerup", endDrag);
   stopEdgeScroll();
 
+  let committed = false;
   if (dragging.value && dragStart.value && dragCur.value) {
     const slots = rectangleSlots(props.model, dragStart.value, dragCur.value);
     if (slots.length > 0) {
+      // Read before the emit, and so the state the press started from: nothing
+      // the guest owns moves until the parent applies this change.
+      const snapshot = snapshotSlots(slots, props.availability, props.ifNeeded);
       emit("paint", { type: dragType.value, slots });
-      // Only a rectangle that was just claimed has a meaning to choose; one
-      // that was just given up has none.
-      if (dragType.value === "add") openMenu(dragStart.value, dragCur.value, slots);
+      commitMenu(dragStart.value, dragCur.value, slots, snapshot);
+      committed = true;
     }
   } else if (!props.editable && pressCell.value && event && !panMoved) {
     // A tap or click in the group view pins the slot under the pointer — unless
@@ -577,6 +598,9 @@ function endDrag(event?: PointerEvent) {
       emit("pin", slot);
     }
   }
+  // A drag that landed on nothing leaves no rectangle behind, and so nothing
+  // for the preview that followed it to become.
+  if (!committed) closeMenu();
 
   dragging.value = false;
   dragStart.value = null;
@@ -587,6 +611,7 @@ function endDrag(event?: PointerEvent) {
 function onPointerCancel() {
   window.removeEventListener("pointerup", endDrag);
   stopEdgeScroll();
+  closeMenu();
   dragging.value = false;
   dragStart.value = null;
   dragCur.value = null;
@@ -609,15 +634,46 @@ watch(
 // to the rectangle, not to the session: it arrives with one, attached to it, and
 // leaves with it. Every drag paints an available time — the answer nine times in
 // ten — and the menu is the tenth.
+//
+// It rides the drag rather than waiting for it. Appearing only on release meant
+// the options arrived somewhere the hand had already left, announced by nothing;
+// carried along beside the pointer from the press onwards they are simply
+// already there when the finger lifts, in the place the finger lifted from. For
+// as long as the drag runs the menu is a preview — a label on what is being
+// drawn, taking no pointer at all, because the one pointer in play belongs to
+// the drag and nothing floating under it may be allowed to intercept it. The
+// release is what turns it into a control, at the position it had reached.
+//
+// An erase gets one too. It has no meaning to choose, but it has the same thing
+// to take back, and a rectangle wiped by accident used to be unrecoverable
+// except by painting it again from memory.
 
-/** The rectangle a paint just committed, until it is chosen for or forgotten. */
-const menuRect = ref<{ start: Cell; end: Cell; slots: number[] } | null>(null);
+type MenuKind = "create" | "erase";
+
+interface MenuState {
+  kind: MenuKind;
+  /** Corners of the rectangle, so the outline outlives the drag with the menu. */
+  start: Cell;
+  end: Cell;
+  /** Where the menu is pinned, in the wrap's coordinates. */
+  x: number;
+  y: number;
+  /** Whether a finger is driving it: the menu clears above one, below a cursor. */
+  touch: boolean;
+  /** False while the drag runs — a preview cannot be clicked, or aimed at. */
+  live: boolean;
+  slots: number[];
+  /** What those slots were before the drag; null until the drag commits. */
+  snapshot: SlotSnapshot | null;
+}
+
+const menuState = ref<MenuState | null>(null);
 let menuTimer: ReturnType<typeof setTimeout> | undefined;
 
 function closeMenu() {
   clearTimeout(menuTimer);
   menuTimer = undefined;
-  menuRect.value = null;
+  menuState.value = null;
 }
 
 /** Restarted on every use: five seconds of *inattention*, not of existence. */
@@ -640,67 +696,167 @@ function resumeMenu(event: PointerEvent) {
   holdMenu();
 }
 
-function openMenu(start: Cell, end: Cell, slots: number[]) {
-  menuRect.value = { start, end, slots };
+/**
+ * A client point in the coordinates the overlays are positioned in — the wrap
+ * the menu and the tooltip are absolutely placed inside. The scrollport's own
+ * rect carries the scroll already, so nothing here has to know where the track
+ * has got to.
+ */
+function anchorFromPoint(clientX: number, clientY: number): { x: number; y: number } | null {
+  const element = viewport.value;
+  if (!element) return null;
+  const rect = element.getBoundingClientRect();
+  return {
+    x: clientX - rect.left + viewportLeft.value,
+    y: clientY - rect.top + viewportTop.value,
+  };
+}
+
+function openMenu(cell: Cell, kind: MenuKind, event: PointerEvent) {
+  const anchor = anchorFromPoint(event.clientX, event.clientY);
+  if (!anchor) return;
+  clearTimeout(menuTimer);
+  menuTimer = undefined;
+  menuState.value = {
+    kind,
+    start: cell,
+    end: cell,
+    x: anchor.x,
+    y: anchor.y,
+    touch: event.pointerType !== "mouse",
+    live: false,
+    slots: [],
+    snapshot: null,
+  };
+}
+
+/** The preview keeps up with the pointer; a live menu stays where it landed. */
+function followMenu(event: PointerEvent) {
+  const state = menuState.value;
+  if (!state || state.live) return;
+  const anchor = anchorFromPoint(event.clientX, event.clientY);
+  if (!anchor) return;
+  state.x = anchor.x;
+  state.y = anchor.y;
+}
+
+/** The release: the preview becomes the control, without moving. */
+function commitMenu(start: Cell, end: Cell, slots: number[], snapshot: SlotSnapshot) {
+  const state = menuState.value;
+  if (!state) return;
+  state.start = start;
+  state.end = end;
+  state.slots = slots;
+  state.snapshot = snapshot;
+  state.live = true;
   holdMenu();
 }
 
 function chooseType(type: AvailabilityType) {
-  const rect = menuRect.value;
-  if (!rect) return;
-  emit("flip", { type, slots: rect.slots });
+  const state = menuState.value;
+  if (!state?.live) return;
+  emit("flip", { type, slots: state.slots });
   // It stays: having just changed their mind once, the visitor may change it
   // back, and the menu that let them do it should not vanish for having worked.
   holdMenu();
 }
 
+/**
+ * Undo, spoken in the grid's own emits: the parent hears the same two changes it
+ * hears from a drag, applies them the same way and queues the same save, so the
+ * restored state reaches the server by the route every other edit takes.
+ *
+ * The menu goes with it. Unlike a flip, which invites being flipped back, this
+ * has put things exactly as they were — there is nothing left for it to offer.
+ */
+function revertRect() {
+  const state = menuState.value;
+  if (!state?.live || !state.snapshot) return;
+  for (const op of revertOperations(state.snapshot)) {
+    if (op.emit === "paint") emit("paint", { type: op.type, slots: op.slots });
+    else emit("flip", { type: op.type, slots: op.slots });
+  }
+  closeMenu();
+}
+
 // A finger's menu is bigger in both directions, and both numbers are what its
 // placement is worked out against.
-const menuWidth = computed(() => (coarsePointer.value ? MENU_WIDTH_TOUCH : MENU_WIDTH));
+function menuWidthFor(kind: MenuKind): number {
+  return (coarsePointer.value ? MENU_WIDTH_TOUCH : MENU_WIDTH)[kind];
+}
 const menuHeight = computed(() => (coarsePointer.value ? MENU_HEIGHT_TOUCH : MENU_HEIGHT));
 
 /**
- * Under the rectangle, or over it where there is no room under — never on it,
- * so the thing being described stays visible while it is described. Both axes
- * subtract the scroll, like the tooltip: the menu belongs to a rectangle of the
- * track, so it travels with it.
+ * Beside the pointer, never under it, and never outside the chart. Centred on
+ * the pointer horizontally and clamped into the column area; vertically it takes
+ * the side the pointing device leaves free, flipping to the other when the first
+ * would put it off the top or the bottom of the scrollport.
  */
 const menu = computed(() => {
-  const rect = menuRect.value;
-  if (!rect || !props.editable) return null;
+  const state = menuState.value;
+  if (!state || !props.editable) return null;
 
-  const minCol = Math.min(rect.start.col, rect.end.col);
-  const maxCol = Math.max(rect.start.col, rect.end.col);
-  const minRow = Math.min(rect.start.row, rect.end.row);
-  const maxRow = Math.max(rect.start.row, rect.end.row);
-
-  const centre =
-    chartLeft.value +
-    (offsets.value[minCol] + offsets.value[maxCol] + colWidth.value) / 2 -
-    scrollLeft.value;
-  const half = menuWidth.value / 2;
+  const width = menuWidthFor(state.kind);
+  const half = width / 2;
   const left =
-    chartWidth.value <= menuWidth.value
+    chartWidth.value <= width
       ? chartLeft.value + chartWidth.value / 2
       : Math.min(
-          Math.max(centre, chartLeft.value + half),
+          Math.max(state.x, chartLeft.value + half),
           chartLeft.value + chartWidth.value - half,
         );
 
-  const under = HEADER_HEIGHT + rowTop(maxRow) + rowHeight.value + MENU_GAP - scrollTop.value;
-  const over = HEADER_HEIGHT + rowTop(minRow) - MENU_GAP - menuHeight.value - scrollTop.value;
-  const floor = MENU_GAP;
-  const ceiling = Math.max(floor, viewportHeight.value - menuHeight.value - MENU_GAP);
-  const top =
-    under <= ceiling ? under : over >= floor ? over : Math.min(Math.max(under, floor), ceiling);
+  const height = menuHeight.value;
+  const clearance = state.touch ? MENU_TOUCH_CLEARANCE : MENU_CURSOR_CLEARANCE;
+  const below = state.y + clearance;
+  const above = state.y - clearance - height;
+  const floor = viewportTop.value + MENU_GAP;
+  const ceiling = Math.max(floor, viewportTop.value + viewportHeight.value - height - MENU_GAP);
+  const preferred = state.touch ? above : below;
+  const alternate = state.touch ? below : above;
+  const fits = (value: number) => value >= floor && value <= ceiling;
+  const top = fits(preferred)
+    ? preferred
+    : fits(alternate)
+      ? alternate
+      : Math.min(Math.max(preferred, floor), ceiling);
 
   // Which of the two it currently is, read off the answer itself rather than
   // remembered here: a flip is applied by the parent, and this follows it.
-  const type: AvailabilityType = rect.slots.some((slot) => props.ifNeeded.has(slot))
+  const type: AvailabilityType = state.slots.some((slot) => props.ifNeeded.has(slot))
     ? "if_needed"
     : "available";
 
-  return { left, top, type };
+  return { left, top, type, kind: state.kind, live: state.live };
+});
+
+/**
+ * The rectangle the menu is talking about, ringed so there is no doubt which
+ * cells it means. Drawn from the drag while the drag runs and from the menu's
+ * own corners afterwards, so the ring and the options appear and vanish
+ * together. Inside the track, so it travels with the columns.
+ */
+const region = computed(() => {
+  const state = menuState.value;
+  if (!props.editable || !state) return null;
+  const start = dragging.value ? dragStart.value : state.start;
+  const end = dragging.value ? dragCur.value : state.end;
+  if (!start || !end) return null;
+
+  const minCol = Math.min(start.col, end.col);
+  const maxCol = Math.max(start.col, end.col);
+  const minRow = Math.min(start.row, end.row);
+  const maxRow = Math.max(start.row, end.row);
+  const left = offsets.value[minCol] ?? 0;
+  const top = rowTop(minRow);
+
+  return {
+    left,
+    top,
+    width: (offsets.value[maxCol] ?? left) + colWidth.value - left,
+    height: rowTop(maxRow) + rowHeight.value - top,
+    kind: state.kind,
+  };
 });
 
 onBeforeUnmount(closeMenu);
@@ -932,6 +1088,22 @@ defineExpose({ measure });
                     </template>
                   </div>
                 </template>
+
+                <!-- What the floating options apply to, ringed for as long as
+                     they are on screen. Inert, and inside the track so it
+                     stays on its cells while the chart scrolls under it. -->
+                <div
+                  v-if="region"
+                  class="region"
+                  :class="`region--${region.kind}`"
+                  aria-hidden="true"
+                  :style="{
+                    left: `${region.left}px`,
+                    top: `${region.top}px`,
+                    width: `${region.width}px`,
+                    height: `${region.height}px`,
+                  }"
+                />
               </div>
             </div>
           </div>
@@ -989,38 +1161,77 @@ defineExpose({ measure });
         {{ tooltip.text }}
       </div>
 
-      <!-- What the rectangle that was just painted means. Laid over the chart
-           beside the rectangle itself, and inert apart from its two buttons, so
-           the cells it floats above can still be painted straight through. -->
+      <!-- What the rectangle being drawn means. Carried beside the pointer for
+           the length of the drag as a preview that takes no pointer at all, and
+           left where the drag ended as a working control. Even then only its
+           buttons take the pointer, so the cells it floats above can still be
+           painted straight through. -->
       <div
         v-if="menu"
         class="meaning"
+        :class="{ 'meaning--preview': !menu.live }"
         :style="{ left: `${menu.left}px`, top: `${menu.top}px` }"
         role="group"
-        aria-label="What the times you just marked mean"
+        :aria-label="
+          menu.kind === 'erase'
+            ? 'The times you just cleared'
+            : 'What the times you just marked mean'
+        "
         @pointerenter="pauseMenu"
         @pointerleave="resumeMenu"
       >
-        <button
-          type="button"
-          class="meaning__option"
-          :class="{ 'meaning__option--on': menu.type === 'available' }"
-          :aria-pressed="menu.type === 'available'"
-          @click="chooseType('available')"
-        >
-          <IconCheck aria-hidden="true" />
-          Available
-        </button>
+        <template v-if="menu.kind === 'create'">
+          <button
+            type="button"
+            class="meaning__option meaning__option--available"
+            :class="{ 'meaning__option--on': menu.type === 'available' }"
+            :aria-pressed="menu.type === 'available'"
+            :tabindex="menu.live ? undefined : -1"
+            @click="chooseType('available')"
+          >
+            <IconCheck aria-hidden="true" />
+            Available
+          </button>
 
+          <button
+            type="button"
+            class="meaning__option meaning__option--if-needed"
+            :class="{ 'meaning__option--on': menu.type === 'if_needed' }"
+            :aria-pressed="menu.type === 'if_needed'"
+            :tabindex="menu.live ? undefined : -1"
+            @click="chooseType('if_needed')"
+          >
+            <IconHourglass aria-hidden="true" />
+            If needed
+          </button>
+
+          <!-- No label: it stands beside two that carry one, in the place a
+               dismissal always stands, and a third word would make the strip
+               something to read rather than something to choose from. -->
+          <button
+            type="button"
+            class="meaning__option meaning__option--undo"
+            aria-label="Undo this selection"
+            title="Undo this selection"
+            :tabindex="menu.live ? undefined : -1"
+            @click="revertRect"
+          >
+            <IconClose aria-hidden="true" />
+          </button>
+        </template>
+
+        <!-- An erase has nothing to choose between, so its one control says in
+             a word what it does rather than leaving a bare glyph to be guessed
+             at. -->
         <button
+          v-else
           type="button"
-          class="meaning__option"
-          :class="{ 'meaning__option--on': menu.type === 'if_needed' }"
-          :aria-pressed="menu.type === 'if_needed'"
-          @click="chooseType('if_needed')"
+          class="meaning__option meaning__option--undo meaning__option--sole"
+          :tabindex="menu.live ? undefined : -1"
+          @click="revertRect"
         >
-          <IconHourglass aria-hidden="true" />
-          If needed
+          <IconRevert aria-hidden="true" />
+          Revert
         </button>
       </div>
     </div>
@@ -1405,6 +1616,32 @@ defineExpose({ measure });
   background-color: var(--color-danger-soft);
 }
 
+/* The ring round the rectangle the options apply to. It has to read over an
+   empty cell, a green one, an amber one and the erase wash alike, in both
+   themes, so it is not a hairline: two solid pixels, held off the surrounding
+   fills by a thin sheath of the page colour on both sides of the stroke, and a
+   soft halo of its own colour so the shape carries at a glance. */
+.region {
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+  border-radius: var(--radius-sm);
+  outline: 2px solid var(--color-selection-create);
+  outline-offset: -1px;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-bg) 75%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-bg) 75%, transparent),
+    0 0 10px color-mix(in srgb, var(--color-selection-create) 55%, transparent);
+}
+
+.region--erase {
+  outline-color: var(--color-selection-delete);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-bg) 75%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-bg) 75%, transparent),
+    0 0 10px color-mix(in srgb, var(--color-selection-delete) 55%, transparent);
+}
+
 .cell.active::after {
   content: "";
   position: absolute;
@@ -1422,9 +1659,9 @@ defineExpose({ measure });
   margin-left: var(--gutter);
 }
 
-/* Centred on the rectangle it belongs to and clamped to the chart's own box, so
-   it cannot hang off a narrow screen. Only the buttons take the pointer: the
-   strip itself is a hole, and a drag that starts under it paints as usual. */
+/* Pinned beside the pointer and clamped to the chart's own box, so it cannot
+   hang off a narrow screen. Only the buttons take the pointer: the strip itself
+   is a hole, and a drag that starts under it paints as usual. */
 .meaning {
   position: absolute;
   z-index: 15;
@@ -1456,8 +1693,38 @@ defineExpose({ measure });
   transition: color var(--transition-fast), background var(--transition-fast);
 }
 
+/* While the drag runs the whole strip is a label, not a control. Nothing in it
+   may take the pointer that is drawing the rectangle — the one thing it must
+   never do is intercept the gesture it exists to describe. */
+.meaning--preview .meaning__option {
+  pointer-events: none;
+  cursor: default;
+}
+
 .meaning__option + .meaning__option {
   border-left: 1px solid var(--color-border);
+}
+
+/* Icon-only, so it is sized by its glyph rather than by absent text. */
+.meaning__option--undo {
+  justify-content: center;
+  padding: 0.3rem 0.55rem;
+}
+
+.meaning__option--undo svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+/* On its own in the erase menu it is a labelled button like the others. */
+.meaning__option--sole {
+  padding: 0.3rem 0.7rem;
+}
+
+/* Specific enough to beat the generic hover above it, which it follows. */
+.meaning__option--undo:hover:not(.meaning__option--on) {
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
 }
 
 .meaning__option svg {
@@ -1487,7 +1754,7 @@ defineExpose({ measure });
   background: color-mix(in srgb, var(--color-slot-available) 45%, var(--color-surface));
 }
 
-.meaning__option--on:last-child {
+.meaning__option--if-needed.meaning__option--on {
   background: color-mix(in srgb, var(--color-slot-if-needed) 45%, var(--color-surface));
 }
 
@@ -1523,6 +1790,12 @@ defineExpose({ measure });
   .meaning__option svg {
     width: 0.95rem;
     height: 0.95rem;
+  }
+
+  /* Carrying no label, it would otherwise be the one control in the strip
+     narrower than a finger. Padded out to the 44px floor on both axes. */
+  .meaning__option--undo {
+    padding-inline: 0.95rem;
   }
 
   .knob {
