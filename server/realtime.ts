@@ -6,6 +6,13 @@
  * broadcasts a **full hydrated snapshot** to the room, so a second browser sees
  * an answer land without reloading. Deletion broadcasts `{ type: "gone" }`.
  *
+ * The room also knows who is in it. A page that has adopted a name says so in
+ * the upgrade URL (`?name=…`), and any change to the set of names in a room —
+ * somebody arrived, somebody's last tab closed, a socket was reaped by the
+ * heartbeat — broadcasts `{ type: "presence", names }` to it. The names are
+ * connection metadata, held only for as long as the connection is: presence is
+ * never written to disk and there is nothing to clean up after a restart.
+ *
  * Three properties are worth stating plainly, because everything here is built
  * to hold them.
  *
@@ -15,7 +22,9 @@
  * the wire by the protocol layer and dropped on the floor. The only inbound
  * traffic that means anything is protocol-level — pong frames answering the
  * heartbeat, and close. The REST API remains the sole write path; this module
- * adds no write capability and no new authentication surface.
+ * adds no write capability and no new authentication surface. Presence does not
+ * bend that: a name arrives once, in the handshake the connection is made of,
+ * and no frame sent afterwards can change it or anything else.
  *
  * **It is optional, at two levels.** Each event carries a `realtime` flag the
  * owner sets in the edit dialog — absent means on, so no existing event file
@@ -56,49 +65,116 @@ export const HEARTBEAT_MS = 30_000;
  */
 export const MAX_CLIENT_PAYLOAD = 1024;
 
-/** `/api/events/:idOrSlug/ws`, and nothing else. */
-const WS_PATH = /^\/api\/events\/([^/?#]+)\/ws$/;
+/** `/api/events/:idOrSlug/ws`, with an optional query, and nothing else. */
+const WS_PATH = /^\/api\/events\/([^/?#]+)\/ws(?:\?([^#]*))?$/;
+
+/**
+ * Longest name accepted from the upgrade URL, matching the guest-name limit the
+ * response routes enforce. Anything longer is treated as absent rather than
+ * truncated: a name that does not match a respondent is no use to anybody, and
+ * silently shortening one would put a stranger's row in the list.
+ */
+const MAX_NAME_LENGTH = 100;
 
 // ---------------------------------------------------------------------------
 // the room registry
 // ---------------------------------------------------------------------------
 
+interface Room {
+  sockets: Set<WebSocket>;
+  /**
+   * Who is here, and how many connections say so.
+   *
+   * A multiset rather than a set because one person is routinely several
+   * sockets — two tabs, a phone beside a laptop, a reconnect that overlaps the
+   * drop it is replacing — and one of them closing must not take the name off
+   * everyone else's list while the others are still open.
+   */
+  names: Map<string, number>;
+}
+
 /**
  * Rooms are keyed by the event's **uuid**, never its slug: a rename moves the
  * slug and must not orphan the subscribers who joined under the old one.
  */
-const rooms = new Map<string, Set<WebSocket>>();
+const rooms = new Map<string, Room>();
 
 /** Sockets that have answered the most recent heartbeat ping. */
 const alive = new WeakSet<WebSocket>();
 
-function join(eventId: string, socket: WebSocket): void {
+/** The name a socket asserted at the handshake, for the one that gave one. */
+const asserted = new WeakMap<WebSocket, string>();
+
+/** True when the room's set of names changed, i.e. somebody should be told. */
+function join(eventId: string, socket: WebSocket, name: string | null): boolean {
   let room = rooms.get(eventId);
   if (!room) {
-    room = new Set();
+    room = { sockets: new Set(), names: new Map() };
     rooms.set(eventId, room);
   }
-  room.add(socket);
+  room.sockets.add(socket);
+  if (name === null) return false;
+  asserted.set(socket, name);
+  const count = room.names.get(name) ?? 0;
+  room.names.set(name, count + 1);
+  // A second tab under a name already in the list changes nothing anyone can
+  // see, so it is not a presence change.
+  return count === 0;
 }
 
-/** Removes a socket, and the room with it once the last member leaves. */
-function leave(eventId: string, socket: WebSocket): void {
+/**
+ * Removes a socket, and the room with it once the last member leaves. True when
+ * that took a name off the list.
+ */
+function leave(eventId: string, socket: WebSocket): boolean {
   const room = rooms.get(eventId);
-  if (!room) return;
-  room.delete(socket);
-  if (room.size === 0) rooms.delete(eventId);
+  if (!room) return false;
+  room.sockets.delete(socket);
+  const name = asserted.get(socket);
+  asserted.delete(socket);
+  let changed = false;
+  if (name !== undefined) {
+    const count = (room.names.get(name) ?? 0) - 1;
+    if (count > 0) room.names.set(name, count);
+    else {
+      changed = room.names.delete(name);
+    }
+  }
+  if (room.sockets.size === 0) {
+    rooms.delete(eventId);
+    // Nobody is left to be told, so there is no change to announce.
+    return false;
+  }
+  return changed;
+}
+
+/** Who a room currently holds, in the order a list would show them. */
+export function presenceNames(eventId: string): string[] {
+  const room = rooms.get(eventId);
+  if (!room) return [];
+  return [...room.names.keys()].sort((a, b) => a.localeCompare(b));
 }
 
 function send(eventId: string, message: RealtimeMessage): void {
   const room = rooms.get(eventId);
-  if (!room || room.size === 0) return;
+  if (!room || room.sockets.size === 0) return;
   // Serialised once for the whole room: the snapshot is the largest thing this
   // server sends, and a busy event has every subscriber getting the same bytes.
   const payload = JSON.stringify(message);
-  for (const socket of room) {
+  for (const socket of room.sockets) {
     if (socket.readyState !== socket.OPEN) continue;
     socket.send(payload);
   }
+}
+
+function sendTo(socket: WebSocket, message: RealtimeMessage): void {
+  if (socket.readyState !== socket.OPEN) return;
+  socket.send(JSON.stringify(message));
+}
+
+/** Tells a room who is in it. Never called for a room that no longer exists. */
+function broadcastPresence(eventId: string): void {
+  send(eventId, { type: "presence", names: presenceNames(eventId) });
 }
 
 /**
@@ -128,7 +204,7 @@ export function closeRoom(eventId: string): void {
   const room = rooms.get(eventId);
   if (!room) return;
   rooms.delete(eventId);
-  for (const socket of room) socket.close(1000, "Live updates disabled");
+  for (const socket of room.sockets) socket.close(1000, "Live updates disabled");
 }
 
 /**
@@ -142,7 +218,7 @@ export function broadcastGone(eventId: string): void {
   const room = rooms.get(eventId);
   if (!room) return;
   rooms.delete(eventId);
-  for (const socket of room) socket.close(1000, "Event deleted");
+  for (const socket of room.sockets) socket.close(1000, "Event deleted");
 }
 
 /** Test hook: how many events currently have subscribers. */
@@ -152,7 +228,7 @@ export function roomCount(): number {
 
 /** Test hook: how many sockets are watching one event. */
 export function clientCount(eventId: string): number {
-  return rooms.get(eventId)?.size ?? 0;
+  return rooms.get(eventId)?.sockets.size ?? 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -216,7 +292,7 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
       if (server.listenerCount("upgrade") === 1) socket.destroy();
       return;
     }
-    void accept(req, socket, head, decodeParam(match[1]));
+    void accept(req, socket, head, decodeParam(match[1]), assertedName(match[2]));
   }
 
   async function accept(
@@ -224,6 +300,7 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
     socket: Duplex,
     head: Buffer,
     idOrSlug: string | null,
+    name: string | null,
   ): Promise<void> {
     const event = idOrSlug === null ? null : await options.resolveEvent(idOrSlug);
     if (!event) {
@@ -252,13 +329,21 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
     }
 
     wss.handleUpgrade(req, socket, head, (ws) => {
-      subscribe(ws, event.id);
+      subscribe(ws, event.id, name);
     });
   }
 
-  function subscribe(ws: WebSocket, eventId: string): void {
-    join(eventId, ws);
+  function subscribe(ws: WebSocket, eventId: string, name: string | null): void {
+    const changed = join(eventId, ws, name);
     alive.add(ws);
+
+    // Whoever just arrived is told who is here, straight away — a list that
+    // only fills in when the next person moves would be a list you cannot
+    // trust. When their own name is new to the room that is the same message
+    // everybody else needs, so it goes to the room and they read it there
+    // rather than getting a second copy of it.
+    if (changed) broadcastPresence(eventId);
+    else sendTo(ws, { type: "presence", names: presenceNames(eventId) });
 
     // No `message` listener, deliberately and permanently: this socket is a
     // read-only channel and a client's bytes must never reach any state. See
@@ -268,7 +353,10 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
     });
     ws.on("close", () => {
       alive.delete(ws);
-      leave(eventId, ws);
+      // Covers being reaped by the heartbeat as well: `terminate()` closes the
+      // socket, so there is one path out of a room however the exit was
+      // decided.
+      if (leave(eventId, ws)) broadcastPresence(eventId);
     });
     ws.on("error", () => {
       // A socket that errors also closes; the room cleanup lives there. This
@@ -283,7 +371,7 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
   // the process to stay alive.
   const heartbeat = setInterval(() => {
     for (const room of rooms.values()) {
-      for (const ws of room) {
+      for (const ws of room.sockets) {
         if (!alive.has(ws)) {
           ws.terminate();
           continue;
@@ -299,11 +387,35 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
     close(): Promise<void> {
       clearInterval(heartbeat);
       server.off("upgrade", handleUpgrade);
-      for (const room of rooms.values()) for (const ws of room) ws.terminate();
+      for (const room of rooms.values()) for (const ws of room.sockets) ws.terminate();
       rooms.clear();
       return new Promise<void>((resolve) => wss.close(() => resolve()));
     },
   };
+}
+
+/**
+ * The name this connection is claiming, or null for a page that is browsing.
+ *
+ * Self-asserted, and nothing rests on it being true: it decides which name gets
+ * a pair of dots beside it in a list, and anyone holding the capability URL
+ * could already write a response under any name they liked (§ Security — the URL
+ * is the trust boundary). So it is validated for shape only — trimmed, and
+ * dropped if it is empty or longer than a name may be — and never for identity.
+ * A malformed query is simply a connection with no name.
+ */
+function assertedName(query: string | undefined): string | null {
+  if (query === undefined || query === "") return null;
+  let raw: string | null;
+  try {
+    raw = new URLSearchParams(query).get("name");
+  } catch {
+    return null;
+  }
+  if (raw === null) return null;
+  const name = raw.trim();
+  if (name === "" || name.length > MAX_NAME_LENGTH) return null;
+  return name;
 }
 
 /** A path segment, or null when its percent-encoding is malformed. */

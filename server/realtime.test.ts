@@ -20,6 +20,9 @@ import path from "node:path";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// Node's own global `WebSocket` answers pings by itself, which is the one thing
+// the reap test needs a client not to do; `ws` lets that be switched off.
+import { WebSocket as WsClient } from "ws";
 
 // The tarpit reads its delay once, when `missTarpit` is constructed at import
 // time, so a short value has to be in the environment before that import runs.
@@ -31,7 +34,13 @@ const { MISS_DELAY_MS } = vi.hoisted(() => {
 
 import { createApp, type Renderer } from "./app.ts";
 import { createSession, setCredential } from "./auth.ts";
-import { attachRealtime, clientCount, roomCount, type RealtimeServer } from "./realtime.ts";
+import {
+  attachRealtime,
+  clientCount,
+  presenceNames,
+  roomCount,
+  type RealtimeServer,
+} from "./realtime.ts";
 import { resolveEvent } from "./routes/events.ts";
 import { updateEvent } from "./storage.ts";
 import { missTarpit } from "./tarpit.ts";
@@ -137,44 +146,80 @@ async function createEvent(
 
 interface Subscriber {
   socket: WebSocket;
-  /** Everything received, in order. */
+  /** Snapshots and `gone`, in order. Presence is kept separately. */
   received: RealtimeMessage[];
-  /** Resolves once at least `count` messages have arrived. */
+  /** Every presence list this socket has been sent, in order. */
+  presence: string[][];
+  /** Resolves once at least `count` snapshots or `gone`s have arrived. */
   take(count: number): Promise<RealtimeMessage[]>;
+  /** Resolves once at least `count` presence lists have arrived. */
+  takePresence(count: number): Promise<string[][]>;
+  /** The most recent presence list, or an empty one before the first. */
+  names(): string[];
 }
 
-/** Opens a subscription and resolves once the socket is actually open. */
-function subscribe(idOrSlug: string): Promise<Subscriber> {
+/**
+ * Opens a subscription and resolves once the socket is actually open.
+ *
+ * A `name` is announced the way the client announces one: in the upgrade URL,
+ * because there is no inbound frame that could carry it.
+ */
+function subscribe(idOrSlug: string, name?: string): Promise<Subscriber> {
+  const query = name === undefined ? "" : `?name=${encodeURIComponent(name)}`;
   const socket = new WebSocket(
-    `${wsBase}/api/events/${encodeURIComponent(idOrSlug)}/ws`,
+    `${wsBase}/api/events/${encodeURIComponent(idOrSlug)}/ws${query}`,
   );
   clients.push(socket);
   const received: RealtimeMessage[] = [];
-  let notify: (() => void) | null = null;
+  const presence: string[][] = [];
+  const waiting = new Set<() => void>();
 
   socket.addEventListener("message", (event: MessageEvent) => {
-    received.push(JSON.parse(String(event.data)) as RealtimeMessage);
-    notify?.();
+    const message = JSON.parse(String(event.data)) as RealtimeMessage;
+    if (message.type === "presence") presence.push(message.names);
+    else received.push(message);
+    for (const notify of [...waiting]) notify();
   });
 
-  const take = (count: number): Promise<RealtimeMessage[]> =>
+  const waitFor = <T,>(ready: () => T | null, label: string): Promise<T> =>
     new Promise((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error(`only ${received.length} of ${count} messages arrived`)),
-        3000,
-      );
-      const check = () => {
-        if (received.length < count) return;
+      const timer = setTimeout(() => {
+        waiting.delete(check);
+        reject(new Error(`timed out waiting for ${label}`));
+      }, 3000);
+      function check() {
+        const value = ready();
+        if (value === null) return;
         clearTimeout(timer);
-        notify = null;
-        resolve(received);
-      };
-      notify = check;
+        waiting.delete(check);
+        resolve(value);
+      }
+      waiting.add(check);
       check();
     });
 
+  const take = (count: number) =>
+    waitFor(
+      () => (received.length >= count ? received : null),
+      `${count} snapshots (${received.length} arrived)`,
+    );
+  const takePresence = (count: number) =>
+    waitFor(
+      () => (presence.length >= count ? presence : null),
+      `${count} presence lists (${presence.length} arrived)`,
+    );
+
   return new Promise((resolve, reject) => {
-    socket.addEventListener("open", () => resolve({ socket, received, take }));
+    socket.addEventListener("open", () =>
+      resolve({
+        socket,
+        received,
+        presence,
+        take,
+        takePresence,
+        names: () => presence[presence.length - 1] ?? [],
+      }),
+    );
     socket.addEventListener("error", () => reject(new Error("upgrade refused")));
   });
 }
@@ -490,6 +535,172 @@ describe("the realtime channel", () => {
         body: { availability: SLOTS },
       });
       expect((await watcher.take(1))[0].type).toBe("event");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // presence
+  // -------------------------------------------------------------------------
+
+  describe("presence", () => {
+    it("tells a newcomer who is here, and the room that somebody arrived", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+
+      const alice = await subscribe(event.slug, "Alice");
+      // Her own name is in her first list: she is one of the people here.
+      expect(await alice.takePresence(1)).toEqual([["Alice"]]);
+
+      const bob = await subscribe(event.slug, "Bob");
+      // The newcomer is told the whole room, not just himself …
+      expect((await bob.takePresence(1))[0]).toEqual(["Alice", "Bob"]);
+      // … and the room is told about him, sorted rather than in arrival order.
+      await alice.takePresence(2);
+      expect(alice.names()).toEqual(["Alice", "Bob"]);
+      expect(presenceNames(event.id)).toEqual(["Alice", "Bob"]);
+
+      // Presence is not an answer: nobody has responded to this event at all.
+      expect(Object.keys((await call("GET", `/api/events/${event.id}`)).body as never))
+        .not.toContain("presence");
+      expect(((await call("GET", `/api/events/${event.id}`)).body as StoredEvent).responses)
+        .toEqual({});
+    });
+
+    it("counts a name once however many connections it has", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      const watcher = await subscribe(event.slug, "Alice");
+      await watcher.takePresence(1);
+
+      // A second tab under the same name: the same list, so nothing is sent.
+      const secondTab = await subscribe(event.slug, "Alice");
+      expect((await secondTab.takePresence(1))[0]).toEqual(["Alice"]);
+      expect(presenceNames(event.id)).toEqual(["Alice"]);
+      expect(watcher.presence).toHaveLength(1);
+
+      // One tab closing leaves the other holding the name.
+      secondTab.socket.close();
+      await until(() => clientCount(event.id) === 1, "the second tab to go");
+      expect(presenceNames(event.id)).toEqual(["Alice"]);
+      expect(watcher.presence).toHaveLength(1);
+    });
+
+    it("takes a name off the list when its last connection goes", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      const alice = await subscribe(event.slug, "Alice");
+      const bob = await subscribe(event.slug, "Bob");
+      await alice.takePresence(2);
+
+      bob.socket.close();
+
+      expect((await alice.takePresence(3))[2]).toEqual(["Alice"]);
+      expect(presenceNames(event.id)).toEqual(["Alice"]);
+    });
+
+    it("sends a browsing page the list without putting it on one", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      const alice = await subscribe(event.slug, "Alice");
+      await alice.takePresence(1);
+
+      // No `name` at all: this page is reading, not answering.
+      const browsing = await subscribe(event.slug);
+
+      expect((await browsing.takePresence(1))[0]).toEqual(["Alice"]);
+      expect(presenceNames(event.id)).toEqual(["Alice"]);
+      // And nobody was told anything, because nothing changed.
+      expect(alice.presence).toHaveLength(1);
+
+      browsing.socket.close();
+      await until(() => clientCount(event.id) === 1, "the browsing page to go");
+      expect(alice.presence).toHaveLength(1);
+    });
+
+    it("treats a name that is not one as no name at all", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+
+      // Whitespace, an empty value, and one over the guest-name limit. Every
+      // one of them is a connection that simply has no name.
+      for (const name of ["   ", "", "\t\n", "L".repeat(101)]) {
+        const watcher = await subscribe(event.slug, name);
+        expect((await watcher.takePresence(1))[0]).toEqual([]);
+        expect(presenceNames(event.id)).toEqual([]);
+        watcher.socket.close();
+      }
+
+      // Right up to the limit is a name, and it is trimmed on the way in.
+      const long = "L".repeat(100);
+      const watcher = await subscribe(event.slug, `  ${long}  `);
+      expect((await watcher.takePresence(1))[0]).toEqual([long]);
+    });
+
+    it("keeps the room's own name list out of what a client can set", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      const alice = await subscribe(event.slug, "Alice");
+      const watcher = await subscribe(event.slug);
+      await watcher.takePresence(1);
+
+      // A forged presence frame, in exactly the shape the server sends: still
+      // read off the wire and dropped, because no `message` listener exists.
+      watcher.socket.send(JSON.stringify({ type: "presence", names: ["Mallory", "Alice"] }));
+      watcher.socket.send(JSON.stringify({ type: "presence", names: [] }));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(presenceNames(event.id)).toEqual(["Alice"]);
+      expect(watcher.presence).toEqual([["Alice"]]);
+      expect(alice.presence).toEqual([["Alice"]]);
+      expect(watcher.socket.readyState).toBe(WebSocket.OPEN);
+    });
+
+    it("drops a name whose socket the heartbeat reaped", async () => {
+      attach(30);
+      const event = await createEvent(await adminCookie());
+      const alice = await subscribe(event.slug, "Alice");
+
+      // A client that has stopped answering — the case the heartbeat exists
+      // for: a connection through a proxy that quietly went away looks exactly
+      // like an idle one, and the name behind it must not linger on the list.
+      const mute = new WsClient(
+        `${wsBase}/api/events/${encodeURIComponent(event.slug)}/ws?name=Zoe`,
+      );
+      mute.pong = (() => {}) as typeof mute.pong;
+      await new Promise<void>((resolve, reject) => {
+        mute.on("open", () => resolve());
+        mute.on("error", reject);
+      });
+      await alice.takePresence(2);
+      expect(alice.names()).toEqual(["Alice", "Zoe"]);
+
+      // One round pings it, the next terminates it, and the close it triggers
+      // is the same exit any other departure takes.
+      expect((await alice.takePresence(3))[2]).toEqual(["Alice"]);
+      expect(presenceNames(event.id)).toEqual(["Alice"]);
+      expect(clientCount(event.id)).toBe(1);
+      mute.terminate();
+    });
+
+    it("has nobody at all when the event's live updates are off", async () => {
+      attach();
+      const event = await createEvent(await adminCookie(), { realtime: false });
+
+      await expect(subscribe(event.slug, "Alice")).rejects.toThrow("upgrade refused");
+
+      // No socket means no room, and no room means no presence to leak.
+      expect(presenceNames(event.id)).toEqual([]);
+      expect(roomCount()).toBe(0);
+    });
+
+    it("has nobody at all when realtime is off server-wide", async () => {
+      // No attach(): the kill switch is the absence of the listener.
+      const event = await createEvent(await adminCookie());
+
+      await expect(subscribe(event.slug, "Alice")).rejects.toThrow("upgrade refused");
+
+      expect(presenceNames(event.id)).toEqual([]);
+      expect(roomCount()).toBe(0);
     });
   });
 

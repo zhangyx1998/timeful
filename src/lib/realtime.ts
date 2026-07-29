@@ -24,12 +24,15 @@ import type { EventDoc } from "./event";
 /**
  * What the server pushes.
  *
- * - `event` — the current state of the event, fully hydrated.
- * - `gone`  — the event was deleted. Terminal: nothing further is coming and
- *             the client stops reconnecting.
+ * - `event`    — the current state of the event, fully hydrated.
+ * - `presence` — who is looking at this event right now, by the name each of
+ *                them adopted. Sorted, deduped, and never persisted anywhere.
+ * - `gone`     — the event was deleted. Terminal: nothing further is coming and
+ *                the client stops reconnecting.
  */
 export type RealtimeMessage =
   | { type: "event"; event: EventDoc }
+  | { type: "presence"; names: string[] }
   | { type: "gone" };
 
 /**
@@ -48,6 +51,13 @@ export function parseRealtimeMessage(data: unknown): RealtimeMessage | null {
   if (typeof parsed !== "object" || parsed === null) return null;
   const { type } = parsed as { type?: unknown };
   if (type === "gone") return { type: "gone" };
+  if (type === "presence") {
+    const { names } = parsed as { names?: unknown };
+    if (!Array.isArray(names)) return null;
+    // A single bad entry does not cost the frame: the list is advisory, and
+    // showing the names that did parse beats showing none of them.
+    return { type: "presence", names: names.filter((n): n is string => typeof n === "string") };
+  }
   if (type !== "event") return null;
   const { event } = parsed as { event?: unknown };
   if (typeof event !== "object" || event === null) return null;
@@ -107,8 +117,19 @@ export interface RealtimeSocket {
 export interface RealtimeOptions {
   /** A fresh snapshot arrived. */
   onEvent?: (event: EventDoc) => void;
+  /**
+   * Who else is looking at this event. Called with the room's whole list every
+   * time it changes, and with an empty one when the connection drops — a page
+   * that is no longer being told cannot keep claiming anyone is there.
+   */
+  onPresence?: (names: string[]) => void;
   /** The event was deleted. Called once; the connector then stops for good. */
   onGone?: () => void;
+  /**
+   * The name this page has adopted, announced in the upgrade URL so the rest of
+   * the room can see it. Absent for a visitor who is only browsing.
+   */
+  name?: string | null;
   /** Test seam: build the socket. Defaults to the global `WebSocket`. */
   createSocket?: (url: string) => RealtimeSocket;
   /** Test seam: the URL to open. Defaults to one derived from `location`. */
@@ -118,12 +139,17 @@ export interface RealtimeOptions {
 }
 
 export interface RealtimeHandle {
+  /**
+   * Announces a new identity, reconnecting under it. A no-op when the name has
+   * not actually changed, so it is safe to call on every identity event.
+   */
+  setName(name: string | null): void;
   /** Stops reconnecting and closes the socket. Idempotent. */
   close(): void;
 }
 
 /** A handle that does nothing, for the environments this cannot run in. */
-const INERT: RealtimeHandle = { close() {} };
+const INERT: RealtimeHandle = { setName() {}, close() {} };
 
 /**
  * The socket URL for an event, or null where there is no socket to open.
@@ -140,6 +166,24 @@ function defaultUrl(eventId: string): string | null {
   return `${scheme}//${host}/api/events/${encodeURIComponent(eventId)}/ws`;
 }
 
+/** An empty name and no name are the same thing: a page that is browsing. */
+function normalizeName(name: string | null | undefined): string | null {
+  const trimmed = name?.trim();
+  return trimmed ? trimmed : null;
+}
+
+/**
+ * The URL for one identity.
+ *
+ * The name rides in the handshake rather than in a frame, which is what lets
+ * presence exist without giving the socket an inbound path: there is nothing to
+ * receive, so there is still no `message` listener on the server side.
+ */
+function urlFor(base: string, name: string | null): string {
+  if (name === null) return base;
+  return `${base}?name=${encodeURIComponent(name)}`;
+}
+
 /**
  * Subscribes to an event's updates for as long as the returned handle is open.
  *
@@ -152,13 +196,16 @@ export function connectRealtime(
   eventId: string,
   options: RealtimeOptions = {},
 ): RealtimeHandle {
-  const url = options.url ?? defaultUrl(eventId);
-  if (url === null) return INERT;
+  const resolved = options.url ?? defaultUrl(eventId);
+  if (resolved === null) return INERT;
+  const base: string = resolved;
 
   const create =
     options.createSocket ?? ((target: string): RealtimeSocket => new WebSocket(target));
   const random = options.random ?? Math.random;
 
+  /** The identity every connection from here announces, until it changes. */
+  let name = normalizeName(options.name);
   let socket: RealtimeSocket | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   /** Consecutive failed attempts; zeroed the moment a connection opens. */
@@ -172,7 +219,7 @@ export function connectRealtime(
     if (stopped) return;
     let current: RealtimeSocket;
     try {
-      current = create(url as string);
+      current = create(urlFor(base, name));
     } catch {
       // A constructor that throws (a blocked mixed-content upgrade, say) is a
       // failed attempt like any other, not an exception for the caller.
@@ -202,6 +249,10 @@ export function connectRealtime(
         options.onGone?.();
         return;
       }
+      if (message.type === "presence") {
+        options.onPresence?.(message.names);
+        return;
+      }
       options.onEvent?.(message.event);
     });
 
@@ -213,6 +264,10 @@ export function connectRealtime(
     current.addEventListener("close", () => {
       if (stopped || socket !== current) return;
       socket = null;
+      // Nobody is telling this page who is here any more, so it stops saying.
+      // Stale dots beside a name are worse than none: they claim something the
+      // page has no way to know is still true.
+      options.onPresence?.([]);
       retry();
     });
   }
@@ -243,6 +298,25 @@ export function connectRealtime(
   open();
 
   return {
+    setName(next: string | null) {
+      const value = normalizeName(next);
+      if (stopped || value === name) return;
+      name = value;
+      // Straight away rather than on the backoff schedule: the switch is a
+      // deliberate act by somebody who is watching the list, and the room
+      // cannot learn about it any other way. Both counters reset with it — this
+      // is a new connection attempt on purpose, not a recovery from a failure.
+      clearTimer();
+      attempt = 0;
+      failures = 0;
+      const current = socket;
+      // Dropped from the connector before it is closed, so its own `close`
+      // handler sees a socket that no longer speaks here and leaves the
+      // reconnect — and the presence it would have cleared — alone.
+      socket = null;
+      current?.close();
+      open();
+    },
     close() {
       if (stopped) return;
       stopped = true;

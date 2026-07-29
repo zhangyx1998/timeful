@@ -109,13 +109,32 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("parseRealtimeMessage", () => {
-  it("reads the two messages the server sends", () => {
+  it("reads the messages the server sends", () => {
     expect(parseRealtimeMessage(JSON.stringify({ type: "gone" }))).toEqual({
       type: "gone",
     });
     expect(
       parseRealtimeMessage(JSON.stringify({ type: "event", event: EVENT })),
     ).toEqual({ type: "event", event: EVENT });
+    expect(
+      parseRealtimeMessage(JSON.stringify({ type: "presence", names: ["Ada", "Bo"] })),
+    ).toEqual({ type: "presence", names: ["Ada", "Bo"] });
+    expect(
+      parseRealtimeMessage(JSON.stringify({ type: "presence", names: [] })),
+    ).toEqual({ type: "presence", names: [] });
+  });
+
+  it("keeps the names in a presence list that did parse", () => {
+    // The list is advisory — it decides which rows get a pair of dots — so one
+    // bad entry costs that entry rather than the whole frame.
+    expect(
+      parseRealtimeMessage(JSON.stringify({ type: "presence", names: ["Ada", 7, null] })),
+    ).toEqual({ type: "presence", names: ["Ada"] });
+    // A list that is not a list is not a presence message at all.
+    expect(parseRealtimeMessage(JSON.stringify({ type: "presence" }))).toBeNull();
+    expect(
+      parseRealtimeMessage(JSON.stringify({ type: "presence", names: "Ada" })),
+    ).toBeNull();
   });
 
   it("drops anything it cannot make sense of", () => {
@@ -194,6 +213,130 @@ describe("connectRealtime", () => {
     expect(latest().closed).toBe(true);
     // Terminal: there is nothing left to reconnect to, so it does not try.
     latest().dropped();
+    vi.advanceTimersByTime(10 * MAX_RETRY_MS);
+    expect(sockets).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // presence, and the identity behind it
+  // -------------------------------------------------------------------------
+
+  it("hands presence lists to onPresence", () => {
+    const onPresence = vi.fn();
+    const onEvent = vi.fn();
+    connect({ onPresence, onEvent });
+
+    latest().opened();
+    latest().delivers(JSON.stringify({ type: "presence", names: ["Ada", "Bo"] }));
+    latest().delivers(JSON.stringify({ type: "presence", names: ["Ada"] }));
+    latest().delivers(JSON.stringify({ type: "event", event: EVENT }));
+
+    expect(onPresence.mock.calls).toEqual([[["Ada", "Bo"]], [["Ada"]]]);
+    // The two are separate reports about separate things: a presence frame is
+    // not a snapshot and must not be mistaken for one.
+    expect(onEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("announces the name in the URL, and nothing when there is none", () => {
+    connect({ name: "Ada Lovelace" });
+    expect(latest().url).toBe(`${URL_FOR_TESTS}?name=Ada%20Lovelace`);
+
+    // A page that is only browsing opens the plain URL: no empty parameter to
+    // be told apart from a real one.
+    for (const name of [null, undefined, "", "   "]) {
+      connect({ name });
+      expect(latest().url).toBe(URL_FOR_TESTS);
+    }
+  });
+
+  it("reconnects under a new name, and leaves the old socket behind", () => {
+    vi.useFakeTimers();
+    const onPresence = vi.fn();
+    const handle = connect({ name: "Ada", onPresence });
+    const first = latest();
+    first.opened();
+
+    handle.setName("Grace");
+
+    expect(first.closed).toBe(true);
+    expect(sockets).toHaveLength(2);
+    expect(latest().url).toBe(`${URL_FOR_TESTS}?name=Grace`);
+    // Straight away: no backoff wait for something the visitor just did.
+    // And the switch does not clear the list — the new connection's own
+    // snapshot is a moment away, so there is nothing to blank in between.
+    expect(onPresence).not.toHaveBeenCalled();
+
+    // The socket it replaced no longer speaks for the connector, so its late
+    // close cannot trigger a second reconnect.
+    first.dropped();
+    vi.advanceTimersByTime(10 * MAX_RETRY_MS);
+    expect(sockets).toHaveLength(2);
+  });
+
+  it("gives up nothing on a switch: the retry budget starts over", () => {
+    vi.useFakeTimers();
+    const handle = connect({ name: "Ada" });
+
+    // Most of the budget spent failing to connect …
+    for (let i = 0; i < MAX_FAILED_ATTEMPTS - 2; i += 1) {
+      latest().dropped();
+      vi.advanceTimersByTime(MAX_RETRY_MS);
+    }
+    const before = sockets.length;
+
+    handle.setName("Grace");
+
+    // … and the switch is a fresh start, at the base delay rather than the cap.
+    expect(sockets).toHaveLength(before + 1);
+    latest().dropped();
+    vi.advanceTimersByTime(BASE_RETRY_MS);
+    expect(sockets).toHaveLength(before + 2);
+  });
+
+  it("does nothing when the name has not really changed", () => {
+    const handle = connect({ name: "Ada" });
+
+    handle.setName("Ada");
+    handle.setName("  Ada  ");
+    expect(sockets).toHaveLength(1);
+
+    // Browsing after being somebody is a change, and so is the way back.
+    handle.setName(null);
+    expect(latest().url).toBe(URL_FOR_TESTS);
+    handle.setName("");
+    expect(sockets).toHaveLength(2);
+    handle.setName("Ada");
+    expect(latest().url).toBe(`${URL_FOR_TESTS}?name=Ada`);
+    expect(sockets).toHaveLength(3);
+  });
+
+  it("stops claiming anyone is there once the connection drops", () => {
+    vi.useFakeTimers();
+    const onPresence = vi.fn();
+    const handle = connect({ name: "Ada", onPresence });
+    latest().opened();
+    latest().delivers(JSON.stringify({ type: "presence", names: ["Ada", "Bo"] }));
+
+    latest().dropped();
+
+    // Dots beside a name the page can no longer vouch for are worse than none.
+    expect(onPresence.mock.calls).toEqual([[["Ada", "Bo"]], [[]]]);
+
+    // A deliberate close is the caller's own doing and reports nothing.
+    onPresence.mockClear();
+    vi.advanceTimersByTime(BASE_RETRY_MS);
+    handle.close();
+    expect(onPresence).not.toHaveBeenCalled();
+  });
+
+  it("ignores a name change after it has stopped", () => {
+    vi.useFakeTimers();
+    const handle = connect({ name: "Ada" });
+    handle.close();
+
+    handle.setName("Grace");
+
+    expect(sockets).toHaveLength(1);
     vi.advanceTimersByTime(10 * MAX_RETRY_MS);
     expect(sockets).toHaveLength(1);
   });
@@ -349,6 +492,10 @@ describe("connectRealtime", () => {
     });
 
     expect(created).not.toHaveBeenCalled();
+    expect(sockets).toHaveLength(0);
+    // The inert handle answers everything the real one does, so a caller never
+    // has to know which one it got.
+    expect(() => handle.setName("Ada")).not.toThrow();
     expect(sockets).toHaveLength(0);
     expect(() => handle.close()).not.toThrow();
   });
