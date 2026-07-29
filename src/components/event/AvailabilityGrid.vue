@@ -104,7 +104,7 @@ import IconChevronRight from "../../assets/icons/chevron-right.svg";
 import IconCheck from "../../assets/icons/check.svg";
 import IconHourglass from "../../assets/icons/hourglass.svg";
 import IconClose from "../../assets/icons/close-sm.svg";
-import IconRevert from "../../assets/icons/rotate-ccw.svg";
+import IconUndo from "../../assets/icons/undo.svg";
 import type { AvailabilityType, EventDoc } from "../../lib/event";
 
 const props = defineProps<{
@@ -161,10 +161,10 @@ const TOOLTIP_MAX_WIDTH = 180;
  * The menu that rides a drag. Its width and height are what the layout is
  * measured against — it is placed before it is drawn, so the numbers have to
  * come from here rather than from the box. Two widths, because the menu a
- * creation gets carries three controls and the one an erase gets carries one.
+ * creation gets carries four controls and the one an erase gets carries two.
  */
-const MENU_WIDTH = { create: 238, erase: 122 };
-const MENU_WIDTH_TOUCH = { create: 286, erase: 146 };
+const MENU_WIDTH = { create: 256, erase: 114 };
+const MENU_WIDTH_TOUCH = { create: 312, erase: 138 };
 const MENU_HEIGHT = 38;
 const MENU_HEIGHT_TOUCH = 50;
 /** Clearance between the menu and the edges of the chart it is clamped into. */
@@ -792,6 +792,11 @@ watch(
 // An erase gets one too. It has no meaning to choose, but it has the same thing
 // to take back, and a rectangle wiped by accident used to be unrecoverable
 // except by painting it again from memory.
+//
+// Either strip ends with a cross. Undo and dismiss are two different answers —
+// one moves the marks back, the other only closes the strip — and while the
+// cross stood for the first of them there was no button for the second at all,
+// only the two things a visitor has to be told: wait, or press elsewhere.
 
 type MenuKind = "create" | "erase";
 
@@ -932,6 +937,22 @@ function revertRect() {
     if (op.emit === "paint") emit("paint", { type: op.type, slots: op.slots });
     else emit("flip", { type: op.type, slots: op.slots });
   }
+  closeMenu();
+}
+
+/**
+ * Put the options away and leave the marks alone — what a press outside the
+ * selection does, and what the countdown does on its own, said as a button.
+ *
+ * Worth a control of its own because the other two ways of reaching it are both
+ * things you have to know: that the strip goes by itself if left, and that
+ * anywhere else on the chart dismisses it. A cross in the corner is neither.
+ * It takes the handles with it, because the selection and its options are one
+ * thing on screen and dismissing half of it would leave a rectangle nothing
+ * explains.
+ */
+function dismissMenu() {
+  if (!menuState.value?.live) return;
   closeMenu();
 }
 
@@ -1740,33 +1761,49 @@ defineExpose({ measure });
             If needed
           </button>
 
-          <!-- No label: it stands beside two that carry one, in the place a
-               dismissal always stands, and a third word would make the strip
-               something to read rather than something to choose from. -->
+          <!-- No label: it stands beside two that carry one, and a third word
+               would make the strip something to read rather than something to
+               choose from. The back-arrow is the one glyph that says "put it
+               back" without one. -->
           <button
             type="button"
-            class="meaning__option meaning__option--undo"
+            class="meaning__option meaning__option--undo meaning__option--icon"
             aria-label="Undo this selection"
             title="Undo this selection"
             :tabindex="menu.live ? undefined : -1"
             @click="revertRect"
           >
-            <IconClose aria-hidden="true" />
+            <IconUndo aria-hidden="true" />
           </button>
         </template>
 
-        <!-- An erase has nothing to choose between, so its one control says in
-             a word what it does rather than leaving a bare glyph to be guessed
-             at. -->
+        <!-- An erase has nothing to choose between, so its undo says in a word
+             what it does rather than leaving a glyph to be guessed at — the
+             same glyph either way, and the word beside it. -->
         <button
           v-else
           type="button"
-          class="meaning__option meaning__option--undo meaning__option--sole"
+          class="meaning__option meaning__option--undo meaning__option--revert"
           :tabindex="menu.live ? undefined : -1"
           @click="revertRect"
         >
-          <IconRevert aria-hidden="true" />
+          <IconUndo aria-hidden="true" />
           Revert
+        </button>
+
+        <!-- Last, in the corner a dismissal always sits in, and about the strip
+             rather than about the times: it closes what is open and changes
+             nothing, which is what waiting or pressing elsewhere would have
+             done. The undo beside it is the one that moves the marks. -->
+        <button
+          type="button"
+          class="meaning__option meaning__option--dismiss meaning__option--icon"
+          aria-label="Dismiss"
+          title="Dismiss"
+          :tabindex="menu.live ? undefined : -1"
+          @click="dismissMenu"
+        >
+          <IconClose aria-hidden="true" />
         </button>
       </div>
     </div>
@@ -2298,23 +2335,26 @@ defineExpose({ measure });
   border-left: 1px solid var(--color-border);
 }
 
-/* Icon-only, so it is sized by its glyph rather than by absent text. */
-.meaning__option--undo {
+/* Sized by its glyph rather than by absent text: the undo in a creation strip,
+   and the dismissal in both. */
+.meaning__option--icon {
   justify-content: center;
   padding: 0.3rem 0.55rem;
 }
 
-.meaning__option--undo svg {
+.meaning__option--icon svg {
   width: 0.95rem;
   height: 0.95rem;
 }
 
-/* On its own in the erase menu it is a labelled button like the others. */
-.meaning__option--sole {
+/* Labelled, like the two it follows in the erase strip. */
+.meaning__option--revert {
   padding: 0.3rem 0.7rem;
 }
 
-/* Specific enough to beat the generic hover above it, which it follows. */
+/* The undo moves the marks back, so it warns the way anything that takes
+   something away does. The dismissal beside it changes nothing and keeps the
+   neutral hover of the generic rule below. Specific enough to beat it. */
 .meaning__option--undo:hover:not(.meaning__option--on) {
   color: var(--color-danger);
   background: var(--color-danger-soft);
@@ -2545,9 +2585,9 @@ defineExpose({ measure });
     height: 0.95rem;
   }
 
-  /* Carrying no label, it would otherwise be the one control in the strip
+  /* Carrying no label, these would otherwise be the controls in the strip
      narrower than a finger. Padded out to the 44px floor on both axes. */
-  .meaning__option--undo {
+  .meaning__option--icon {
     padding-inline: 0.95rem;
   }
 
