@@ -618,11 +618,12 @@ function onPin(slot: number | null) {
              answer it is the best-times filter, and writing your own it is the
              thing that wipes it.
 
-             All of it stays on a phone, where the foot is a row of the fixed
-             pane rather than something the page scrolls past: a caption you
-             have to open a drawer to read is a caption nobody reads. What
-             gives way there is size, not presence — smaller type, tighter
-             gaps, and a legend collapsed to a ramp. -->
+             On a phone the foot is a row of the fixed pane rather than
+             something the page scrolls past, so every pixel it spends comes
+             off the chart. The two controls stay, on one row that never wraps;
+             the legend goes. It was the one thing in the row that only
+             described the chart rather than changing it, and at a phone's cell
+             size the chart says it well enough on its own. -->
         <template #foot>
           <div class="chart-foot">
             <!-- Which clock the gutter is printed on, at the gutter's own
@@ -636,11 +637,11 @@ function onPin(slot: number | null) {
             />
 
             <ColorLegend
+              v-if="!compact"
               class="chart-foot__legend"
               :mode="editing ? 'edit' : 'group'"
               :max="maxCount"
               :total="responseIndex.names.length"
-              :compact="compact"
             />
 
             <!-- The verb is what a phone's foot row gives up first: beside a
@@ -1058,11 +1059,12 @@ function onPin(slot: number | null) {
   }
 
   /* The foot is now a row of the pane rather than something the page scrolls
-     past, so it spends as little height as it can: tighter gaps and smaller
-     type throughout. What a finger has to hit keeps its floor — the shrinking
-     is in the words, not in the targets. */
+     past, so it spends as little height as it can: two controls, one row, and
+     nothing that could wrap it into two. What a finger has to hit keeps its
+     floor — the shrinking is in the words, not in the targets. */
   .compact .chart-foot {
-    gap: 0.25rem 0.4rem;
+    flex-wrap: nowrap;
+    gap: 0.4rem;
   }
 
   .compact .best {

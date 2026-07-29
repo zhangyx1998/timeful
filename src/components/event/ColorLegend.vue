@@ -3,27 +3,23 @@ import { computed } from "vue";
 import { useSlotBaseColor } from "../../lib/colors";
 import { heatmapColor } from "../../lib/grid";
 
-const props = withDefaults(
-  defineProps<{
-    mode: "group" | "edit";
-    max: number;
-    total: number;
-    /**
-     * The phone's version of the same caption. It has to share one foot row
-     * with two controls, so the counted scale collapses into a single ramp
-     * labelled only at its ends — the shape is what carries the meaning, and
-     * the numbers in between are already readable off the chart itself.
-     */
-    compact?: boolean;
-  }>(),
-  { compact: false },
-);
+/**
+ * What the chart's colours mean, under the chart.
+ *
+ * Desktop only. A phone's foot row is a row of the fixed pane rather than
+ * something the page scrolls past, and every pixel it spends is a pixel of
+ * chart — so the caption is not shrunk there, it is dropped, and the height
+ * goes to the grid. What a filled cell means is legible from the chart itself
+ * once the cells are the size a phone gives them.
+ */
+const props = defineProps<{
+  mode: "group" | "edit";
+  max: number;
+  total: number;
+}>();
 
 /** Same theme-resolved base the grid paints with. */
 const slotBase = useSlotBaseColor();
-
-/** The right-hand end of the compact ramp: the busiest count on the chart. */
-const topCount = computed(() => Math.max(props.max, 1));
 
 /** A few steps of the same curve the grid paints with. */
 const steps = computed(() => {
@@ -42,32 +38,11 @@ const steps = computed(() => {
 </script>
 
 <template>
-  <div class="legend" :class="{ 'legend--compact': compact }">
+  <div class="legend">
     <template v-if="mode === 'edit'">
       <span class="item"><i class="swatch available" />Available</span>
       <span class="item"><i class="swatch if-needed" />If needed</span>
-      <!-- The third key is the absence of the other two, which is the one
-           thing a legend can afford to leave out when the row it shares is a
-           phone's width. It keeps its place in assistive text. -->
-      <span class="item" :class="{ hidden: compact }">
-        <i class="swatch empty" />Unavailable
-      </span>
-    </template>
-    <template v-else-if="compact">
-      <span class="item ramp">
-        0
-        <i class="swatch empty" />
-        <i
-          v-for="step in steps"
-          :key="step.count"
-          class="swatch"
-          :style="{ backgroundColor: step.color }"
-        />
-        {{ topCount }}
-      </span>
-      <!-- What the two numbers count. Dropped from the row for width, not from
-           the caption: read aloud it still says what it says on a desktop. -->
-      <span class="hidden">available</span>
+      <span class="item"><i class="swatch empty" />Unavailable</span>
     </template>
     <template v-else>
       <span class="item"><i class="swatch empty" />0</span>
@@ -93,37 +68,6 @@ const steps = computed(() => {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-}
-
-/* Tighter type and smaller swatches: the same caption at the size a foot row
-   shared with two controls can afford. */
-.legend--compact {
-  gap: 0.3rem;
-  font-size: 0.6875rem;
-}
-
-.legend--compact .swatch {
-  width: 0.7rem;
-  height: 0.7rem;
-}
-
-/* The swatches run together into one strip so the scale reads as a ramp
-   between its two labelled ends rather than as five separate keys. */
-.ramp {
-  gap: 0.2rem;
-}
-
-.ramp .swatch + .swatch {
-  margin-left: -1px;
-}
-
-.hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
 }
 
 .caption {
