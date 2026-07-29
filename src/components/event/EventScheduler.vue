@@ -32,8 +32,25 @@ import { buildGrid, buildResponseIndex, maxRespondents } from "../../lib/grid";
 import { toAvailabilitySets, toIsoArray, type AvailabilityType, type EventDoc } from "../../lib/event";
 import { createSyncEngine, type SyncBaseline } from "../../lib/sync";
 
-const props = defineProps<{ event: EventDoc }>();
-const emit = defineEmits<{ refresh: [] }>();
+const props = withDefaults(
+  defineProps<{
+    event: EventDoc;
+    /**
+     * Who else is on this page right now, by the name each of them adopted.
+     * Comes off the realtime channel, which the page above owns, and is empty
+     * whenever there is no live connection — so the list simply has no dots in
+     * it, which is what it looked like before presence existed.
+     */
+    present?: string[];
+  }>(),
+  { present: () => [] },
+);
+
+const emit = defineEmits<{
+  refresh: [];
+  /** The name this visitor is answering as, or null once they are nobody. */
+  identity: [name: string | null];
+}>();
 
 const STORAGE = {
   timezone: "timeful.timezone",
@@ -183,6 +200,16 @@ const slotLabel = computed(() => {
 });
 
 const existingNames = computed(() => Object.keys(props.event.responses ?? {}).sort());
+
+/**
+ * Announces the identity upwards so the realtime connection can carry it.
+ *
+ * A watcher rather than a call in each of the three places a name is taken up
+ * or given up: it fires after the synchronous work of the switch — including
+ * `engine.flush()`, which has to reach the server as the person being stepped
+ * out of — so reconnecting cannot get ahead of the autosave it follows.
+ */
+watch(guestName, (name) => emit("identity", name));
 
 // --- autosave -------------------------------------------------------------
 
@@ -676,6 +703,7 @@ function onPin(slot: number | null) {
           v-if="!compact"
           class="panel-area"
           :names="responseIndex.names"
+          :present="present"
           :available-names="availableNames"
           :if-needed-names="ifNeededNames"
           :slot-label="slotLabel"
@@ -703,6 +731,7 @@ function onPin(slot: number | null) {
       <RespondentsPanel
         embedded
         :names="responseIndex.names"
+        :present="present"
         :available-names="availableNames"
         :if-needed-names="ifNeededNames"
         :slot-label="slotLabel"

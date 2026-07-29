@@ -47,6 +47,32 @@ const gone = ref(false);
 /** The realtime subscription, while the page is mounted. */
 let realtime: RealtimeHandle | null = null;
 
+/**
+ * Who is on this page right now, straight off the channel — so it is empty
+ * until the socket says otherwise, and empty again the moment it drops. It
+ * belongs here rather than in the scheduler because the socket does: presence
+ * arrives on the same connection as the snapshots, and there is one owner of
+ * that connection.
+ */
+const present = ref<string[]>([]);
+
+/**
+ * The name the scheduler is answering under, which the socket announces on the
+ * visitor's behalf.
+ *
+ * Kept in a ref as well as pushed at the handle because the two are mounted in
+ * an order neither can rely on: the scheduler may adopt a stored name before
+ * this page has connected, in which case the connection reads it from here.
+ */
+const identity = ref<string | null>(null);
+
+function onIdentity(name: string | null): void {
+  identity.value = name;
+  // Reconnecting is how the room learns about it: a name is part of the
+  // handshake, and the socket has no inbound path to tell it any other way.
+  realtime?.setName(name);
+}
+
 /** SSR has no timezone, so the subtitle renders in UTC and is refined on mount. */
 const subtitleOffset = ref(0);
 
@@ -123,7 +149,16 @@ onMounted(() => {
   // socket never opens behaves exactly like one from before this existed.
   // Subscribed by uuid rather than slug so a rename cannot strand it.
   const id = event.value?.id;
-  if (id) realtime = connectRealtime(id, { onEvent: applyEvent, onGone });
+  if (id) {
+    realtime = connectRealtime(id, {
+      name: identity.value,
+      onEvent: applyEvent,
+      onPresence: (names) => {
+        present.value = names;
+      },
+      onGone,
+    });
+  }
 });
 
 onBeforeUnmount(() => {
@@ -166,7 +201,13 @@ onBeforeUnmount(() => {
 
     <main class="main">
       <template v-if="event">
-        <EventScheduler v-if="mounted" :event="event" @refresh="refresh" />
+        <EventScheduler
+          v-if="mounted"
+          :event="event"
+          :present="present"
+          @refresh="refresh"
+          @identity="onIdentity"
+        />
         <p v-else class="loading">Loading availability…</p>
       </template>
 

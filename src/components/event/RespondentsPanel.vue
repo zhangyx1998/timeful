@@ -26,6 +26,15 @@
  * the same identity dialog with an empty field. Clicking a name that is already
  * there does the same thing for that person — after a confirm, because it means
  * editing somebody else's times and one row looks much like the next.
+ *
+ * Whoever is on the page right now gets three quietly pulsing dots after their
+ * name, the visitor included — they are online too, and a rule with no
+ * exceptions is one nobody has to learn. Somebody who is here but has not
+ * answered yet is a row all the same: it is the moment you most want to know
+ * they arrived. Such a row has no answer to show, so it keeps the person icon
+ * whatever slot is active, counts towards nothing, and offers no delete —
+ * there is nothing stored to delete. Their first save turns it into an ordinary
+ * row where it already sits, and closing their tab takes it away again.
  */
 import { computed, ref, watch } from "vue";
 import Button from "../ui/Button.vue";
@@ -45,7 +54,16 @@ const props = defineProps<{
    * both are dropped and only the answer is left.
    */
   embedded?: boolean;
+  /**
+   * Everyone with a stored answer. The counts are about these and only these:
+   * being on the page is not an answer.
+   */
   names: string[];
+  /**
+   * Everyone the server says is looking at this event right now, whether or not
+   * they have answered. Empty when the page has no live connection.
+   */
+  present: string[];
   /** Names available at the active slot. Null when no slot is active. */
   availableNames: Set<string> | null;
   ifNeededNames: Set<string>;
@@ -72,10 +90,26 @@ const confirming = ref<string | null>(null);
 /** The respondent the switch-identity dialog is asking about. */
 const switching = ref<string | null>(null);
 
-// A row that has gone (deleted, or the event reloaded) must not leave a dialog
-// open over a name that is no longer there.
+/** Who has a stored answer, as a set: asked once per row below. */
+const answered = computed(() => new Set(props.names));
+const online = computed(() => new Set(props.present));
+
+/**
+ * Every name the list shows: the respondents, plus anyone who is here without
+ * having answered, in one alphabetical run so a row does not move when its
+ * owner finally saves something.
+ */
+const listed = computed(() => {
+  const extra = props.present.filter((name) => !answered.value.has(name));
+  if (extra.length === 0) return props.names;
+  return [...new Set([...props.names, ...extra])].sort((a, b) => a.localeCompare(b));
+});
+
+// A row that has gone — deleted, the event reloaded, or somebody who was only
+// here and has now closed the tab — must not leave a dialog open over a name
+// that is no longer in the list.
 watch(
-  () => props.names,
+  () => listed.value,
   (names) => {
     if (confirming.value !== null && !names.includes(confirming.value)) {
       confirming.value = null;
@@ -86,6 +120,12 @@ watch(
   },
 );
 
+/**
+ * How many of the respondents are free at the active slot, out of how many
+ * answered. Both halves are about stored answers: somebody who is on the page
+ * without having answered is on neither side of the fraction, and cannot be —
+ * they have marked nothing, so there is nothing of theirs to count.
+ */
 const availableCount = computed(() =>
   props.availableNames ? props.availableNames.size : props.names.length,
 );
@@ -120,12 +160,20 @@ function slotState(name: string): SlotState | null {
  * while there is a slot to name: off a slot it is decoration next to the name
  * it belongs to and stays out of the accessibility tree; on one it carries the
  * answer, which is nowhere else in the row.
+ *
+ * A row with no answer behind it never reaches that state. `slotState` reads a
+ * missing name as unavailable, which is right for a respondent who left the
+ * slot blank and a lie about somebody who has not answered at all — so they are
+ * asked nothing and keep the person icon.
  */
 const rows = computed(() =>
-  props.names.map((name) => {
-    const state = slotState(name);
+  listed.value.map((name) => {
+    const answers = answered.value.has(name);
+    const state = answers ? slotState(name) : null;
     return {
       name,
+      answers,
+      online: online.value.has(name),
       state,
       label: state ? SLOT_STATE_LABELS[state] : null,
       unavailable: state === "unavailable",
@@ -204,8 +252,12 @@ function confirmSwitch() {
           <IconPerson v-else />
         </span>
 
-        <!-- Your own row is not a button: there is nothing to switch to. -->
-        <span v-if="row.isCurrent" class="text">{{ row.name }}</span>
+        <!-- Your own row is not a button: there is nothing to switch to. The
+             online state is said in words for a screen reader, where three
+             animated dots would be either silence or noise. -->
+        <span v-if="row.isCurrent" class="text">
+          {{ row.name }}<span v-if="row.online" class="hidden"> (online)</span>
+        </span>
         <button
           v-else
           type="button"
@@ -213,23 +265,35 @@ function confirmSwitch() {
           :title="`Answer as ${row.name}`"
           @click="switching = row.name"
         >
-          {{ row.name }}
+          {{ row.name }}<span v-if="row.online" class="hidden"> (online)</span>
         </button>
 
-        <span v-if="deleting === row.name" class="busy">
-          <Spinner :size="15" :label="`Removing ${row.name}`" />
+        <!-- Here right now. Decoration for the words beside it, so it is not in
+             the accessibility tree at all. -->
+        <span v-if="row.online" class="dots" aria-hidden="true">
+          <span class="dot" />
+          <span class="dot" />
+          <span class="dot" />
         </span>
-        <button
-          v-else
-          type="button"
-          class="remove"
-          :disabled="deleting !== null"
-          :aria-label="`Remove ${row.name}`"
-          :title="`Remove ${row.name}`"
-          @click="confirming = row.name"
-        >
-          <IconTrash stroke-width="1.7" aria-hidden="true" />
-        </button>
+
+        <!-- Nothing is stored for somebody who is only here, so there is
+             nothing for a delete to do. -->
+        <template v-if="row.answers">
+          <span v-if="deleting === row.name" class="busy">
+            <Spinner :size="15" :label="`Removing ${row.name}`" />
+          </span>
+          <button
+            v-else
+            type="button"
+            class="remove"
+            :disabled="deleting !== null"
+            :aria-label="`Remove ${row.name}`"
+            :title="`Remove ${row.name}`"
+            @click="confirming = row.name"
+          >
+            <IconTrash stroke-width="1.7" aria-hidden="true" />
+          </button>
+        </template>
       </li>
 
       <li class="add">
@@ -496,6 +560,68 @@ function confirmSwitch() {
   outline: var(--focus-ring);
   outline-offset: var(--focus-ring-offset);
   border-radius: var(--radius-sm);
+}
+
+/* What the dots say, for anyone who is not looking at them. */
+.hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* --- here right now ------------------------------------------------------- */
+
+/* Three dots after the name, in the accent the page already uses for "you and
+   yours". They sit tight against the name rather than at the row's end, because
+   they are part of it: the row's right edge belongs to the delete button. */
+.dots {
+  display: inline-flex;
+  flex: none;
+  gap: 0.15rem;
+  align-items: center;
+  color: var(--color-accent);
+}
+
+.dot {
+  width: 0.25rem;
+  height: 0.25rem;
+  background: currentColor;
+  border-radius: var(--radius-pill);
+  /* The wave runs at a third of the way apart, so the three read as one
+     travelling pulse rather than as a flicker. */
+  animation: presence-pulse 1.5s ease-in-out infinite;
+}
+
+.dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes presence-pulse {
+  0%,
+  70%,
+  100% {
+    opacity: 0.35;
+  }
+
+  30% {
+    opacity: 1;
+  }
+}
+
+/* Whoever asked for less movement gets the fact without the animation: three
+   dots, evenly lit, saying exactly what the moving ones say. */
+@media (prefers-reduced-motion: reduce) {
+  .dot {
+    animation: none;
+    opacity: 0.8;
+  }
 }
 
 .tag {
