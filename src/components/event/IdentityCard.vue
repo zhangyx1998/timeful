@@ -286,9 +286,11 @@ const emit = defineEmits<{ change: []; pick: []; retry: [] }>();
     flex: none;
   }
 
-  /* Status and the switch ride the right end of the name's own row. */
+  /* Status and the switch ride the right end of the name's own row, and hold
+     their width there: the comment above says the name gives way first, and it
+     can only do that if what it is giving way to refuses to. */
   .trail {
-    flex: 0 1 auto;
+    flex: none;
     gap: 0.4rem;
   }
 

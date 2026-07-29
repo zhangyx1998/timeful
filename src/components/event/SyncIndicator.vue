@@ -66,15 +66,18 @@ const emit = defineEmits<{ retry: [] }>();
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  min-width: 0;
   max-width: 100%;
   font-size: 0.8125rem;
   line-height: 1.2;
   white-space: nowrap;
 }
 
+/* Deliberately not `min-width: 0` on the row above: four of the five states are
+   two short words that should hold their width against a long name beside them,
+   and only this one — the message a server chose the length of — is capped. */
 .message {
   min-width: 0;
+  max-width: 12rem;
   overflow: hidden;
   text-overflow: ellipsis;
 }
