@@ -426,6 +426,128 @@ export function revertOperations(snapshot: SlotSnapshot): RevertOp[] {
 }
 
 // ---------------------------------------------------------------------------
+// resizing a selection that has already landed
+// ---------------------------------------------------------------------------
+//
+// A drag commits once, on release, and the record above is enough to undo it. A
+// selection with handles on it commits over and over: every cell the handle
+// crosses has to be painted as it arrives and put back as it leaves, and the way
+// back has to remain the state before the *first* of those steps rather than the
+// state before the last one.
+//
+// So the record grows instead of being retaken. A cell entering the rectangle is
+// recorded the first time it is seen and never again — by then what it holds is
+// this selection's own doing, and remembering that would make the undo undo only
+// half of itself.
+
+/** Which slots a rectangle has taken in, and which it has let go of. */
+export function selectionDelta(
+  previous: Iterable<number>,
+  next: Iterable<number>,
+): { entering: number[]; leaving: number[] } {
+  const before = new Set(previous);
+  const after = new Set(next);
+  const entering: number[] = [];
+  const leaving: number[] = [];
+  for (const slot of after) if (!before.has(slot)) entering.push(slot);
+  for (const slot of before) if (!after.has(slot)) leaving.push(slot);
+  return { entering, leaving };
+}
+
+/** The part of a record that is about these slots, and no other. */
+function pickSnapshot(snapshot: SlotSnapshot, slots: Iterable<number>): SlotSnapshot {
+  const wanted = new Set(slots);
+  return {
+    available: snapshot.available.filter((slot) => wanted.has(slot)),
+    ifNeeded: snapshot.ifNeeded.filter((slot) => wanted.has(slot)),
+    empty: snapshot.empty.filter((slot) => wanted.has(slot)),
+  };
+}
+
+/**
+ * Adds slots the record has not seen before, reading what they hold now.
+ *
+ * Slots already in it are left exactly as they are. A cell that was taken in,
+ * let go of and taken in again has already been put back to what this remembers,
+ * so re-reading it would record the selection's own paint as the state to
+ * restore — and the undo would stop halfway.
+ */
+function growSnapshot(
+  snapshot: SlotSnapshot,
+  slots: Iterable<number>,
+  availability: ReadonlySet<number>,
+  ifNeeded: ReadonlySet<number>,
+): SlotSnapshot {
+  const known = new Set([...snapshot.available, ...snapshot.ifNeeded, ...snapshot.empty]);
+  const fresh = [...new Set(slots)].filter((slot) => !known.has(slot));
+  if (fresh.length === 0) return snapshot;
+  const added = snapshotSlots(fresh, availability, ifNeeded);
+  return {
+    available: [...snapshot.available, ...added.available],
+    ifNeeded: [...snapshot.ifNeeded, ...added.ifNeeded],
+    empty: [...snapshot.empty, ...added.empty],
+  };
+}
+
+export interface SelectionStep {
+  /** Emits that put the cells the rectangle has left back as they were. */
+  restore: RevertOp[];
+  /** Cells it has just taken in, for the caller to paint as it means to. */
+  entering: number[];
+  /** The record, grown to cover them. */
+  snapshot: SlotSnapshot;
+  /** Every slot the rectangle now covers. */
+  slots: number[];
+}
+
+/**
+ * One step of a resize: what to put back, what to paint, and what to remember.
+ *
+ * The caller decides what "paint" means — a creation's chosen type, or a
+ * deletion's clearing — because that is the one thing the rectangle's geometry
+ * cannot say.
+ */
+export function selectionStep(options: {
+  previous: Iterable<number>;
+  next: Iterable<number>;
+  snapshot: SlotSnapshot;
+  availability: ReadonlySet<number>;
+  ifNeeded: ReadonlySet<number>;
+}): SelectionStep {
+  const { previous, next, snapshot, availability, ifNeeded } = options;
+  const { entering, leaving } = selectionDelta(previous, next);
+  return {
+    restore: revertOperations(pickSnapshot(snapshot, leaving)),
+    entering,
+    snapshot: growSnapshot(snapshot, entering, availability, ifNeeded),
+    slots: [...new Set(next)],
+  };
+}
+
+/**
+ * The rectangle's two opposite corners, as the pair a resize works in: the one
+ * being dragged, and the one it is pinned to.
+ *
+ * A rectangle is a span, so which corner is stored where means nothing to it —
+ * which is exactly what lets a handle dragged past its anchor keep working
+ * rather than collapsing. `moving` is the corner the named handle sits on: the
+ * top-left one, or the bottom-right.
+ */
+export function selectionCorners(
+  a: Cell,
+  b: Cell,
+  handle: "from" | "to",
+): { moving: Cell; anchor: Cell } {
+  const minRow = Math.min(a.row, b.row);
+  const maxRow = Math.max(a.row, b.row);
+  const minCol = Math.min(a.col, b.col);
+  const maxCol = Math.max(a.col, b.col);
+  const first = { row: minRow, col: minCol };
+  const last = { row: maxRow, col: maxCol };
+  return handle === "from" ? { moving: first, anchor: last } : { moving: last, anchor: first };
+}
+
+// ---------------------------------------------------------------------------
 // placing something over the chart
 // ---------------------------------------------------------------------------
 //

@@ -3,10 +3,30 @@
  * The scheduling grid.
  *
  * Interaction is one delegated pointer handler on the grid body: positions are
- * hit-tested to (row, col) against measured geometry, and a drag paints the
- * whole rectangle between the press and release cells in one commit. Pointer
- * events cover mouse and touch with the same code path; `touch-action: none`
- * while editing keeps a touch drag from scrolling the chart underneath it.
+ * hit-tested to (row, col) against measured geometry.
+ *
+ * Two hands, two gestures
+ * -----------------------
+ * A mouse paints by dragging: press, sweep, release, and the rectangle between
+ * the two cells is committed in one go. Nothing else on a desktop wants that
+ * drag, so it can have it.
+ *
+ * A finger cannot. The same drag is the only way to scroll a chart taller and
+ * wider than the screen, and for as long as the body held `touch-action: none`
+ * every swipe over the cells was a negotiation: the pane refused to move and a
+ * sweep meant to look around painted instead. So on touch the drag goes back to
+ * the platform — both axes, native momentum and all — and selecting is done in
+ * two beats instead of one. A tap marks the cell it landed on and puts a pair of
+ * round handles on the opposite corners of it; dragging a handle grows the
+ * rectangle, and the cells it crosses are painted as they arrive and put back as
+ * they leave, so what is on screen is always what is saved. Only the handles
+ * take `touch-action: none` — 44px of it each — because they are the only place a
+ * drag still means something other than scrolling.
+ *
+ * The two paths meet at the same commit, the same floating options and the same
+ * undo: a resize keeps growing one record of what every cell it has ever touched
+ * used to be (`selectionStep`), so the cancel in the options strip still restores
+ * the state the tap interrupted, however far the handles travelled since.
  *
  * Scrolling
  * ---------
@@ -37,7 +57,7 @@
  * mean something — the whole chart in the group view, the headings and the
  * gutter while editing — grabs the track and pans it, and a movement threshold
  * separates that from the click that pins a slot. Touch is left entirely to the
- * platform.
+ * platform, everywhere and in both modes.
  *
  * A paint drag held at either clipped edge pulls the track along with it, so a
  * selection can run past the columns that happen to be on screen. It glides
@@ -64,6 +84,8 @@ import {
   revertOperations,
   scrollEdges,
   scrollStepFor,
+  selectionCorners,
+  selectionStep,
   slotAt,
   slotDigest,
   snapshotSlots,
@@ -157,6 +179,19 @@ const MENU_CURSOR_CLEARANCE = 18;
 const MENU_TOUCH_CLEARANCE = 26;
 /** How long it waits to be used before it takes itself away. */
 const MENU_LINGER_MS = 5000;
+/**
+ * Longer for a selection with handles on it. A drag's options are read and either
+ * used or ignored within a second or two; a tap's are the start of the gesture
+ * rather than the end of it, and the handles they arrive with have to be found
+ * and aimed at before they can be dragged.
+ */
+const MENU_LINGER_TOUCH_MS = 12000;
+/**
+ * How far a finger may travel and still have been a tap. Generous, because it is
+ * only a second line of defence: the browser cancels the pointer outright the
+ * moment it decides the gesture is a scroll, and that is what usually settles it.
+ */
+const TAP_SLOP = 12;
 /** How much of the neighbouring column shows past the clipped edge. */
 const PEEK = 15;
 /** How far a mouse has to travel before it is panning rather than clicking. */
@@ -296,13 +331,22 @@ function measure() {
  * alike, without any of them having to know about the drag.
  */
 function onScroll() {
+  const wasLeft = scrollLeft.value;
+  const wasTop = scrollTop.value;
   readScroll();
-  if (dragging.value && lastPointer) {
-    const cell = cellFromPoint(lastPointer.x, lastPointer.y);
-    if (cell) dragCur.value = cell;
-  }
+  if (gesturing.value) retrack();
   // The card names a cell, and the chart has just moved out from under it.
   if (summaryState.value) dismissSummary();
+  // The options are placed over the pane, but what they are about is a rectangle
+  // in the track — so when the track moves they move with it, and the ring and
+  // the strip that names it never come apart. Only once it is a control: while
+  // the drag runs it is following the pointer instead, which is a stronger claim
+  // on where it should be.
+  const state = menuState.value;
+  if (state?.live) {
+    state.x -= scrollLeft.value - wasLeft;
+    state.y -= scrollTop.value - wasTop;
+  }
 }
 
 onMounted(() => {
@@ -421,6 +465,22 @@ const dragStart = ref<Cell | null>(null);
 const dragCur = ref<Cell | null>(null);
 const pressCell = ref<Cell | null>(null);
 const hoverCell = ref<Cell | null>(null);
+/** Which handle is being dragged, while one is. */
+const resizing = ref<"from" | "to" | null>(null);
+/**
+ * A touch press that has not yet turned out to be either a tap or a scroll. It
+ * paints nothing while it is undecided: a release settles it as a tap, and a
+ * `pointercancel` — which the browser sends the instant it takes the gesture over
+ * for scrolling — or enough travel settles it the other way.
+ */
+let touchPress: { cell: Cell; x: number; y: number } | null = null;
+
+/**
+ * Whether a gesture owns the chart: a mouse painting, or a handle being dragged.
+ * Both want the knobs inert, the edge glide running and every scroll re-read
+ * against the pointer that is still down.
+ */
+const gesturing = computed(() => dragging.value || resizing.value !== null);
 
 function slotFor(cell: Cell | null): number | null {
   if (!cell) return null;
@@ -470,10 +530,23 @@ function stopEdgeScroll() {
   edgeCarry = 0;
 }
 
+/**
+ * Re-reads the cell under a pointer that is still down. The one line that keeps
+ * both gestures correct through momentum, a chevron's smooth scroll and the edge
+ * glide alike, without any of them having to know which gesture is running.
+ */
+function retrack() {
+  if (!lastPointer) return;
+  const cell = cellFromPoint(lastPointer.x, lastPointer.y);
+  if (!cell) return;
+  if (resizing.value !== null) applyResize(cell);
+  else if (dragging.value) dragCur.value = cell;
+}
+
 function glide(now: number) {
   edgeFrame = 0;
   const element = viewport.value;
-  if (!dragging.value || edgeDir.value === 0 || !element) return;
+  if (!gesturing.value || edgeDir.value === 0 || !element) return;
 
   const elapsed = edgeLast === 0 ? 0 : now - edgeLast;
   edgeLast = now;
@@ -489,10 +562,7 @@ function glide(now: number) {
   readScroll();
   // A frame that moved nothing still has to re-hit-test: `onScroll` only fires
   // when the position actually changed, and a held finger sends no moves.
-  if (lastPointer) {
-    const cell = cellFromPoint(lastPointer.x, lastPointer.y);
-    if (cell) dragCur.value = cell;
-  }
+  retrack();
 
   const done = edgeDir.value < 0 ? edges.value.atStart : edges.value.atEnd;
   if (done) {
@@ -503,7 +573,7 @@ function glide(now: number) {
 }
 
 function startGlide() {
-  if (edgeFrame !== 0 || !dragging.value || typeof requestAnimationFrame !== "function") return;
+  if (edgeFrame !== 0 || !gesturing.value || typeof requestAnimationFrame !== "function") return;
   edgeLast = 0;
   edgeCarry = 0;
   edgeFrame = requestAnimationFrame(glide);
@@ -511,7 +581,7 @@ function startGlide() {
 
 function updateEdgeScroll(event: PointerEvent) {
   const element = viewport.value;
-  if (!dragging.value || !scrollable.value || !element) {
+  if (!gesturing.value || !scrollable.value || !element) {
     stopEdgeScroll();
     return;
   }
@@ -544,8 +614,12 @@ function onPointerDown(event: PointerEvent) {
   // (a two-finger pinch must not start painting).
   if (event.button !== 0 && event.pointerType === "mouse") return;
   if (!event.isPrimary) return;
+  const touch = event.pointerType !== "mouse";
   // Whatever the last paint was about, this press is about something else.
-  closeMenu();
+  // Except on touch, where a press may still turn out to be a scroll, and
+  // scrolling past a selection is not a reason to lose it — `onScroll` takes it
+  // away if the chart actually moves, and a tap replaces it outright.
+  if (!touch) closeMenu();
   const cell = cellFromEvent(event);
   if (!cell) return;
   pressCell.value = cell;
@@ -554,6 +628,14 @@ function onPointerDown(event: PointerEvent) {
   if (!props.editable) return;
   const slot = slotFor(cell);
   if (slot === null) return;
+
+  if (touch) {
+    // Undecided: the platform owns this gesture until it turns out not to want
+    // it. Nothing is captured and nothing is prevented, so a swipe scrolls the
+    // pane as it does anywhere else on the phone.
+    touchPress = { cell, x: event.clientX, y: event.clientY };
+    return;
+  }
 
   // Marked is marked, whichever of the two it is: pressing a cell you have
   // already claimed gives it back, and pressing an unclaimed one takes it.
@@ -579,6 +661,11 @@ function onPointerMove(event: PointerEvent) {
     event.preventDefault();
     return;
   }
+  if (touchPress) {
+    const travelled = Math.hypot(event.clientX - touchPress.x, event.clientY - touchPress.y);
+    if (travelled > TAP_SLOP) touchPress = null;
+    return;
+  }
   if (event.pointerType !== "mouse" || panning.value) return;
   setHover(cell);
 }
@@ -593,12 +680,37 @@ function onPointerLeave() {
   setHover(null);
 }
 
+/**
+ * A tap on a cell, which is what a touch selection begins as: it marks that one
+ * cell exactly as a single-cell drag would, and hands back a rectangle with
+ * handles on it to be made bigger.
+ */
+function commitTap(press: { cell: Cell }, event: PointerEvent): boolean {
+  const { cell } = press;
+  const slot = slotFor(cell);
+  if (slot === null) return false;
+
+  const marked = props.availability.has(slot) || props.ifNeeded.has(slot);
+  dragType.value = marked ? "remove" : "add";
+  const slots = [slot];
+  // Read before the emit, so the record is the state the tap interrupted — the
+  // same order the drag path takes, for the same reason.
+  const snapshot = snapshotSlots(slots, props.availability, props.ifNeeded);
+  openMenu(cell, marked ? "erase" : "create", event, true);
+  emit("paint", { type: dragType.value, slots });
+  commitMenu(cell, cell, slots, snapshot);
+  return true;
+}
+
 function endDrag(event?: PointerEvent) {
   window.removeEventListener("pointerup", endDrag);
   stopEdgeScroll();
 
   let committed = false;
-  if (dragging.value && dragStart.value && dragCur.value) {
+  if (props.editable && touchPress && event) {
+    committed = commitTap(touchPress, event);
+    touchPress = null;
+  } else if (dragging.value && dragStart.value && dragCur.value) {
     const slots = rectangleSlots(props.model, dragStart.value, dragCur.value);
     if (slots.length > 0) {
       // Read before the emit, and so the state the press started from: nothing
@@ -632,10 +744,18 @@ function endDrag(event?: PointerEvent) {
   pressCell.value = null;
 }
 
-function onPointerCancel() {
+/**
+ * The pointer was taken away. On touch that is the platform saying it wants the
+ * gesture for a scroll, which is the ordinary case rather than an error — so the
+ * undecided press is simply dropped, and a selection already on screen is left
+ * for `onScroll` to deal with if the chart really moves.
+ */
+function onPointerCancel(event?: PointerEvent) {
   window.removeEventListener("pointerup", endDrag);
   stopEdgeScroll();
-  closeMenu();
+  const scrolling = touchPress !== null && event?.pointerType !== "mouse";
+  touchPress = null;
+  if (!scrolling) closeMenu();
   dragging.value = false;
   dragStart.value = null;
   dragCur.value = null;
@@ -647,6 +767,7 @@ watch(
   () => props.editable,
   () => {
     onPointerCancel();
+    endResize();
     closeMenu();
   },
 );
@@ -686,12 +807,21 @@ interface MenuState {
   touch: boolean;
   /** False while the drag runs — a preview cannot be clicked, or aimed at. */
   live: boolean;
+  /**
+   * Whether the rectangle carries handles: true for the touch path, where the
+   * tap is the start of the selection rather than the whole of it. A drag has
+   * already been aimed by hand and needs none.
+   */
+  handles: boolean;
   slots: number[];
   /** What those slots were before the drag; null until the drag commits. */
   snapshot: SlotSnapshot | null;
 }
 
 const menuState = ref<MenuState | null>(null);
+/** The strip and the handle layer, so a press can be told from an outside one. */
+const menuEl = ref<HTMLElement | null>(null);
+const gripsEl = ref<HTMLElement | null>(null);
 let menuTimer: ReturnType<typeof setTimeout> | undefined;
 
 function closeMenu() {
@@ -700,10 +830,11 @@ function closeMenu() {
   menuState.value = null;
 }
 
-/** Restarted on every use: five seconds of *inattention*, not of existence. */
+/** Restarted on every use: a spell of *inattention*, not of existence. */
 function holdMenu() {
   clearTimeout(menuTimer);
-  menuTimer = setTimeout(closeMenu, MENU_LINGER_MS);
+  const linger = menuState.value?.handles ? MENU_LINGER_TOUCH_MS : MENU_LINGER_MS;
+  menuTimer = setTimeout(closeMenu, linger);
 }
 
 // A pointer resting on the menu is attention, not inattention: the countdown
@@ -736,7 +867,7 @@ function anchorFromPoint(clientX: number, clientY: number): { x: number; y: numb
   };
 }
 
-function openMenu(cell: Cell, kind: MenuKind, event: PointerEvent) {
+function openMenu(cell: Cell, kind: MenuKind, event: PointerEvent, handles = false) {
   const anchor = anchorFromPoint(event.clientX, event.clientY);
   if (!anchor) return;
   clearTimeout(menuTimer);
@@ -749,6 +880,7 @@ function openMenu(cell: Cell, kind: MenuKind, event: PointerEvent) {
     y: anchor.y,
     touch: event.pointerType !== "mouse",
     live: false,
+    handles,
     slots: [],
     snapshot: null,
   };
@@ -870,7 +1002,156 @@ const region = computed(() => {
   };
 });
 
-onBeforeUnmount(closeMenu);
+// --- the handles ----------------------------------------------------------
+//
+// What a finger drags instead of the cells. Two of them, on opposite corners of
+// the rectangle, and everything they do is a resize of a selection that has
+// already been committed — so every step has to leave the grid, the options and
+// the record of how to undo it all agreeing with each other.
+//
+// They live outside `.body`, in a layer over the track, for one reason: the body
+// clips, and a handle centred on a corner of the first row or the first column
+// would be sliced in half along with the 44 pixels a finger has to find it by.
+// They still scroll with the columns, because the layer is in the track.
+
+/** Where the two handles sit, in the track's own pixels. */
+const handles = computed(() => {
+  const state = menuState.value;
+  if (!state || !props.editable || !state.handles || !state.live) return null;
+
+  const { moving: first } = selectionCorners(state.start, state.end, "from");
+  const { moving: last } = selectionCorners(state.start, state.end, "to");
+  return {
+    kind: state.kind,
+    from: { x: offsets.value[first.col] ?? 0, y: rowTop(first.row) },
+    to: {
+      x: (offsets.value[last.col] ?? 0) + colWidth.value,
+      y: rowTop(last.row) + rowHeight.value,
+    },
+  };
+});
+
+/**
+ * Grows or shrinks the committed rectangle to reach `cell`.
+ *
+ * The corner being dragged is kept in `start` and the one it is pinned to in
+ * `end`, which is why a handle dragged clean past its anchor keeps working: a
+ * rectangle is a span, and `selectionCorners` sorts them out again next time
+ * either handle is picked up.
+ */
+function applyResize(cell: Cell) {
+  const state = menuState.value;
+  if (!state?.live || !state.snapshot) return;
+  if (state.start.row === cell.row && state.start.col === cell.col) return;
+
+  // What the selection currently means, read off the answer itself — the same
+  // way the options strip reads it — before any of this step's emits move it.
+  const type: AvailabilityType = state.slots.some((slot) => props.ifNeeded.has(slot))
+    ? "if_needed"
+    : "available";
+
+  state.start = cell;
+  const step = selectionStep({
+    previous: state.slots,
+    next: rectangleSlots(props.model, state.start, state.end),
+    snapshot: state.snapshot,
+    availability: props.availability,
+    ifNeeded: props.ifNeeded,
+  });
+
+  // Everything the rectangle has let go of, put back as this gesture found it.
+  for (const op of step.restore) {
+    if (op.emit === "paint") emit("paint", { type: op.type, slots: op.slots });
+    else emit("flip", { type: op.type, slots: op.slots });
+  }
+  // And everything it has taken in, painted as the selection means.
+  if (step.entering.length > 0) {
+    if (state.kind === "erase") emit("paint", { type: "remove", slots: step.entering });
+    else emit("flip", { type, slots: step.entering });
+  }
+
+  state.snapshot = step.snapshot;
+  state.slots = step.slots;
+}
+
+function startResize(handle: "from" | "to", event: PointerEvent) {
+  const state = menuState.value;
+  if (!state?.live || !state.handles) return;
+  if (event.button !== 0 && event.pointerType === "mouse") return;
+  if (!event.isPrimary) return;
+
+  const { moving, anchor } = selectionCorners(state.start, state.end, handle);
+  state.start = moving;
+  state.end = anchor;
+  resizing.value = handle;
+  lastPointer = { x: event.clientX, y: event.clientY };
+  // A hand on a handle is attention, whatever kind of pointer it is.
+  clearTimeout(menuTimer);
+  menuTimer = undefined;
+
+  (event.currentTarget as HTMLElement | null)?.setPointerCapture?.(event.pointerId);
+  window.addEventListener("pointermove", onResizeMove);
+  window.addEventListener("pointerup", endResize);
+  window.addEventListener("pointercancel", endResize);
+  // The press must not reach the cells underneath, or the pane, or the page.
+  event.preventDefault();
+  event.stopPropagation();
+}
+
+function onResizeMove(event: PointerEvent) {
+  if (resizing.value === null) return;
+  lastPointer = { x: event.clientX, y: event.clientY };
+  const cell = cellFromPoint(event.clientX, event.clientY);
+  if (cell) applyResize(cell);
+  updateEdgeScroll(event);
+  event.preventDefault();
+}
+
+function endResize() {
+  window.removeEventListener("pointermove", onResizeMove);
+  window.removeEventListener("pointerup", endResize);
+  window.removeEventListener("pointercancel", endResize);
+  resizing.value = null;
+  stopEdgeScroll();
+  // The countdown starts again from the end of the work, not from the tap.
+  if (menuState.value?.live) holdMenu();
+}
+
+/**
+ * A press anywhere that is not the selection puts it away.
+ *
+ * Only for the touch path, and only because that path has something a drag's
+ * options do not: handles, which are a thing left on the chart to be used later
+ * rather than a label on something just done. A press on the cells is the tap
+ * gesture itself and settles the matter on release; a press on the options or on
+ * a handle is the selection being used. Everything else is somewhere else.
+ */
+function onOutsidePress(event: PointerEvent) {
+  const state = menuState.value;
+  if (!state?.live || !state.handles) return;
+  const target = event.target as Node;
+  if (body.value?.contains(target)) return;
+  if (menuEl.value?.contains(target)) return;
+  if (gripsEl.value?.contains(target)) return;
+  closeMenu();
+}
+
+watch(
+  () => Boolean(menuState.value?.live && menuState.value.handles),
+  (armed) => {
+    if (typeof window === "undefined") return;
+    if (armed) window.addEventListener("pointerdown", onOutsidePress, true);
+    else window.removeEventListener("pointerdown", onOutsidePress, true);
+  },
+);
+
+onBeforeUnmount(() => {
+  closeMenu();
+  endResize();
+  if (typeof window !== "undefined") {
+    window.removeEventListener("pointerdown", onOutsidePress, true);
+  }
+});
 
 // --- who is free here -----------------------------------------------------
 //
@@ -1163,7 +1444,7 @@ defineExpose({ measure });
 <template>
   <div class="grid" :class="{ scrollable }">
     <div class="wrap">
-      <div class="stage" :class="{ dragging }">
+      <div class="stage" :class="{ dragging: gesturing }">
         <!-- One scrollport for the whole chart. The gutter and the headings are
              inside it, pinned on their own axis, rather than beside it. -->
         <div
@@ -1211,11 +1492,13 @@ defineExpose({ measure });
                 </template>
               </div>
 
+              <!-- No `touch-action` of its own in either mode: a finger's drag
+                   belongs to the platform, and selecting is done by tapping and
+                   then dragging a handle. -->
               <div
                 ref="body"
                 class="body"
                 :class="{ editing: editable, dragging }"
-                :style="{ touchAction: editable ? 'none' : undefined }"
                 @pointerdown="onPointerDown"
                 @pointermove="onPointerMove"
                 @pointerup="endDrag"
@@ -1268,6 +1551,31 @@ defineExpose({ measure });
                     width: `${region.width}px`,
                     height: `${region.height}px`,
                   }"
+                />
+              </div>
+
+              <!-- Over the track rather than inside the body, so a handle on the
+                   first row or the first column is not sliced in half by the
+                   body's own clipping — and its 44px with it. The layer is a
+                   hole; only the two discs take the pointer. -->
+              <div v-if="handles" ref="gripsEl" class="grips" aria-hidden="true">
+                <div
+                  class="grip"
+                  :class="`grip--${handles.kind}`"
+                  :style="{
+                    left: `${handles.from.x}px`,
+                    top: `${HEADER_HEIGHT + handles.from.y}px`,
+                  }"
+                  @pointerdown="startResize('from', $event)"
+                />
+                <div
+                  class="grip"
+                  :class="`grip--${handles.kind}`"
+                  :style="{
+                    left: `${handles.to.x}px`,
+                    top: `${HEADER_HEIGHT + handles.to.y}px`,
+                  }"
+                  @pointerdown="startResize('to', $event)"
                 />
               </div>
             </div>
@@ -1394,6 +1702,7 @@ defineExpose({ measure });
            painted straight through. -->
       <div
         v-if="menu"
+        ref="menuEl"
         class="meaning"
         :class="{ 'meaning--preview': !menu.live }"
         :style="{ left: `${menu.left}px`, top: `${menu.top}px` }"
@@ -1588,7 +1897,10 @@ defineExpose({ measure });
   transform: none;
 }
 
+/* Positioned, because the handle layer is placed against it: the handles have to
+   travel with the columns, and this is what the columns are laid out in. */
 .track {
+  position: relative;
   flex: none;
 }
 
@@ -1866,6 +2178,61 @@ defineExpose({ measure });
     inset 0 0 0 1px color-mix(in srgb, var(--color-bg) 75%, transparent),
     0 0 0 1px color-mix(in srgb, var(--color-bg) 75%, transparent),
     0 0 10px color-mix(in srgb, var(--color-selection-delete) 55%, transparent);
+}
+
+/* --- the handles ---------------------------------------------------------- */
+
+/* A hole over the whole track: the cells under it stay tappable and a swipe
+   across it still scrolls the pane. Only the discs are solid. */
+.grips {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+}
+
+/* Centred on the corner it moves. The target is the 44px floor while the disc
+   drawn inside it is small, so what a finger can hit is much bigger than what a
+   finger covers — the same trade the scroll knobs make. `touch-action: none` is
+   here and nowhere else on the chart: this is the one place a finger's drag means
+   something other than scrolling. */
+.grip {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: var(--tap-min);
+  height: var(--tap-min);
+  transform: translate(-50%, -50%);
+  cursor: grab;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+/* The disc itself, in the selection's own colour with a sheath of the page
+   between it and whatever it is sitting on — so it reads over an empty cell, a
+   green one, an amber one and the erase wash alike, in both themes. */
+.grip::after {
+  content: "";
+  width: 0.95rem;
+  height: 0.95rem;
+  background: var(--color-selection-create);
+  border: 2px solid var(--color-bg);
+  border-radius: var(--radius-pill);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-selection-create) 60%, transparent),
+    var(--shadow-sm);
+  transition: transform var(--transition-fast);
+}
+
+.grip--erase::after {
+  background: var(--color-selection-delete);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-selection-delete) 60%, transparent),
+    var(--shadow-sm);
+}
+
+/* Under the finger. Grown rather than recoloured: the colour is what it means,
+   and it has not stopped meaning that. */
+.grip:active::after {
+  transform: scale(1.25);
 }
 
 .cell.active::after {
@@ -2247,6 +2614,7 @@ defineExpose({ measure });
 @media (prefers-reduced-motion: reduce) {
   .knob,
   .knob__glyph,
+  .grip::after,
   .meaning__option {
     transition: none;
   }

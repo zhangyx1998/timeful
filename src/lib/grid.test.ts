@@ -20,6 +20,9 @@ import {
   revertOperations,
   scrollEdges,
   scrollStepFor,
+  selectionCorners,
+  selectionDelta,
+  selectionStep,
   slotAt as slot,
   slotDigest,
   snapshotSlots,
@@ -459,6 +462,237 @@ describe("undoing a drag", () => {
       }
       expect([...availability].sort()).toEqual([20, 21]);
       expect([...ifNeeded]).toEqual([22]);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resizing a selection that has already landed
+// ---------------------------------------------------------------------------
+
+describe("resizing a committed selection", () => {
+  describe("selectionDelta", () => {
+    it("says what came in and what went out", () => {
+      expect(selectionDelta([1, 2, 3], [2, 3, 4])).toEqual({
+        entering: [4],
+        leaving: [1],
+      });
+    });
+
+    it("has nothing to report when the rectangle did not move", () => {
+      expect(selectionDelta([1, 2], [2, 1])).toEqual({ entering: [], leaving: [] });
+    });
+
+    it("reads a repeated slot once, on either side", () => {
+      expect(selectionDelta([1, 1], [1, 1, 2, 2])).toEqual({ entering: [2], leaving: [] });
+    });
+
+    it("handles a rectangle dragged clean off its old ground", () => {
+      expect(selectionDelta([1, 2], [8, 9])).toEqual({
+        entering: [8, 9],
+        leaving: [1, 2],
+      });
+    });
+  });
+
+  describe("selectionCorners", () => {
+    it("gives the named corner and pins the opposite one", () => {
+      const a = { row: 2, col: 1 };
+      const b = { row: 5, col: 4 };
+      expect(selectionCorners(a, b, "from")).toEqual({
+        moving: { row: 2, col: 1 },
+        anchor: { row: 5, col: 4 },
+      });
+      expect(selectionCorners(a, b, "to")).toEqual({
+        moving: { row: 5, col: 4 },
+        anchor: { row: 2, col: 1 },
+      });
+    });
+
+    it("does not care which way round the corners were stored", () => {
+      const forwards = selectionCorners({ row: 1, col: 1 }, { row: 4, col: 3 }, "from");
+      const backwards = selectionCorners({ row: 4, col: 3 }, { row: 1, col: 1 }, "from");
+      expect(forwards).toEqual(backwards);
+    });
+
+    it("reads a single cell as both corners", () => {
+      const cell = { row: 3, col: 3 };
+      expect(selectionCorners(cell, cell, "from")).toEqual({ moving: cell, anchor: cell });
+      expect(selectionCorners(cell, cell, "to")).toEqual({ moving: cell, anchor: cell });
+    });
+  });
+
+  describe("selectionStep", () => {
+    const empty = { available: [], ifNeeded: [], empty: [] };
+
+    it("paints what arrived and puts back what left", () => {
+      const step = selectionStep({
+        previous: [1, 2],
+        next: [2, 3],
+        snapshot: { available: [], ifNeeded: [], empty: [1, 2] },
+        availability: new Set([1, 2]),
+        ifNeeded: new Set(),
+      });
+      expect(step.entering).toEqual([3]);
+      // Slot 1 was empty before the selection ever reached it, so it goes back
+      // to empty — and nothing is said about slot 2, which never left.
+      expect(step.restore).toEqual([{ emit: "paint", type: "remove", slots: [1] }]);
+      expect(step.slots.sort()).toEqual([2, 3]);
+    });
+
+    it("remembers a slot as it found it, not as the selection left it", () => {
+      // Slot 3 arrives while empty and is painted. It leaves, is restored, and
+      // arrives again — and the record must still say "empty", or the undo would
+      // leave the selection's own paint behind.
+      const first = selectionStep({
+        previous: [1],
+        next: [1, 3],
+        snapshot: { available: [], ifNeeded: [], empty: [1] },
+        availability: new Set([1]),
+        ifNeeded: new Set(),
+      });
+      expect(first.snapshot.empty.sort()).toEqual([1, 3]);
+
+      const again = selectionStep({
+        previous: [1],
+        next: [1, 3],
+        snapshot: first.snapshot,
+        // Slot 3 is marked at this point: it was painted, then restored, and the
+        // grid is mid-flight. Either way the record must not be rewritten.
+        availability: new Set([1, 3]),
+        ifNeeded: new Set(),
+      });
+      expect(again.snapshot).toEqual(first.snapshot);
+    });
+
+    it("records what a slot actually held, mixed rectangle and all", () => {
+      const step = selectionStep({
+        previous: [],
+        next: [1, 2, 3],
+        snapshot: empty,
+        availability: new Set([1]),
+        ifNeeded: new Set([2]),
+      });
+      expect(step.snapshot).toEqual({ available: [1], ifNeeded: [2], empty: [3] });
+      expect(step.restore).toEqual([]);
+      expect(step.entering.sort()).toEqual([1, 2, 3]);
+    });
+
+    it("restores each departing slot to its own former state", () => {
+      const step = selectionStep({
+        previous: [1, 2, 3],
+        next: [3],
+        snapshot: { available: [1], ifNeeded: [2], empty: [3] },
+        availability: new Set([1, 2, 3]),
+        ifNeeded: new Set(),
+      });
+      expect(step.restore).toEqual([
+        { emit: "flip", type: "available", slots: [1] },
+        { emit: "flip", type: "if_needed", slots: [2] },
+      ]);
+      // Slot 3 is still in the rectangle, so nothing is said about it.
+      expect(step.entering).toEqual([]);
+    });
+
+    it("survives a whole resize and undoes it in one go", () => {
+      // The grid's own state, and the two emits the parent turns into marks.
+      const availability = new Set([200, 201]);
+      const ifNeeded = new Set([202]);
+      const before = { available: [...availability], ifNeeded: [...ifNeeded] };
+
+      const apply = (type: string, slots: number[]) => {
+        for (const s of slots) {
+          if (type === "available") {
+            availability.add(s);
+            ifNeeded.delete(s);
+          } else if (type === "if_needed") {
+            ifNeeded.add(s);
+            availability.delete(s);
+          } else {
+            availability.delete(s);
+            ifNeeded.delete(s);
+          }
+        }
+      };
+
+      // A tap on 100, then a handle dragged out over 101..203 and back in again,
+      // crossing slots that were empty, available and if-needed.
+      let slots: number[] = [100];
+      let snapshot = snapshotSlots(slots, availability, ifNeeded);
+      apply("available", slots);
+
+      for (const next of [
+        [100, 101],
+        [100, 101, 102, 200],
+        [100, 101, 102, 200, 201, 202, 203],
+        [100, 101, 102],
+        [100, 101],
+      ]) {
+        const step = selectionStep({
+          previous: slots,
+          next,
+          snapshot,
+          availability,
+          ifNeeded,
+        });
+        for (const op of step.restore) apply(op.type, op.slots);
+        if (step.entering.length > 0) apply("available", step.entering);
+        snapshot = step.snapshot;
+        slots = step.slots;
+      }
+
+      // Everything the handle passed over and let go of is already back.
+      expect([...availability].sort()).toEqual([100, 101, 200, 201]);
+      expect([...ifNeeded]).toEqual([202]);
+
+      // And the one revert undoes the whole gesture, not just its last step.
+      for (const op of revertOperations(snapshot)) apply(op.type, op.slots);
+      expect([...availability].sort()).toEqual(before.available.sort());
+      expect([...ifNeeded].sort()).toEqual(before.ifNeeded.sort());
+    });
+
+    it("undoes a deletion region grown and shrunk the same way", () => {
+      const availability = new Set([300, 301, 302]);
+      const ifNeeded = new Set([303]);
+      const apply = (type: string, slots: number[]) => {
+        for (const s of slots) {
+          if (type === "available") {
+            availability.add(s);
+            ifNeeded.delete(s);
+          } else if (type === "if_needed") {
+            ifNeeded.add(s);
+            availability.delete(s);
+          } else {
+            availability.delete(s);
+            ifNeeded.delete(s);
+          }
+        }
+      };
+
+      let slots: number[] = [300];
+      let snapshot = snapshotSlots(slots, availability, ifNeeded);
+      apply("remove", slots);
+
+      for (const next of [
+        [300, 301],
+        [300, 301, 302, 303],
+        [300, 301],
+      ]) {
+        const step = selectionStep({ previous: slots, next, snapshot, availability, ifNeeded });
+        for (const op of step.restore) apply(op.type, op.slots);
+        if (step.entering.length > 0) apply("remove", step.entering);
+        snapshot = step.snapshot;
+        slots = step.slots;
+      }
+
+      // 302 and 303 were let go of, so their marks are back — including the
+      // if-needed one, which must not come back as plain available.
+      expect([...availability].sort()).toEqual([302]);
+      expect([...ifNeeded]).toEqual([303]);
+
+      for (const op of revertOperations(snapshot)) apply(op.type, op.slots);
+      expect([...availability].sort()).toEqual([300, 301, 302]);
+      expect([...ifNeeded]).toEqual([303]);
     });
   });
 });
