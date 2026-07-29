@@ -141,9 +141,11 @@ function pick(suggestion: string) {
           :disabled="trimmed.length === 0"
           :title="matchedName ? `Continue as ${matchedName}` : undefined"
         >
-          <template v-if="matchedName">
-            Continue as <span class="continue__name">{{ matchedName }}</span>
-          </template>
+          <!-- One element, so the button's flex gap does not land between the
+               words on top of the space that is already there. -->
+          <span v-if="matchedName" class="continue">Continue as <span
+            class="continue__name"
+          >{{ matchedName }}</span></span>
           <template v-else>Continue</template>
         </Button>
       </div>
@@ -243,12 +245,20 @@ function pick(suggestion: string) {
   }
 }
 
-.continue__name {
+.continue {
   min-width: 0;
-  overflow: hidden;
+}
+
+/* `bottom` rather than the baseline an overflow-hidden inline-block would
+   otherwise offer, which sits at its margin edge and drops the name below the
+   words beside it. */
+.continue__name {
+  display: inline-block;
   max-width: 11rem;
+  overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  vertical-align: bottom;
 }
 
 /* Two buttons still stack rather than crowd on the narrowest panel. */
