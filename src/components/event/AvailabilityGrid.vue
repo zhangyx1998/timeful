@@ -1689,7 +1689,11 @@ defineExpose({ measure });
         :style="{ left: `${summary.left}px`, top: `${summary.top}px` }"
       >
         <div class="digest__head">
-          <span class="digest__when">{{ summary.label }}</span>
+          <!-- One line, whatever the label says: the card floats over the chart
+               and a second line of heading would push the names it exists to
+               show off the bottom of it. Cut short, the whole of it is still on
+               the element for anything that can ask. -->
+          <span class="digest__when" :title="summary.label">{{ summary.label }}</span>
           <button
             type="button"
             class="digest__close"
@@ -1715,6 +1719,7 @@ defineExpose({ measure });
               :key="person.name"
               class="who"
               :class="`who--${person.stance}`"
+              :title="person.name"
             >
               <!-- The glyph is the whole of what the chip says about them, so
                    it carries the word rather than sitting out of the tree the
@@ -2446,11 +2451,20 @@ defineExpose({ measure });
   gap: 0.25rem;
 }
 
+/* One line. Nothing that floats over the chart is allowed to grow by wrapping:
+   the card is placed against a measured box, and a heading that took a second
+   line would move the names down instead of the card up. `min-width: 0` is what
+   lets it shrink far enough to be cut at all, flex items refusing to go below
+   their content otherwise. */
 .digest__when {
   flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
   font-size: 0.75rem;
   font-weight: 600;
   line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   color: var(--color-text);
 }
 
@@ -2516,13 +2530,18 @@ defineExpose({ measure });
   list-style: none;
 }
 
+/* A chip is one line: the glyph, and as much of the name as fits. It may shrink
+   to make room — `min-width: 0` again — and the name inside it is what gives
+   way, so a long one is cut rather than folded onto a line of its own. */
 .who {
   display: inline-flex;
   align-items: center;
   gap: 0.2rem;
+  min-width: 0;
   max-width: 100%;
   font-size: 0.75rem;
   line-height: 1.35;
+  white-space: nowrap;
   color: var(--color-text);
 }
 
@@ -2567,17 +2586,25 @@ defineExpose({ measure });
 }
 
 .who--more {
+  flex: none;
   color: var(--color-text-muted);
   font-size: 0.6875rem;
 }
 
+/* The one line a time range is. `TOOLTIP_MAX_WIDTH` in the script is this
+   max-width, and the clamp that keeps the bubble on screen is worked out from
+   it — so the bubble may be cut short at that width but must never grow past
+   it, and must never grow downwards either. */
 .tooltip {
   position: absolute;
   z-index: 20;
   max-width: 180px;
+  overflow: hidden;
   transform: translate(-50%, -115%);
   padding: 0.25rem 0.5rem;
   font-size: 0.75rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   text-align: center;
   color: var(--color-tooltip-text);
   background: var(--color-tooltip-bg);
