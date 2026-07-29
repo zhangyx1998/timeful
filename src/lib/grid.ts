@@ -548,6 +548,51 @@ export function selectionCorners(
 }
 
 // ---------------------------------------------------------------------------
+// what a press means while a selection is on the chart
+// ---------------------------------------------------------------------------
+//
+// A selection with handles is not the end of a gesture but the middle of one: it
+// sits on the chart waiting to be resized, relabelled or taken back. That makes
+// the next press ambiguous in a way a drag's is not, and the ambiguity is worth
+// one rule stated in one place.
+//
+// The rule is that a press outside the selection is spent on putting it away.
+// Only that: the marks it left stand, and the press itself paints nothing. A
+// selection is something a tap raised, and a tap that both dismissed one thing
+// and created another would leave the visitor unable to dismiss without also
+// drawing — so the second tap, on an empty chart, is the one that draws.
+
+/**
+ * The three things a press can be while a selection is live.
+ *
+ * - `use` — it landed on the options strip or a handle: the selection's own
+ *   controls, which mean what they say.
+ * - `select` — an ordinary press on the cells, free to paint: either there is no
+ *   selection to protect, or the press landed inside the one there is.
+ * - `deselect` — anywhere else: it puts the selection away and does nothing.
+ */
+export type SelectionPress = "use" | "select" | "deselect";
+
+export function selectionPress(press: {
+  /** Corners of the live selection, or null when the chart carries none. */
+  selection: { start: Cell; end: Cell } | null;
+  /** Whether the press landed on the options strip or on one of the handles. */
+  onControls: boolean;
+  /** Whether it landed on the cells at all — the page around them is not them. */
+  onCells: boolean;
+  /** The cell under it, as hit-tested; meaningless unless `onCells`. */
+  cell: Cell | null;
+}): SelectionPress {
+  const { selection, onControls, onCells, cell } = press;
+  if (onControls) return "use";
+  if (!selection) return onCells ? "select" : "deselect";
+  if (onCells && cell && inRectangle(cell.row, cell.col, selection.start, selection.end)) {
+    return "select";
+  }
+  return "deselect";
+}
+
+// ---------------------------------------------------------------------------
 // placing something over the chart
 // ---------------------------------------------------------------------------
 //

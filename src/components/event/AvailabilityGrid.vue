@@ -25,8 +25,11 @@
  *
  * The two paths meet at the same commit, the same floating options and the same
  * undo: a resize keeps growing one record of what every cell it has ever touched
- * used to be (`selectionStep`), so the cancel in the options strip still restores
- * the state the tap interrupted, however far the handles travelled since.
+ * used to be (`selectionStep`), so the undo in the options strip still restores
+ * the state the tap interrupted, however far the handles travelled since. The
+ * strip's other way out is the cross beside it, which is the dismissal — the
+ * marks stand, the handles go, and a press anywhere else on the chart means
+ * exactly that and nothing more.
  *
  * Scrolling
  * ---------
@@ -85,6 +88,7 @@ import {
   scrollEdges,
   scrollStepFor,
   selectionCorners,
+  selectionPress,
   selectionStep,
   slotAt,
   slotDigest,
@@ -1139,30 +1143,46 @@ function endResize() {
 }
 
 /**
- * A press anywhere that is not the selection puts it away.
+ * A press anywhere that is not the selection puts it away, and does nothing
+ * else.
  *
  * Only for the touch path, and only because that path has something a drag's
  * options do not: handles, which are a thing left on the chart to be used later
- * rather than a label on something just done. A press on the cells is the tap
- * gesture itself and settles the matter on release; a press on the options or on
- * a handle is the selection being used. Everything else is somewhere else.
+ * rather than a label on something just done. A press on the options or on a
+ * handle is the selection being used, and a press inside the rectangle is the
+ * ordinary tap it has always been. Everything else — the cells around it
+ * included — is the dismissal, and only the dismissal.
+ *
+ * That last part is why this runs in the capture phase and stops the press where
+ * it stands: reaching the body it would paint a cell and raise a fresh selection
+ * in the same movement that was meant to put one away, and there would be no
+ * gesture left that only put one away. The tap after it, with the chart clear,
+ * draws as usual. `selectionPress` is the whole rule; this only carries it out.
  */
-function onOutsidePress(event: PointerEvent) {
+function onChartPress(event: PointerEvent) {
   const state = menuState.value;
-  if (!state?.live || !state.handles) return;
   const target = event.target as Node;
-  if (body.value?.contains(target)) return;
-  if (menuEl.value?.contains(target)) return;
-  if (gripsEl.value?.contains(target)) return;
+  const onCells = Boolean(body.value?.contains(target));
+  const verdict = selectionPress({
+    selection: state?.live && state.handles ? { start: state.start, end: state.end } : null,
+    onControls: Boolean(menuEl.value?.contains(target) || gripsEl.value?.contains(target)),
+    onCells,
+    cell: onCells ? cellFromEvent(event) : null,
+  });
+  if (verdict !== "deselect") return;
   closeMenu();
+  // Spent. Nothing downstream may read it as the start of anything — not the
+  // paint, not the pan, not the pin. Propagation only: a `preventDefault` here
+  // would also take away the scroll this press may yet turn out to be.
+  if (onCells) event.stopPropagation();
 }
 
 watch(
   () => Boolean(menuState.value?.live && menuState.value.handles),
   (armed) => {
     if (typeof window === "undefined") return;
-    if (armed) window.addEventListener("pointerdown", onOutsidePress, true);
-    else window.removeEventListener("pointerdown", onOutsidePress, true);
+    if (armed) window.addEventListener("pointerdown", onChartPress, true);
+    else window.removeEventListener("pointerdown", onChartPress, true);
   },
 );
 
@@ -1170,7 +1190,7 @@ onBeforeUnmount(() => {
   closeMenu();
   endResize();
   if (typeof window !== "undefined") {
-    window.removeEventListener("pointerdown", onOutsidePress, true);
+    window.removeEventListener("pointerdown", onChartPress, true);
   }
 });
 

@@ -22,6 +22,7 @@ import {
   scrollStepFor,
   selectionCorners,
   selectionDelta,
+  selectionPress,
   selectionStep,
   slotAt as slot,
   slotDigest,
@@ -694,6 +695,66 @@ describe("resizing a committed selection", () => {
       expect([...availability].sort()).toEqual([300, 301, 302]);
       expect([...ifNeeded]).toEqual([303]);
     });
+  });
+});
+
+describe("selectionPress", () => {
+  const selection = { start: { row: 2, col: 1 }, end: { row: 4, col: 3 } };
+  /** A press on the cells, at the cell given. */
+  const onCell = (cell: { row: number; col: number } | null) => ({
+    selection,
+    onControls: false,
+    onCells: true,
+    cell,
+  });
+
+  it("gives a press on the strip or a handle to the selection itself", () => {
+    expect(
+      selectionPress({ selection, onControls: true, onCells: false, cell: null }),
+    ).toBe("use");
+  });
+
+  it("leaves a press inside the rectangle as the ordinary tap it was", () => {
+    expect(selectionPress(onCell({ row: 3, col: 2 }))).toBe("select");
+    // The corners are inside it too.
+    expect(selectionPress(onCell({ row: 2, col: 1 }))).toBe("select");
+    expect(selectionPress(onCell({ row: 4, col: 3 }))).toBe("select");
+  });
+
+  it("spends a press on the cells around it on the dismissal", () => {
+    // One row above, one column left, and far away: all the same answer, and in
+    // particular none of them is a new selection.
+    expect(selectionPress(onCell({ row: 1, col: 2 }))).toBe("deselect");
+    expect(selectionPress(onCell({ row: 3, col: 0 }))).toBe("deselect");
+    expect(selectionPress(onCell({ row: 9, col: 9 }))).toBe("deselect");
+  });
+
+  it("dismisses on a press that missed the cells altogether", () => {
+    expect(
+      selectionPress({ selection, onControls: false, onCells: false, cell: { row: 3, col: 2 } }),
+    ).toBe("deselect");
+    // Nor does a press on the cells that hit-tested to nothing draw anything.
+    expect(selectionPress(onCell(null))).toBe("deselect");
+  });
+
+  it("lets the tap after it draw, the chart now being clear", () => {
+    expect(
+      selectionPress({
+        selection: null,
+        onControls: false,
+        onCells: true,
+        cell: { row: 1, col: 2 },
+      }),
+    ).toBe("select");
+  });
+
+  it("does not care which way round the selection's corners were stored", () => {
+    const flipped = { start: { row: 4, col: 3 }, end: { row: 2, col: 1 } };
+    const inside = { onControls: false, onCells: true, cell: { row: 3, col: 2 } };
+    expect(selectionPress({ selection: flipped, ...inside })).toBe("select");
+    expect(
+      selectionPress({ selection: flipped, ...inside, cell: { row: 5, col: 2 } }),
+    ).toBe("deselect");
   });
 });
 
