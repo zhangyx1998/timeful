@@ -15,13 +15,16 @@ import {
   inRectangle,
   isBestTime,
   maxRespondents,
+  placeOverlay,
   rectangleSlots,
   revertOperations,
   scrollEdges,
   scrollStepFor,
   slotAt as slot,
+  slotDigest,
   snapshotSlots,
   type GridGeometry,
+  type OverlayField,
 } from "./grid";
 import type { EventDoc } from "./event";
 
@@ -590,6 +593,176 @@ describe("responses and heatmap", () => {
     expect(isBestTime(3, 3)).toBe(true);
     expect(isBestTime(2, 3)).toBe(false);
     expect(isBestTime(0, 0)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// what one slot says about everybody
+// ---------------------------------------------------------------------------
+
+describe("slotDigest", () => {
+  const morning = iso("2026-08-01T16:00:00.000Z");
+  const noon = iso("2026-08-01T17:00:00.000Z");
+
+  const event = makeEvent({
+    duration: 2,
+    timeIncrement: 60,
+    responses: {
+      Bo: { availability: [], ifNeeded: ["2026-08-01T16:00:00.000Z"], updatedAt: "" },
+      Ada: {
+        availability: ["2026-08-01T16:00:00.000Z", "2026-08-01T17:00:00.000Z"],
+        ifNeeded: [],
+        updatedAt: "",
+      },
+      Cy: { availability: ["2026-08-01T17:00:00.000Z"], ifNeeded: [], updatedAt: "" },
+    },
+  });
+  const index = buildResponseIndex(event);
+
+  it("groups the three answers, keeping names alphabetical inside each", () => {
+    expect(slotDigest(morning, index)).toEqual({
+      people: [
+        { name: "Ada", stance: "available" },
+        { name: "Bo", stance: "if_needed" },
+        { name: "Cy", stance: "unavailable" },
+      ],
+      hidden: 0,
+      free: 2,
+      total: 3,
+    });
+  });
+
+  it("counts if-needed as free, the way the heatmap counts it", () => {
+    // Bo would come to the morning if he had to, so the slot has two takers.
+    expect(slotDigest(morning, index).free).toBe(2);
+    // Nobody said "if needed" at noon, and Bo said nothing at all.
+    const atNoon = slotDigest(noon, index);
+    expect(atNoon.free).toBe(2);
+    expect(atNoon.people.map((p) => p.stance)).toEqual([
+      "available",
+      "available",
+      "unavailable",
+    ]);
+  });
+
+  it("reads a slot nobody marked as everybody being unavailable", () => {
+    const digest = slotDigest(iso("2026-08-02T16:00:00.000Z"), index);
+    expect(digest.free).toBe(0);
+    expect(digest.total).toBe(3);
+    expect(digest.people.every((p) => p.stance === "unavailable")).toBe(true);
+  });
+
+  it("names only the people who can make it once it cannot name everybody", () => {
+    const digest = slotDigest(morning, index, { cap: 2 });
+    // Not the first two of the whole list — the two who could come. An
+    // arbitrary subset of the crosses would say nothing.
+    expect(digest.people).toEqual([
+      { name: "Ada", stance: "available" },
+      { name: "Bo", stance: "if_needed" },
+    ]);
+    // Everyone unnamed is counted, so the card can say how many were left out.
+    expect(digest.hidden).toBe(1);
+    expect(digest.free).toBe(2);
+    expect(digest.total).toBe(3);
+  });
+
+  it("names everybody while they fit, crosses included", () => {
+    expect(slotDigest(morning, index, { cap: 9 }).hidden).toBe(0);
+    const exact = slotDigest(morning, index, { cap: 3 });
+    expect(exact.people).toHaveLength(3);
+    expect(exact.people.at(-1)).toEqual({ name: "Cy", stance: "unavailable" });
+    expect(exact.hidden).toBe(0);
+  });
+
+  it("caps the free list too, when even that is longer than the card", () => {
+    const busy = makeEvent({
+      duration: 2,
+      timeIncrement: 60,
+      responses: Object.fromEntries(
+        ["Ada", "Bo", "Cy", "Dee"].map((name) => [
+          name,
+          { availability: ["2026-08-01T16:00:00.000Z"], ifNeeded: [], updatedAt: "" },
+        ]),
+      ),
+    });
+    const digest = slotDigest(morning, buildResponseIndex(busy), { cap: 2 });
+    expect(digest.people.map((p) => p.name)).toEqual(["Ada", "Bo"]);
+    expect(digest.hidden).toBe(2);
+    expect(digest.free).toBe(4);
+  });
+
+  it("names nobody when nobody can make it and the list is over the cap", () => {
+    // The fraction is the whole answer here: an arbitrary handful of crosses
+    // out of many is not a reading of anything.
+    const digest = slotDigest(iso("2026-08-02T16:00:00.000Z"), index, { cap: 2 });
+    expect(digest.people).toEqual([]);
+    expect(digest.hidden).toBe(3);
+    expect(digest.free).toBe(0);
+  });
+
+  it("has nothing to say about an event nobody has answered", () => {
+    const digest = slotDigest(morning, buildResponseIndex(makeEvent({ responses: {} })));
+    expect(digest).toEqual({ people: [], hidden: 0, free: 0, total: 0 });
+  });
+
+  it("reads the guest's own unsaved marks, like everything else on the page", () => {
+    const withMine = buildResponseIndex(event, {
+      name: "Zed",
+      availability: new Set([morning]),
+      ifNeeded: new Set(),
+    });
+    const digest = slotDigest(morning, withMine);
+    expect(digest.total).toBe(4);
+    expect(digest.free).toBe(3);
+    expect(digest.people.map((p) => p.name)).toEqual(["Ada", "Zed", "Bo", "Cy"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// placing something over the chart
+// ---------------------------------------------------------------------------
+
+describe("placeOverlay", () => {
+  /** Columns from x=50 to x=350; the scrollport runs y=100..500. */
+  const field: OverlayField = { left: 50, width: 300, top: 100, height: 400 };
+  const size = { width: 100, height: 60 };
+  const anchor = { x: 200, y: 300, clearance: 20, gap: 8, above: false };
+
+  it("centres on the point and sits on the preferred side", () => {
+    expect(placeOverlay(size, field, anchor)).toEqual({ left: 200, top: 320 });
+    expect(placeOverlay(size, field, { ...anchor, above: true })).toEqual({
+      left: 200,
+      top: 220,
+    });
+  });
+
+  it("clamps into the columns rather than hanging off either end", () => {
+    expect(placeOverlay(size, field, { ...anchor, x: 55 }).left).toBe(100);
+    expect(placeOverlay(size, field, { ...anchor, x: 348 }).left).toBe(300);
+  });
+
+  it("centres on a field too narrow to clamp in", () => {
+    const narrow: OverlayField = { ...field, left: 10, width: 60 };
+    expect(placeOverlay(size, narrow, { ...anchor, x: 12 }).left).toBe(40);
+  });
+
+  it("flips to the other side when the preferred one falls outside", () => {
+    // Near the top: above would start at 20, past the scrollport's own edge.
+    expect(placeOverlay(size, field, { ...anchor, y: 110, above: true }).top).toBe(130);
+    // Near the bottom: below would end past it, so it goes above instead.
+    expect(placeOverlay(size, field, { ...anchor, y: 495, above: false }).top).toBe(415);
+  });
+
+  it("clamps when neither side fits", () => {
+    const shallow: OverlayField = { ...field, top: 0, height: 70 };
+    const top = placeOverlay(size, shallow, { ...anchor, y: 35 }).top;
+    expect(top).toBeGreaterThanOrEqual(8);
+    expect(top).toBeLessThanOrEqual(Math.max(8, 70 - 60 - 8));
+  });
+
+  it("keeps the gap from the field's edges", () => {
+    expect(placeOverlay(size, field, { ...anchor, y: 100, above: true }).top).toBe(120);
+    expect(placeOverlay(size, field, { ...anchor, y: 500, above: false }).top).toBe(420);
   });
 });
 

@@ -521,8 +521,21 @@ function onHover(slot: number | null) {
   hoveredSlot.value = slot;
 }
 
+/**
+ * A tap or click on a cell pins the slot it landed on, and pins it off again
+ * when it is the one already pinned.
+ *
+ * Null is the grid asking for the pin to be dropped outright, which is what
+ * dismissing the phone's slot card does: the card and the pin go up together on
+ * a tap, so they come down together too. The hover goes with it — on touch there
+ * is no pointer left over the chart to justify an outline.
+ */
 function onPin(slot: number | null) {
-  if (slot === null) return;
+  if (slot === null) {
+    pinnedSlot.value = null;
+    hoveredSlot.value = null;
+    return;
+  }
   pinnedSlot.value = pinnedSlot.value === slot ? null : slot;
   hoveredSlot.value = slot;
 }
@@ -604,6 +617,7 @@ function onPin(slot: number | null) {
         :highlight-respondent="editing ? null : highlight"
         :active-slot="activeSlot"
         :hour12="hour12"
+        :compact="compact"
         @paint="onPaint"
         @flip="onFlip"
         @hover="onHover"

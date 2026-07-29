@@ -59,17 +59,21 @@ import {
   hitTest,
   inRectangle,
   isBestTime,
+  placeOverlay,
   rectangleSlots,
   revertOperations,
   scrollEdges,
   scrollStepFor,
   slotAt,
+  slotDigest,
   snapshotSlots,
   type Cell,
   type EdgeDirection,
   type GridModel,
+  type OverlayField,
   type ResponseIndex,
   type SlotSnapshot,
+  type SlotStance,
 } from "../../lib/grid";
 import { useSlotBaseColor } from "../../lib/colors";
 import { formatSlotRange } from "../../lib/dates";
@@ -97,6 +101,12 @@ const props = defineProps<{
   /** Hovered or pinned slot, outlined in the grid. */
   activeSlot: number | null;
   hour12: boolean;
+  /**
+   * The phone layout: the chart is a fixed pane and the respondents list is
+   * behind a drawer, so a tap on a cell has to answer "who is free here?" over
+   * the chart itself rather than beside it.
+   */
+  compact: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -185,6 +195,14 @@ const scrollWidth = ref(0);
 const chartWidth = computed(() => Math.max(0, viewportWidth.value - gutterWidth.value));
 /** Where the columns begin, relative to the wrap the tooltip is placed in. */
 const chartLeft = computed(() => viewportLeft.value + gutterWidth.value);
+
+/** The box anything floating over the chart is placed inside and clamped to. */
+const overlayField = computed<OverlayField>(() => ({
+  left: chartLeft.value,
+  width: chartWidth.value,
+  top: viewportTop.value,
+  height: viewportHeight.value,
+}));
 
 const reducedMotion = ref(false);
 /** Whether the pointer is a finger: the menu is sized for one if it is. */
@@ -283,6 +301,8 @@ function onScroll() {
     const cell = cellFromPoint(lastPointer.x, lastPointer.y);
     if (cell) dragCur.value = cell;
   }
+  // The card names a cell, and the chart has just moved out from under it.
+  if (summaryState.value) dismissSummary();
 }
 
 onMounted(() => {
@@ -595,7 +615,11 @@ function endDrag(event?: PointerEvent) {
     if (cell.row === pressCell.value.row && cell.col === pressCell.value.col) {
       const slot = slotFor(cell);
       hoverCell.value = cell;
-      emit("pin", slot);
+      if (slot !== null) emit("pin", slot);
+      // On a phone the pin is also the only way to read who is free, so the
+      // card comes with it. Told the same slot twice it closes, exactly as the
+      // pin unpins.
+      if (slot !== null && props.compact) toggleSummary(slot, event.clientX, event.clientY);
     }
   }
   // A drag that landed on nothing leaves no rectangle behind, and so nothing
@@ -796,30 +820,17 @@ const menu = computed(() => {
   const state = menuState.value;
   if (!state || !props.editable) return null;
 
-  const width = menuWidthFor(state.kind);
-  const half = width / 2;
-  const left =
-    chartWidth.value <= width
-      ? chartLeft.value + chartWidth.value / 2
-      : Math.min(
-          Math.max(state.x, chartLeft.value + half),
-          chartLeft.value + chartWidth.value - half,
-        );
-
-  const height = menuHeight.value;
-  const clearance = state.touch ? MENU_TOUCH_CLEARANCE : MENU_CURSOR_CLEARANCE;
-  const below = state.y + clearance;
-  const above = state.y - clearance - height;
-  const floor = viewportTop.value + MENU_GAP;
-  const ceiling = Math.max(floor, viewportTop.value + viewportHeight.value - height - MENU_GAP);
-  const preferred = state.touch ? above : below;
-  const alternate = state.touch ? below : above;
-  const fits = (value: number) => value >= floor && value <= ceiling;
-  const top = fits(preferred)
-    ? preferred
-    : fits(alternate)
-      ? alternate
-      : Math.min(Math.max(preferred, floor), ceiling);
+  const { left, top } = placeOverlay(
+    { width: menuWidthFor(state.kind), height: menuHeight.value },
+    overlayField.value,
+    {
+      x: state.x,
+      y: state.y,
+      clearance: state.touch ? MENU_TOUCH_CLEARANCE : MENU_CURSOR_CLEARANCE,
+      gap: MENU_GAP,
+      above: state.touch,
+    },
+  );
 
   // Which of the two it currently is, read off the answer itself rather than
   // remembered here: a flip is applied by the parent, and this follows it.
@@ -860,6 +871,160 @@ const region = computed(() => {
 });
 
 onBeforeUnmount(closeMenu);
+
+// --- who is free here -----------------------------------------------------
+//
+// On a desktop the answer to "who is free at this cell?" is already on screen,
+// in the column beside the chart. On a phone that column is behind a drawer, and
+// a drawer is the wrong place for the answer to the question a tap on a cell
+// *is*: by the time it is open the cell is under it. So the same reading — the
+// time, the fraction, and each person's own mark in the glyph the list uses for
+// it — is composed over the chart, beside the cell that was tapped.
+//
+// The pin is untouched underneath: a tap still pins, so the drawer, the outline
+// and the desktop column all say the same thing about the same slot. This is a
+// second view of the pinned slot, not a second kind of selection.
+
+/**
+ * How many people the card will name. Eight chips run two or three to a line, so
+ * the card stays under about a third of the chart's height on the narrowest
+ * phone. Past that it names the people who can make it and counts the rest
+ * (`slotDigest`); the drawer holds the full list either way.
+ */
+const SUMMARY_CAP = 8;
+/** Clearance from the tapped point, and from the chart's own edges. */
+const SUMMARY_CLEARANCE = 22;
+const SUMMARY_GAP = 8;
+/** What each glyph says, for anyone who is not looking at it. */
+const STANCE_LABELS: Record<SlotStance, string> = {
+  available: "Available",
+  if_needed: "If needed",
+  unavailable: "Unavailable",
+};
+
+const summaryState = ref<{ slot: number; x: number; y: number } | null>(null);
+const summaryEl = ref<HTMLElement | null>(null);
+/**
+ * The card's measured box. It is sized by its own content — a name may be long,
+ * a time label may wrap — so the placement cannot be worked out from constants
+ * the way the options strip's is. It is rendered once unplaced and invisible,
+ * measured, and only then shown, which costs one frame nobody can see and
+ * removes a pair of numbers that would have had to track the CSS by hand.
+ */
+const summarySize = ref<{ width: number; height: number } | null>(null);
+
+function closeSummary() {
+  summaryState.value = null;
+  summarySize.value = null;
+}
+
+function measureSummary() {
+  const element = summaryEl.value;
+  if (!element) return;
+  summarySize.value = { width: element.offsetWidth, height: element.offsetHeight };
+}
+
+/**
+ * Opens the card on a slot, or closes it when that slot is the one it is already
+ * showing — the same toggle the pin itself does, so the two cannot disagree.
+ * Returns whether the slot ends up pinned.
+ */
+function toggleSummary(slot: number, clientX: number, clientY: number): boolean {
+  if (summaryState.value?.slot === slot) {
+    closeSummary();
+    return false;
+  }
+  const anchor = anchorFromPoint(clientX, clientY);
+  if (!anchor) return false;
+  summarySize.value = null;
+  summaryState.value = { slot, x: anchor.x, y: anchor.y };
+  void nextTick(measureSummary);
+  return true;
+}
+
+const summary = computed(() => {
+  const state = summaryState.value;
+  if (!state || props.editable) return null;
+
+  const digest = slotDigest(state.slot, props.responseIndex, { cap: SUMMARY_CAP });
+  const label = formatSlotRange(
+    state.slot,
+    props.model.slotMinutes,
+    props.model.timezoneOffset,
+    props.hour12,
+    {
+      withDate: props.model.showDates,
+      dowDates: props.event.type === "dow" ? props.event.dates : undefined,
+      startOnMonday: props.event.startOnMonday,
+    },
+  );
+
+  const size = summarySize.value;
+  const placement = size
+    ? placeOverlay(size, overlayField.value, {
+        x: state.x,
+        y: state.y,
+        clearance: SUMMARY_CLEARANCE,
+        gap: SUMMARY_GAP,
+        // Above the finger, which covers the cell it just touched.
+        above: true,
+      })
+    : { left: state.x, top: state.y };
+
+  // Same three readings the respondents list gives the fraction: everyone free
+  // is the answer you are looking for, nobody free rules the slot out, and
+  // anything between is a compromise to weigh.
+  const tone =
+    digest.free === 0 ? "none" : digest.free === digest.total ? "all" : "some";
+
+  return { ...digest, label, tone, ...placement, placed: size !== null };
+});
+
+/**
+ * A tap anywhere that is not the card takes it away. The chart's own presses go
+ * through `onPointerDown`, which closes it before the release decides whether to
+ * open it again; this is for everything else on the page — the view switch, the
+ * identity bar, the foot.
+ */
+function onDocumentPointerDown(event: PointerEvent) {
+  if (!summaryState.value) return;
+  const target = event.target as Node;
+  if (summaryEl.value?.contains(target)) return;
+  // A press on the cells is the tap gesture itself: the release decides whether
+  // the card moves, closes or stays put, and closing it here first would turn a
+  // second tap on the same cell into a re-open of the thing it meant to shut.
+  if (body.value?.contains(target)) return;
+  dismissSummary();
+}
+
+/** Dismissal releases the pin as well: one gesture put both up, one takes both
+ *  down, and a pinned slot with nothing on screen explaining it is a trap. */
+function dismissSummary() {
+  closeSummary();
+  emit("pin", null);
+}
+
+watch(
+  () => summaryState.value !== null,
+  (open) => {
+    if (typeof window === "undefined") return;
+    if (open) window.addEventListener("pointerdown", onDocumentPointerDown, true);
+    else window.removeEventListener("pointerdown", onDocumentPointerDown, true);
+  },
+);
+
+// Switching to editing, or losing the slot the card is about, leaves it stale.
+watch([() => props.editable, () => props.activeSlot], () => {
+  if (!summaryState.value) return;
+  if (props.editable || props.activeSlot !== summaryState.value.slot) closeSummary();
+});
+
+onBeforeUnmount(() => {
+  closeSummary();
+  if (typeof window !== "undefined") {
+    window.removeEventListener("pointerdown", onDocumentPointerDown, true);
+  }
+});
 
 // --- painting -------------------------------------------------------------
 
@@ -1159,6 +1324,67 @@ defineExpose({ measure });
         :style="{ left: `${tooltip.left}px`, top: `${tooltip.top}px` }"
       >
         {{ tooltip.text }}
+      </div>
+
+      <!-- Who is free at the cell that was just tapped, over the chart, on the
+           layout where the list that would otherwise say it is behind a drawer.
+           Sized by its own content and placed once measured, so the first frame
+           is laid out but not shown. -->
+      <div
+        v-if="summary"
+        ref="summaryEl"
+        class="digest"
+        :class="{ 'digest--placed': summary.placed }"
+        role="group"
+        :aria-label="`Who is free at ${summary.label}`"
+        :style="{ left: `${summary.left}px`, top: `${summary.top}px` }"
+      >
+        <div class="digest__head">
+          <span class="digest__when">{{ summary.label }}</span>
+          <button
+            type="button"
+            class="digest__close"
+            aria-label="Dismiss"
+            @click="dismissSummary"
+          >
+            <IconClose aria-hidden="true" />
+          </button>
+        </div>
+
+        <p v-if="summary.total === 0" class="digest__none">No answers yet.</p>
+
+        <template v-else>
+          <p class="digest__count" :class="`digest__count--${summary.tone}`">
+            {{ summary.free }} of {{ summary.total }} free
+          </p>
+
+          <!-- One chip per person, in the same three glyphs the respondents
+               list uses, so the two readings of a slot are the same reading. -->
+          <ul class="digest__people">
+            <li
+              v-for="person in summary.people"
+              :key="person.name"
+              class="who"
+              :class="`who--${person.stance}`"
+            >
+              <!-- The glyph is the whole of what the chip says about them, so
+                   it carries the word rather than sitting out of the tree the
+                   way decoration does. -->
+              <span class="who__mark" role="img" :aria-label="STANCE_LABELS[person.stance]">
+                <IconCheck v-if="person.stance === 'available'" />
+                <IconHourglass v-else-if="person.stance === 'if_needed'" />
+                <IconClose v-else stroke-width="2.2" />
+              </span>
+              <span class="who__name">{{ person.name }}</span>
+            </li>
+            <!-- Everyone the card chose not to name. Only worth saying beside
+                 names it did name: with nobody free to list, the fraction above
+                 is already the whole answer. -->
+            <li v-if="summary.hidden > 0 && summary.people.length > 0" class="who who--more">
+              +{{ summary.hidden }} more
+            </li>
+          </ul>
+        </template>
       </div>
 
       <!-- What the rectangle being drawn means. Carried beside the pointer for
@@ -1758,6 +1984,166 @@ defineExpose({ measure });
   background: color-mix(in srgb, var(--color-slot-if-needed) 45%, var(--color-surface));
 }
 
+/* --- who is free here ----------------------------------------------------- */
+
+/* The respondents column, folded into something a thumb's width of chart can
+   hold and laid over the cell it is about. Placed the way the options strip is —
+   centred on the tap, clamped into the columns, above the finger — and held to a
+   width that leaves the chart either side of it visible, so it reads as an
+   annotation on the grid rather than as a screen of its own.
+
+   Unplaced until measured: it is sized by its content, so the first frame is
+   laid out where the tap was and not shown, and the frame after that is in the
+   right place. */
+.digest {
+  position: absolute;
+  z-index: 18;
+  width: max-content;
+  max-width: min(15rem, 100%);
+  transform: translateX(-50%);
+  padding: 0.4rem 0.5rem 0.5rem;
+  background: var(--color-raised);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  visibility: hidden;
+}
+
+.digest--placed {
+  visibility: visible;
+}
+
+.digest__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.25rem;
+}
+
+.digest__when {
+  flex: 1 1 auto;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--color-text);
+}
+
+/* The card's own dismissal, in the corner a dismissal always sits in. It gives
+   the pin back as well: one tap raised both, one takes both down. */
+.digest__close {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  margin: -0.15rem -0.2rem 0 0;
+  padding: 0;
+  color: var(--color-text-muted);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.digest__close svg {
+  width: 0.7rem;
+  height: 0.7rem;
+}
+
+.digest__close:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: calc(var(--focus-ring-offset) * -1);
+}
+
+.digest__count {
+  margin-top: 0.1rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+}
+
+.digest__count--all {
+  color: var(--color-success);
+}
+
+.digest__count--some {
+  color: var(--color-warning);
+}
+
+.digest__count--none {
+  color: var(--color-danger);
+}
+
+.digest__none {
+  margin-top: 0.15rem;
+  font-size: 0.6875rem;
+  color: var(--color-text-muted);
+}
+
+/* Chips rather than rows: two or three to a line at a phone's width, so a card
+   naming eight people is four lines tall instead of eight. */
+.digest__people {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.3rem;
+  margin: 0.3rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.who {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  max-width: 100%;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: var(--color-text);
+}
+
+.who__mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+.who__mark svg {
+  width: 100%;
+  height: 100%;
+}
+
+.who__name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The grid's own three colours at ink weight, the same three the list uses. */
+.who--available .who__mark {
+  color: var(--color-accent-text);
+}
+
+.who--if_needed .who__mark {
+  color: var(--color-if-needed-text);
+}
+
+.who--unavailable .who__mark {
+  color: var(--color-danger);
+}
+
+/* Struck through and muted, the way the list says it, so a glance over the
+   chips separates the two answers by weight as well as by glyph. */
+.who--unavailable .who__name {
+  color: var(--color-text-muted);
+  text-decoration: line-through;
+}
+
+.who--more {
+  color: var(--color-text-muted);
+  font-size: 0.6875rem;
+}
+
 .tooltip {
   position: absolute;
   z-index: 20;
@@ -1801,6 +2187,14 @@ defineExpose({ measure });
   .knob {
     width: var(--tap-min);
     height: var(--tap-min);
+  }
+
+  /* The card's dismissal is the only control on it, and a finger has to be able
+     to hit it without hitting the chart behind. */
+  .digest__close {
+    width: 2.1rem;
+    height: 2.1rem;
+    margin: -0.35rem -0.35rem 0 0;
   }
 
   .knob__glyph {

@@ -426,6 +426,77 @@ export function revertOperations(snapshot: SlotSnapshot): RevertOp[] {
 }
 
 // ---------------------------------------------------------------------------
+// placing something over the chart
+// ---------------------------------------------------------------------------
+//
+// Two things float above the grid and both want the same arithmetic: be beside
+// the point you are about, and never off the chart. The chart is the widest
+// thing on the page and on a phone it is nearly the tallest, so "off the chart"
+// is a real risk in both directions rather than a theoretical one.
+
+/** Where a floating box may go: the columns' box, and the scrollport's. */
+export interface OverlayField {
+  /** Left edge of the day columns, and their width — not the gutter's. */
+  left: number;
+  width: number;
+  /** The scrollport's top edge and height, in the same coordinates. */
+  top: number;
+  height: number;
+}
+
+export interface OverlayAnchor {
+  /** The point being annotated. */
+  x: number;
+  y: number;
+  /** How far the box keeps off that point. */
+  clearance: number;
+  /** How close the box may come to the field's own edges. */
+  gap: number;
+  /**
+   * Whether the box prefers the space *above* the point. A finger covers what
+   * it touches and a few millimetres round it, so touch wants above; a cursor
+   * hides almost nothing, so a mouse wants below.
+   */
+  above: boolean;
+}
+
+/**
+ * Centred on the anchor horizontally and clamped into the columns; above or
+ * below it vertically, taking the other side when the preferred one would fall
+ * outside the scrollport and clamping when neither fits.
+ *
+ * `left` is the box's centre — callers translate by -50% — and `top` its top
+ * edge. A field narrower than the box has no room to clamp in, so the box is
+ * centred on the field and left to overhang symmetrically.
+ */
+export function placeOverlay(
+  size: { width: number; height: number },
+  field: OverlayField,
+  anchor: OverlayAnchor,
+): { left: number; top: number } {
+  const half = size.width / 2;
+  const left =
+    field.width <= size.width
+      ? field.left + field.width / 2
+      : clamp(anchor.x, field.left + half, field.left + field.width - half);
+
+  const below = anchor.y + anchor.clearance;
+  const above = anchor.y - anchor.clearance - size.height;
+  const floor = field.top + anchor.gap;
+  const ceiling = Math.max(floor, field.top + field.height - size.height - anchor.gap);
+  const preferred = anchor.above ? above : below;
+  const alternate = anchor.above ? below : above;
+  const fits = (value: number) => value >= floor && value <= ceiling;
+  const top = fits(preferred)
+    ? preferred
+    : fits(alternate)
+      ? alternate
+      : clamp(preferred, floor, ceiling);
+
+  return { left, top };
+}
+
+// ---------------------------------------------------------------------------
 // responses and heatmap
 // ---------------------------------------------------------------------------
 
@@ -495,6 +566,83 @@ export function buildResponseIndex(
 
   names.sort((a, b) => a.localeCompare(b));
   return { names, available, ifNeeded };
+}
+
+// ---------------------------------------------------------------------------
+// one slot, per person
+// ---------------------------------------------------------------------------
+//
+// The respondents list answers "who is free here?" beside the chart. On a phone
+// it is behind a drawer, which is the wrong place for the answer to the question
+// a tap on a cell *is* — so the same reading is composed here and shown over the
+// chart, and this is the part of it that is not markup.
+
+export type SlotStance = "available" | "if_needed" | "unavailable";
+
+export interface SlotOpinion {
+  name: string;
+  stance: SlotStance;
+}
+
+export interface SlotDigest {
+  /**
+   * The people the digest names, ordered by what they said — available, then
+   * if-needed, then unavailable — and alphabetically inside each group, because
+   * that is the order the names arrive in.
+   */
+  people: SlotOpinion[];
+  /** How many respondents it did not name. */
+  hidden: number;
+  /** How many are counted as free: available and if-needed together, as the
+   *  heatmap counts them. */
+  free: number;
+  total: number;
+}
+
+/**
+ * What every respondent said about one slot, in as many names as will fit.
+ *
+ * The cap is not a truncation of one list but a choice between two readings.
+ * Under it, the digest names everybody — and "who cannot make it" is worth
+ * reading when it is three people. Over it, naming an arbitrary six of sixteen
+ * crosses says nothing at all, so it names only the people who *can* make it and
+ * counts the rest: that is the question a tap on a cell asks, and the fraction
+ * beside the names already reports the other side of it.
+ *
+ * Presence never enters this. Somebody who is merely on the page has marked
+ * nothing, and "unavailable" would be a lie about them — the same rule the
+ * respondents list follows.
+ */
+export function slotDigest(
+  slot: number,
+  index: ResponseIndex,
+  options: { cap?: number } = {},
+): SlotDigest {
+  const { cap } = options;
+  const available = index.available.get(slot);
+  const needed = index.ifNeeded.get(slot);
+
+  const yes: SlotOpinion[] = [];
+  const maybe: SlotOpinion[] = [];
+  const no: SlotOpinion[] = [];
+  for (const name of index.names) {
+    if (!available?.has(name)) no.push({ name, stance: "unavailable" });
+    else if (needed?.has(name)) maybe.push({ name, stance: "if_needed" });
+    else yes.push({ name, stance: "available" });
+  }
+
+  const total = index.names.length;
+  const free = [...yes, ...maybe];
+  const everyone = [...free, ...no];
+  const limit = cap === undefined || cap < 0 ? everyone.length : cap;
+  const people = limit >= everyone.length ? everyone : free.slice(0, limit);
+
+  return {
+    people,
+    hidden: total - people.length,
+    free: free.length,
+    total,
+  };
 }
 
 /** The highest respondent count on any live slot. */
