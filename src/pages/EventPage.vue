@@ -186,7 +186,7 @@ onBeforeUnmount(() => {
 
       <!-- The dates belong with the name they qualify, so they lead the
            right-hand group rather than sitting in the body. -->
-      <p v-if="event" class="when">{{ subtitle }}</p>
+      <p v-if="event" class="when" :title="subtitle">{{ subtitle }}</p>
 
       <!--
         Only the owner gets a way back to the panel; a guest has no panel to go
@@ -266,6 +266,7 @@ onBeforeUnmount(() => {
    way entirely — the grid's own column headings carry the dates there. */
 .when {
   flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   font-size: 0.8125rem;
   white-space: nowrap;

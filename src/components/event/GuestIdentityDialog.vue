@@ -115,7 +115,12 @@ function pick(suggestion: string) {
         <span class="suggestions__label">Already answered</span>
         <ul class="chips">
           <li v-for="suggestion in suggestions" :key="suggestion">
-            <button type="button" class="chip" @click="pick(suggestion)">
+            <button
+              type="button"
+              class="chip"
+              :title="suggestion"
+              @click="pick(suggestion)"
+            >
               {{ suggestion }}
             </button>
           </li>
@@ -126,8 +131,20 @@ function pick(suggestion: string) {
         <Button v-if="dismissible" variant="ghost" @click="emit('browse')">
           Just browsing
         </Button>
-        <Button variant="primary" type="submit" :disabled="trimmed.length === 0">
-          {{ matchedName ? "Continue as " + matchedName : "Continue" }}
+        <!-- The name is the only part of this label that can be any length, so
+             it is the only part that gives way. A button is `nowrap` by design,
+             which without a cap here means the panel overflows sideways rather
+             than the label shortening. -->
+        <Button
+          variant="primary"
+          type="submit"
+          :disabled="trimmed.length === 0"
+          :title="matchedName ? `Continue as ${matchedName}` : undefined"
+        >
+          <template v-if="matchedName">
+            Continue as <span class="continue__name">{{ matchedName }}</span>
+          </template>
+          <template v-else>Continue</template>
         </Button>
       </div>
     </form>
@@ -184,8 +201,22 @@ function pick(suggestion: string) {
   list-style: none;
 }
 
+/* The chip caps itself, but its list item has to be allowed to be narrower than
+   the name inside it before that cap can bite. */
+.chips li {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* A pill is a pill: one line of it. Left to wrap, a long name turns the chip
+   into a two-line lozenge and the row of them into a ragged block. The cap is
+   generous enough to show most of a real name and never wider than the row. */
 .chip {
+  max-width: min(12rem, 100%);
   min-height: 2rem;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   padding: 0.25rem 0.7rem;
   font: inherit;
   font-size: 0.8125rem;
@@ -212,8 +243,15 @@ function pick(suggestion: string) {
   }
 }
 
-/* Actions stack rather than overflow when the "Continue as <long name>" label
-   grows past the dialog width. */
+.continue__name {
+  min-width: 0;
+  overflow: hidden;
+  max-width: 11rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Two buttons still stack rather than crowd on the narrowest panel. */
 .actions {
   display: flex;
   flex-wrap: wrap;

@@ -102,9 +102,15 @@ defineSlots<{
   color: var(--color-text-muted);
 }
 
+/* Allowed to shrink, which is not the same as being made to. The controls that
+   live here are all either `flex: none` or a button whose label cannot wrap, so
+   they hold their size on their own floor; what actually gives is the slotted
+   text — the event page's date range, the admin's email address — which asks to
+   be clipped and can only be granted it by a parent that is itself allowed to
+   be narrower than its contents. */
 .app-header__actions {
   display: flex;
-  flex: none;
+  flex: 0 1 auto;
   align-items: center;
   gap: 0.5rem;
   min-width: 0;

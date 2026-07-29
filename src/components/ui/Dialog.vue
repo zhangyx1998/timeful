@@ -243,11 +243,17 @@ onBeforeUnmount(() => {
   padding: 1rem 1.25rem 0.5rem;
 }
 
+/* Titles are prose and wrap like prose — "Switch to Ada?" reading over two
+   lines is fine. What is not fine is a title carrying a name with no space in
+   it, which without `anywhere` cannot break at all and runs out under the close
+   button. `min-width: 0` lets it be narrower than that unbreakable run. */
 .panel__title {
+  min-width: 0;
   margin: 0;
   font-size: 1.0625rem;
   font-weight: 600;
   line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
 .panel__close {

@@ -79,9 +79,15 @@ async function remove(): Promise<void> {
     <ul v-else class="list">
       <li v-for="event in props.events" :key="event.id" class="item">
         <div class="item__main">
-          <div class="item__name">{{ event.name }}</div>
+          <div class="item__name" :title="event.name">{{ event.name }}</div>
           <div class="item__link">
-            <a class="link" :href="`/${event.slug}`" target="_blank" rel="noopener">
+            <a
+              class="link"
+              :href="`/${event.slug}`"
+              :title="`/${event.slug}`"
+              target="_blank"
+              rel="noopener"
+            >
               /{{ event.slug }}
             </a>
             <CopyLinkButton :url="publicUrl(event)" label="Copy link" />
@@ -187,18 +193,22 @@ async function remove(): Promise<void> {
   min-width: 0;
 }
 
+/* A list is scanned down its left edge, and a name that wraps to three lines
+   costs every row below it. One line each, full name on the tooltip. */
 .item__name {
+  overflow: hidden;
   font-size: 0.9375rem;
   font-weight: 500;
   color: var(--color-text);
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .item__link {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 0.4rem;
+  min-width: 0;
   margin-top: 0.125rem;
 }
 
@@ -213,10 +223,13 @@ async function remove(): Promise<void> {
 }
 
 /* Glyph then number: the icon carries the noun the text used to spell out. */
+/* Whole stats move to the next line together; a date never breaks in half. */
 .stat {
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 0.25rem;
+  white-space: nowrap;
 }
 
 .stat svg {
@@ -239,14 +252,20 @@ async function remove(): Promise<void> {
   background: var(--color-danger-soft);
 }
 
+/* `display: block` rather than the flex it was: a flex box has no inline
+   content of its own for an ellipsis to land in. The line-height replaces what
+   `align-items` was doing for the 1.75rem tap height. */
 .link {
-  display: inline-flex;
-  align-items: center;
+  display: block;
+  min-width: 0;
+  overflow: hidden;
   min-height: 1.75rem;
   font-size: 0.875rem;
+  line-height: 1.75rem;
   color: var(--color-accent-text);
   text-decoration: none;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .link:hover {

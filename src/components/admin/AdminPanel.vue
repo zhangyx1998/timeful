@@ -90,7 +90,9 @@ onMounted(loadEvents);
 <template>
   <div class="page">
     <AppHeader tag="admin">
-      <span v-if="props.email" class="header__email">{{ props.email }}</span>
+      <span v-if="props.email" class="header__email" :title="props.email">
+        {{ props.email }}
+      </span>
       <ThemeToggle />
       <Button variant="secondary" size="sm" @click="logout">Sign out</Button>
     </AppHeader>
