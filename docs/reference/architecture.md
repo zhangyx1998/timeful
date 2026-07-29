@@ -283,9 +283,9 @@ message from the `{ error }` field. `fetchIsAdmin()` fails **closed**.
 ## Realtime updates
 
 An event page left open keeps itself current: someone else's answer changes the
-heatmap and the respondents list without a reload. It is a **read-only
-server→client notification channel** over one WebSocket, and it is optional at
-two levels.
+heatmap and the respondents list without a reload, and the list shows who is
+looking at the event right now. It is a **read-only server→client notification
+channel** over one WebSocket, and it is optional at two levels.
 
 ### The contract
 
@@ -293,7 +293,9 @@ two levels.
 No `message` listener is ever registered on an accepted socket. Bytes a client
 sends are read off the wire by the protocol layer and dropped: they reach no
 state, no handler and no storage. The only inbound traffic that means anything
-is protocol-level — pong frames answering the heartbeat, and close.
+is protocol-level — pong frames answering the heartbeat, and close. **Presence
+does not bend this**: a page's name arrives once, in the handshake the
+connection is made of, so a forged `presence` frame changes nothing either.
 
 Nothing here adds a write capability or an authentication surface. Disabling
 realtime, or any WebSocket failure at all, degrades to standard REST behaviour
@@ -305,6 +307,14 @@ listener is on the HTTP server, registered by `serve()` in `server/app.ts`.
 A plain `GET` of that path is not an upgrade and falls through to the events
 catch-all as a `404`.
 
+**Identity rides in the URL.** A page that has adopted a name connects to
+`…/ws?name=<urlencoded>`; one that is only browsing connects without the
+parameter. The name is connection metadata, validated for shape only — trimmed,
+and treated as **absent** when empty or longer than the 100-character guest-name
+limit rather than truncated. Adopting a name, switching to another, or going back
+to browsing all reconnect, because the handshake is the only place a name can be
+stated.
+
 ### Messages
 
 Server to client, JSON text frames, defined once in `src/lib/realtime.ts` and
@@ -312,8 +322,9 @@ re-exported type-only by `server/types.ts`:
 
 ```ts
 type RealtimeMessage =
-  | { type: "event"; event: EventDoc }   // the whole document, responses inline
-  | { type: "gone" };                    // the event was deleted; terminal
+  | { type: "event"; event: EventDoc }     // the whole document, responses inline
+  | { type: "presence"; names: string[] }  // who is looking, sorted and deduped
+  | { type: "gone" };                      // the event was deleted; terminal
 ```
 
 **Full snapshots, never deltas.** The `event` payload is byte-for-byte what
@@ -332,12 +343,39 @@ persisted:
 A create broadcasts nothing: nobody can be subscribed to an event that did not
 exist a moment ago.
 
+### Presence
+
+A room also knows who is in it, and a `presence` message goes out whenever that
+changes: somebody arrived with a name, somebody's last connection closed, or a
+named socket was terminated by the heartbeat. A newly connected page is sent the
+current list immediately — including its own name, if it gave one — so the list
+is never waiting on somebody else to move.
+
+- **Refcounted per name.** One person is routinely several connections (two tabs,
+  a phone beside a laptop, a reconnect overlapping the drop it replaces), so the
+  room holds a `Map<name, count>`. A second connection under a name already
+  present changes nothing anyone can see and broadcasts nothing; the name leaves
+  the list when its last connection does.
+- **Never persisted.** Presence lives only in the room. Nothing is written to
+  disk, there is nothing to clean up after a restart, and an event document has
+  no presence field.
+- **Nothing rests on it.** Names are self-asserted, exactly like the name on a
+  response: anyone holding the capability URL could already write a response
+  under any name they liked — the capability URL is the trust boundary, below.
+  Presence decides which row gets a pair of dots beside it, and that is the whole
+  of its authority.
+- **Off means absent, not empty.** With the event's live updates off, or the
+  server-wide switch off, there are no sockets at all and so no presence —
+  the same page as before the feature existed.
+
 ### Rooms, and the two switches
 
-Rooms live in an in-memory `Map<eventId, Set<WebSocket>>`, keyed by the **uuid**
-and never the slug — a rename must not orphan its subscribers. A room is deleted
-when its last member leaves. The server pings every socket every 30s and
-terminates any that did not answer the previous round.
+Rooms live in an in-memory `Map<eventId, { sockets, names }>`, keyed by the
+**uuid** and never the slug — a rename must not orphan its subscribers. A room is
+deleted when its last member leaves. The server pings every socket every 30s and
+terminates any that did not answer the previous round; the close that follows is
+the same exit any other departure takes, so a reaped socket's name leaves the
+presence list with it.
 
 **Per event.** `EventDoc.realtime` is the primary control, set by the owner in
 the create/edit dialog and defaulting to on ([absent means
@@ -381,10 +419,11 @@ Slugs are never logged here either.
 
 ### The client
 
-`connectRealtime(eventId, { onEvent, onGone })` in `src/lib/realtime.ts` returns
-a handle with `close()`. It is silent by design — there is no connection
-indicator anywhere in the UI, because a page whose socket never opened has to
-look exactly like one that never had a socket.
+`connectRealtime(eventId, { name, onEvent, onPresence, onGone })` in
+`src/lib/realtime.ts` returns a handle with `setName()` and `close()`. It is
+silent by design — there is no connection indicator anywhere in the UI, because a
+page whose socket never opened has to look exactly like one that never had a
+socket.
 
 - **Never during SSR.** No `window` means no URL to derive and no connection; a
   socket per server-rendered page would be a denial of service against
@@ -399,12 +438,33 @@ look exactly like one that never had a socket.
   as it stayed open.
 - **Terminal states.** An explicit `close()` and a `gone` message both stop it
   permanently.
+- **`setName(name)`** reconnects under a new identity straight away — not on the
+  backoff schedule, since the visitor just did something deliberate — resetting
+  both counters, and does nothing when the name has not actually changed.
+- **A drop clears presence.** `onPresence([])` fires when the connection goes,
+  because dots beside a name the page can no longer vouch for are worse than no
+  dots at all. A `setName` switch is not a drop and clears nothing: the new
+  connection's own list is a moment away.
 
 `EventPage.vue` connects on mount by uuid (stable across renames) and feeds
 snapshots through `applyEvent`, the same function the edit dialog and `refresh`
 use: it swaps the document, updates the title, and corrects the address bar with
 `replaceState` on a renamed slug. `gone` clears the event and shows a short
 "Event deleted" panel instead of leaving the scheduler autosaving into a 404.
+
+`EventPage.vue` also owns the presence list, because it owns the socket presence
+arrives on: `EventScheduler` reports its adopted name upwards (`@identity`, from a
+watcher on the name, so it fires *after* the flush a switch begins with) and takes
+the list back down as a prop. `RespondentsPanel` merges it with the respondents:
+
+- every online name gets three CSS-animated dots and a visually hidden
+  " (online)", the visitor's own row included — `prefers-reduced-motion` gets the
+  same three dots without the animation;
+- somebody online who has **not** answered is shown as a row of their own, with
+  the person icon whatever slot is active (they marked nothing, so "unavailable"
+  would be a lie about them), no delete button, and no place in the `M/N` count
+  or the heatmap's maximum — both of which are computed from the response index,
+  which presence never enters. Clicking the row still offers to answer as them.
 
 An incoming snapshot deliberately **does not** touch a visitor's half-finished
 answer. The marks live in `EventScheduler`, which re-seeds from a new document
