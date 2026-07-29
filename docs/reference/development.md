@@ -211,6 +211,15 @@ reason; see [the security model](/reference/architecture#security).
 Plain prose: a short imperative subject, then why the change was needed. No AI
 or `Co-Authored-By` signatures. Several focused commits beat one large one.
 
+### Killing processes you started
+
+Track the PIDs of servers and browsers you spawn and kill exactly those
+(`kill $(cat pidfile)` or by port: `lsof -ti :<your-port> | xargs kill`).
+Never `pkill -f` a repo-generic pattern like `server/index.ts` or
+`dist/cli.js` — it kills every Timeful instance on the machine, including a
+dev server someone else is using. In dev, `npm run dev` picks the first free
+port from 3000–3019 when `PORT` is unset, so parallel instances coexist.
+
 ## Documentation
 
 This site is a standalone VitePress package under `docs/`:

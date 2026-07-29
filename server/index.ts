@@ -7,14 +7,45 @@
  * matter which directory the script was launched from; `var/` still follows
  * the working directory.
  */
+import net from "node:net";
 import { fileURLToPath } from "node:url";
 import { serve, createStaticRenderer, type Renderer } from "./app.ts";
 import { resolveAssets } from "./paths.ts";
 import { parseTrustedProxies, type TrustProxySetting } from "./proxy.ts";
 
 const isDev = process.argv.includes("--dev");
-const port = Number(process.env.PORT) || 3000;
 const host = process.env.HOST || "127.0.0.1";
+
+/** True when something is already listening there. */
+function portTaken(candidate: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = net
+      .createServer()
+      .once("error", () => resolve(true))
+      .once("listening", () => probe.close(() => resolve(false)));
+    probe.listen(candidate, host);
+  });
+}
+
+/**
+ * Dev only, and only when PORT was not asked for: walk a small pool upward
+ * from 3000 and take the first free port, so a second checkout (or a stray
+ * leftover server) never turns into an EADDRINUSE crash or a reason to kill
+ * someone else's process. An explicit PORT keeps strict fail-if-taken
+ * semantics, as does production.
+ */
+async function resolvePort(): Promise<number> {
+  const asked = Number(process.env.PORT);
+  if (asked) return asked;
+  if (!isDev) return 3000;
+  for (let candidate = 3000; candidate < 3020; candidate++) {
+    if (!(await portTaken(candidate))) return candidate;
+  }
+  console.error("[timeful] no free port in 3000-3019; set PORT explicitly.");
+  process.exit(1);
+}
+
+const port = await resolvePort();
 
 /** Parses `--trusted-proxy`, or dies with a readable message. */
 function resolveTrustProxy(): TrustProxySetting {
