@@ -274,7 +274,7 @@ function confirmSwitch() {
         </span>
       </h2>
       <p v-if="slotLabel" class="slot">
-        {{ slotLabel }}
+        <span class="slot__label" :title="slotLabel">{{ slotLabel }}</span>
         <button
           v-if="pinned"
           type="button"
@@ -323,7 +323,7 @@ function confirmSwitch() {
         <!-- Your own row is not a button: there is nothing to switch to. The
              online state is said in words for a screen reader, where three
              animated dots would be either silence or noise. -->
-        <span v-if="row.isCurrent" class="text">
+        <span v-if="row.isCurrent" class="text" :title="row.name">
           {{ row.name }}<span v-if="row.online" class="hidden"> (online)</span>
         </span>
         <button
@@ -483,9 +483,12 @@ function confirmSwitch() {
   font-weight: 600;
 }
 
+/* "3/5 available" is one fact and breaks as one: the word must not come away
+   from the fraction it qualifies. */
 .count {
   font-size: 0.8125rem;
   font-weight: 500;
+  white-space: nowrap;
 }
 
 .count--all {
@@ -500,14 +503,24 @@ function confirmSwitch() {
   color: var(--color-danger);
 }
 
+/* Held to one line: the head's `min-height` above is what stops the list
+   jumping as the pointer crosses the grid, and a slot label that wraps to two
+   lines walks straight through it. */
 .slot {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 0.4rem;
+  min-width: 0;
   margin-top: 0.2rem;
   font-size: 0.75rem;
   color: var(--color-text-muted);
+}
+
+.slot__label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* Releases the pinned slot. A cross on the label it undoes, the way a chip
@@ -639,9 +652,17 @@ function confirmSwitch() {
   font-weight: 600;
 }
 
+/* One line, and the first thing on the row to give way. Every row in this list
+   is one --row-height tall, and a name allowed to wrap breaks that for the whole
+   list: the delete button, the eye and the spinner are all sized off it. The
+   dots and the controls are siblings rather than part of this box, so they stay
+   put at their own end of the row when the name is cut — the dots land just
+   after the ellipsis, still reading as "this person, here right now". */
 .text {
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   text-align: left;
 }
 

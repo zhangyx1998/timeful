@@ -46,7 +46,7 @@ const emit = defineEmits<{ change: []; pick: []; retry: [] }>();
           <span class="avatar" aria-hidden="true">
             <IconPersonFilled />
           </span>
-          <span class="who__name">{{ name }}</span>
+          <span class="who__name" :title="name">{{ name }}</span>
         </p>
 
         <!-- Where the name is, so is what is happening to it, and the way out
@@ -130,11 +130,15 @@ const emit = defineEmits<{ change: []; pick: []; retry: [] }>();
   min-width: 0;
 }
 
+/* Capped at the column's width even though the column centres nothing and lets
+   its rows be as wide as they like: without this the name's own truncation has
+   nothing to truncate against. */
 .who {
   display: flex;
   align-items: center;
   gap: 0.4rem;
   min-width: 0;
+  max-width: 100%;
 }
 
 .avatar {
@@ -155,10 +159,16 @@ const emit = defineEmits<{ change: []; pick: []; retry: [] }>();
   height: 100%;
 }
 
+/* One line, always. A name is not prose, and a card 14rem wide that grows a
+   line every time someone types a longer one pushes the list below it around
+   for no gain — the full string is on the tooltip. */
 .who__name {
+  min-width: 0;
+  overflow: hidden;
   font-size: 0.9375rem;
   font-weight: 600;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .who__name--anon {
@@ -265,12 +275,6 @@ const emit = defineEmits<{ change: []; pick: []; retry: [] }>();
   .who {
     flex: 1 1 auto;
     overflow: hidden;
-  }
-
-  .who__name {
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
   }
 
   .lead {

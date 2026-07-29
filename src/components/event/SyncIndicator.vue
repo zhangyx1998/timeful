@@ -47,18 +47,36 @@ const emit = defineEmits<{ retry: [] }>();
   </p>
   <p v-else-if="status === 'error'" class="status failed" role="alert">
     <IconAlertTriangle class="icon" aria-hidden="true" />
-    {{ error ?? "Could not save your availability" }}
+    <!-- In its own element rather than loose text: this is the one string here
+         a server picks the length of, and an ellipsis needs a box to happen in.
+         Whatever the truncation eats is on the tooltip. -->
+    <span class="message" :title="error ?? 'Could not save your availability'">
+      {{ error ?? "Could not save your availability" }}
+    </span>
     <button type="button" class="retry" @click="emit('retry')">Retry</button>
   </p>
 </template>
 
 <style scoped>
+/* One line. Four of the five states are two short words and would never break
+   anyway; the fifth carries an error message of unknown length, and this row
+   sits at the bottom edge of a phone layout that has no spare line to give it.
+   `nowrap` also keeps the short states from splitting mid-label. */
 .status {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
+  min-width: 0;
+  max-width: 100%;
   font-size: 0.8125rem;
   line-height: 1.2;
+  white-space: nowrap;
+}
+
+.message {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* The two states nothing is happening in. They sit next to a name on a bar the
@@ -90,7 +108,9 @@ const emit = defineEmits<{ retry: [] }>();
   color: var(--color-success);
 }
 
+/* The way out of the error never shrinks or wraps away from it. */
 .retry {
+  flex: none;
   margin-left: 0.15rem;
   padding: 0.1rem 0.45rem;
   font: inherit;
