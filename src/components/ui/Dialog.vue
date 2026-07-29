@@ -29,8 +29,16 @@ const props = withDefaults(
     size?: "sm" | "lg";
     /** `sheet` rises from the bottom edge, full width. */
     variant?: "modal" | "sheet";
+    /**
+     * Whether the page behind is veiled. A dialog is normally the only thing
+     * being attended to, and the dim says so. A drawer that has just changed
+     * what the page above it *shows* is the exception: veiling the thing it was
+     * asked to look at would undo the asking. Everything else about it is
+     * unchanged — the backdrop is still there and still dismisses.
+     */
+    dim?: boolean;
   }>(),
-  { dismissible: true, size: "sm", variant: "modal" },
+  { dismissible: true, size: "sm", variant: "modal", dim: true },
 );
 
 const emit = defineEmits<{ close: [] }>();
@@ -113,7 +121,12 @@ onBeforeUnmount(() => {
 <template>
   <Teleport to="body">
     <Transition name="dialog">
-      <div v-if="open" class="backdrop" :class="`backdrop--${variant}`" @pointerdown.self="dismiss">
+      <div
+        v-if="open"
+        class="backdrop"
+        :class="[`backdrop--${variant}`, { 'backdrop--clear': !dim }]"
+        @pointerdown.self="dismiss"
+      >
         <div
           ref="panel"
           class="panel"
@@ -158,6 +171,12 @@ onBeforeUnmount(() => {
   padding: calc(1rem + var(--safe-top)) calc(1rem + var(--safe-right))
     calc(1rem + var(--safe-bottom)) calc(1rem + var(--safe-left));
   background: var(--color-backdrop);
+  transition: background var(--transition-med);
+}
+
+/* Still a backdrop — it takes the tap that dismisses — but not a veil. */
+.backdrop--clear {
+  background: transparent;
 }
 
 .panel {
@@ -302,6 +321,10 @@ onBeforeUnmount(() => {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .backdrop {
+    transition: none;
+  }
+
   .dialog-enter-active,
   .dialog-leave-active,
   .dialog-enter-active .panel,

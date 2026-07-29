@@ -152,6 +152,18 @@ const settingsOpen = ref(false);
 const hoveredSlot = ref<number | null>(null);
 const pinnedSlot = ref<number | null>(null);
 const highlight = ref<string | null>(null);
+/**
+ * Whose answer the chart is showing on its own, asked for from a row of the
+ * phone's respondents drawer.
+ *
+ * It lives as long as the drawer does and no longer. The drawer is a bottom
+ * sheet over the chart it changes, so "showing only Ada" is a thing you set up
+ * and then look at — and the looking is the drawer's whole purpose being over.
+ * Anything that closes the drawer therefore puts the group's heatmap back,
+ * which also means there is no state left behind for a later visit to the page
+ * to be confused by.
+ */
+const soloName = ref<string | null>(null);
 /** Set when the guest paints; blocks a background refresh from clobbering edits. */
 const dirtySinceConfirm = ref(false);
 let awaitingIdentityRefresh: string | null = null;
@@ -450,7 +462,7 @@ function changeName() {
  *  anchor was appended before the drawer's, so left open the drawer would sit
  *  on top of the prompt it just asked for. */
 function addRespondent() {
-  peopleOpen.value = false;
+  closePeople();
   identityOpen.value = true;
 }
 
@@ -530,6 +542,30 @@ function onHover(slot: number | null) {
  * a tap, so they come down together too. The hover goes with it — on touch there
  * is no pointer left over the chart to justify an outline.
  */
+/**
+ * Closes the respondents drawer, and with it any single-person view it was
+ * holding. Every way out of the drawer goes through here — the close button, the
+ * backdrop, Escape — so there is one place the rule lives rather than three.
+ */
+function closePeople() {
+  peopleOpen.value = false;
+  soloName.value = null;
+  // The rows the pointer was over have just gone; nothing is left to hover.
+  highlight.value = null;
+}
+
+/** The chart shows one person, or the group. Never both, and never nobody. */
+function onSolo(name: string | null) {
+  soloName.value = name;
+}
+
+// Writing your own answer is not a view of anybody else's, so stepping into it
+// puts the group's chart back. Widening past the phone layout does the same:
+// the drawer this lives in does not exist there.
+watch([editing, compact], () => {
+  if (editing.value || !compact.value) soloName.value = null;
+});
+
 function onPin(slot: number | null) {
   if (slot === null) {
     pinnedSlot.value = null;
@@ -602,6 +638,9 @@ function onPin(slot: number | null) {
     </div>
 
     <div class="layout">
+      <!-- A row's eye and a row's hover ask the chart for the same thing — one
+           person's answer instead of the sum of everybody's — so they arrive by
+           the same prop. The eye is the deliberate one, and wins. -->
       <AvailabilityGrid
         class="grid-area"
         :event="event"
@@ -614,7 +653,7 @@ function onPin(slot: number | null) {
         :max-count="maxCount"
         :total-respondents="responseIndex.names.length"
         :show-best-times="showBestTimes"
-        :highlight-respondent="editing ? null : highlight"
+        :highlight-respondent="editing ? null : soloName ?? highlight"
         :active-slot="activeSlot"
         :hour12="hour12"
         :compact="compact"
@@ -736,15 +775,21 @@ function onPin(slot: number | null) {
       </div>
     </div>
 
+    <!-- Showing one person's answer alone, the drawer stops dimming the chart
+         and shrinks to the two rows it needs: what it is doing is happening up
+         there, and a veil over the thing you just asked to look at is the one
+         thing the sheet must not be. -->
     <Dialog
       v-if="compact"
       variant="sheet"
       :open="peopleOpen"
-      title="Respondents"
-      @close="peopleOpen = false"
+      :dim="soloName === null"
+      :title="soloName ? `Only ${soloName}’s times` : 'Respondents'"
+      @close="closePeople"
     >
       <RespondentsPanel
         embedded
+        :soloable="!editing"
         :names="responseIndex.names"
         :present="present"
         :available-names="availableNames"
@@ -752,6 +797,7 @@ function onPin(slot: number | null) {
         :slot-label="slotLabel"
         :pinned="pinnedSlot !== null"
         :highlight="editing ? null : highlight"
+        :solo="soloName"
         :current-name="guestName"
         :deleting="deletingName"
         :delete-error="deleteError"
@@ -760,6 +806,7 @@ function onPin(slot: number | null) {
         @delete="removeRespondent"
         @add="addRespondent"
         @switch="confirmIdentity"
+        @solo="onSolo"
       />
     </Dialog>
 

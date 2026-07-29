@@ -23,6 +23,8 @@ interface Options {
   ifNeededNames?: string[];
   currentName?: string | null;
   slotLabel?: string | null;
+  soloable?: boolean;
+  solo?: string | null;
 }
 
 function render(options: Options = {}): Promise<string> {
@@ -37,6 +39,8 @@ function render(options: Options = {}): Promise<string> {
     currentName: options.currentName ?? null,
     deleting: null,
     deleteError: null,
+    soloable: options.soloable ?? false,
+    solo: options.solo ?? null,
   };
   return renderToString(createSSRApp({ render: () => h(RespondentsPanel, props) }));
 }
@@ -48,12 +52,15 @@ function text(html: string): string {
 
 /**
  * The names the list actually shows, in the order it shows them. The dashed
- * "Add someone" row at the end wears the same class and is not one of them.
+ * action row at the end wears the same class and is not one of them, whichever
+ * of the two it currently is.
  */
+const ACTIONS = ["Add someone", "Show everyone"];
+
 function rows(html: string): string[] {
   return [...html.matchAll(/class="text[^"]*"[^>]*>([^<]*)/g)]
     .map((m) => m[1].trim())
-    .filter((name) => name !== "Add someone");
+    .filter((name) => !ACTIONS.includes(name));
 }
 
 /** How many animated dot groups the list drew. */
@@ -156,6 +163,74 @@ describe("respondents list", () => {
     // … and somebody who has merely arrived cannot: there is nothing to
     // delete, and a button that deleted nothing would only ask to be pressed.
     expect(html).not.toContain("Remove Cy");
+  });
+
+  // -------------------------------------------------------------------------
+  // one person's answer, alone
+  // -------------------------------------------------------------------------
+
+  it("offers no single-person view where the chart is not showing the group", async () => {
+    // The desktop panel and the editing view both pass soloable false: there the
+    // heatmap and the person you are pointing at are on screen together, or the
+    // chart is showing your own answer and there is nothing to narrow.
+    const html = await render({ names: ["Ada", "Bo"] });
+    expect(html).not.toContain("Show only");
+  });
+
+  it("offers each answered row a view of its own", async () => {
+    const html = await render({ names: ["Ada", "Bo"], soloable: true });
+    expect(html).toContain("Show only Ada");
+    expect(html).toContain("Show only Bo");
+  });
+
+  it("offers nothing to show for a row with no answer behind it", async () => {
+    // A heatmap of nothing is not a view; the eye would be a button that did
+    // nothing visible, on the one row that cannot honour it.
+    const html = await render({ names: ["Ada"], present: ["Cy"], soloable: true });
+    expect(html).toContain("Show only Ada");
+    expect(html).not.toContain("Show only Cy");
+  });
+
+  it("collapses to the one person whose chart it is", async () => {
+    const html = await render({
+      names: ["Ada", "Bo", "Cy"],
+      present: ["Dee"],
+      soloable: true,
+      solo: "Bo",
+    });
+
+    // The list is the chart's caption now, and the chart is showing one answer.
+    // Everything else would be describing something that is not on screen.
+    expect(rows(html)).toEqual(["Bo"]);
+    expect(html).toContain("Show everyone");
+    expect(html).toContain("Show everyone again");
+    // The fraction and the "Add someone" row are readings of the group's answer.
+    expect(text(html)).not.toContain("available");
+    expect(html).not.toContain("Add someone");
+    // And a bin beside the single row is only something to hit by mistake.
+    expect(html).not.toContain("Remove Bo");
+  });
+
+  it("says on the row itself which view is on", async () => {
+    const off = await render({ names: ["Ada", "Bo"], soloable: true });
+    const on = await render({ names: ["Ada", "Bo"], soloable: true, solo: "Bo" });
+    expect(off).not.toContain("reveal--on");
+    expect(on).toContain("reveal--on");
+    expect(on).toContain('aria-pressed="true"');
+  });
+
+  it("reads a name it cannot show as no view at all", async () => {
+    // Somebody deleted, or only present: there is no answer to put on the chart,
+    // so the list stays a list rather than collapsing onto a name it cannot draw.
+    const html = await render({
+      names: ["Ada", "Bo"],
+      present: ["Cy"],
+      soloable: true,
+      solo: "Cy",
+    });
+    expect(rows(html)).toEqual(["Ada", "Bo", "Cy"]);
+    expect(html).toContain("Add someone");
+    expect(html).not.toContain("reveal--on");
   });
 
   it("still offers a presence-only row as somebody to answer as", async () => {

@@ -27,6 +27,13 @@
  * there does the same thing for that person — after a confirm, because it means
  * editing somebody else's times and one row looks much like the next.
  *
+ * On a phone, where the chart is a heatmap and this list is behind a drawer,
+ * each answered row also offers to put its owner's answer on the chart *alone*.
+ * A sum cannot say who is behind it, and that is the one question about the
+ * chart the colours can never answer. Doing so collapses the list to that
+ * person — the sheet would otherwise cover the very chart it just changed — and
+ * the way back is where the list's action row always is.
+ *
  * Whoever is on the page right now gets three quietly pulsing dots after their
  * name, the visitor included — they are online too, and a rule with no
  * exceptions is one nobody has to learn. Somebody who is here but has not
@@ -47,6 +54,9 @@ import IconPersonFilled from "../../assets/icons/person-filled.svg";
 import IconPerson from "../../assets/icons/person.svg";
 import IconTrash from "../../assets/icons/trash.svg";
 import IconPlus from "../../assets/icons/plus.svg";
+import IconEye from "../../assets/icons/eye.svg";
+import IconEyeOff from "../../assets/icons/eye-off.svg";
+import IconPeople from "../../assets/icons/people.svg";
 
 const props = defineProps<{
   /**
@@ -75,6 +85,15 @@ const props = defineProps<{
   /** Name whose delete is in flight, if any. */
   deleting: string | null;
   deleteError: string | null;
+  /**
+   * Whether a row may ask the chart to show its owner's answer and nothing
+   * else. The phone's group view only: on a desktop the heatmap and the person
+   * you are pointing at are on screen together already, and while you are
+   * writing your own answer the chart is not showing anybody else's to narrow.
+   */
+  soloable?: boolean;
+  /** Whose answer the chart is showing alone, if anyone's. */
+  solo?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -83,6 +102,8 @@ const emit = defineEmits<{
   delete: [name: string];
   add: [];
   switch: [name: string];
+  /** Show this one person's answer on the chart, or null for the group's. */
+  solo: [name: string | null];
 }>();
 
 /** The respondent the delete dialog is asking about. At most one. */
@@ -166,8 +187,26 @@ function slotState(name: string): SlotState | null {
  * slot blank and a lie about somebody who has not answered at all — so they are
  * asked nothing and keep the person icon.
  */
+/**
+ * Whether the chart is currently showing one person's answer alone.
+ *
+ * A name nobody has an answer for cannot be soloed — there would be nothing on
+ * the chart to see — so a stale name simply reads as off.
+ */
+const soloing = computed(
+  () => Boolean(props.soloable && props.solo) && answered.value.has(props.solo as string),
+);
+
+/**
+ * While one person's answer is on the chart the list collapses to that person.
+ *
+ * Not for tidiness: the drawer is a bottom sheet and a full list of it covers
+ * the chart completely on a phone, so a single-person heatmap nobody can see
+ * would be a setting rather than a view. Collapsed, the sheet is two rows tall
+ * and the chart it is describing is above it.
+ */
 const rows = computed(() =>
-  listed.value.map((name) => {
+  (soloing.value ? [props.solo as string] : listed.value).map((name) => {
     const answers = answered.value.has(name);
     const state = answers ? slotState(name) : null;
     return {
@@ -179,9 +218,35 @@ const rows = computed(() =>
       unavailable: state === "unavailable",
       ifNeeded: state === "if-needed",
       isCurrent: name === props.currentName,
+      // Nothing stored means nothing to put on the chart alone.
+      soloable: Boolean(props.soloable) && answers,
+      isSolo: soloing.value && name === props.solo,
     };
   }),
 );
+
+/**
+ * The hover highlight, which is a hover and nothing else.
+ *
+ * Two things kept it from being one. Inside a drawer there is nothing to
+ * highlight *for*: the sheet is over the chart the highlight would change, so
+ * pointing at a row there can only narrow something nobody can see — and on a
+ * phone the row was reached by a finger, which lands and is never reported as
+ * having left, so the chart used to be stuck on one person's answer with no way
+ * back. That is what the eye exists for instead.
+ *
+ * The pointer type matters even on a desktop, because a tap is followed by a
+ * compatibility `pointerenter` that says `mouse`: after a list has been
+ * re-rendered under the finger, that phantom lands on whichever row has moved
+ * into the gap and highlights somebody nobody pointed at.
+ *
+ * Leaving always clears, whatever the pointer: a highlight nobody set is still
+ * one worth dropping.
+ */
+function onRowEnter(name: string, event: PointerEvent) {
+  if (props.embedded || event.pointerType !== "mouse") return;
+  emit("highlight", name);
+}
 
 function confirmDelete() {
   const name = confirming.value;
@@ -197,8 +262,11 @@ function confirmSwitch() {
 </script>
 
 <template>
-  <aside class="panel" :class="{ 'panel--embedded': embedded }">
-    <header class="head">
+  <aside class="panel" :class="{ 'panel--embedded': embedded, 'panel--solo': soloing }">
+    <!-- Collapsed to one person, the head goes: the fraction and the slot it is
+         about are a reading of the group's answer, which is exactly what has
+         been set aside. The drawer's own title names whose chart it is. -->
+    <header v-if="!soloing" class="head">
       <h2 class="heading">
         <template v-if="!embedded">Respondents</template>
         <span class="count" :class="`count--${countTone}`">
@@ -220,7 +288,7 @@ function confirmSwitch() {
       </p>
     </header>
 
-    <p v-if="names.length === 0" class="empty">No answers yet.</p>
+    <p v-if="names.length === 0 && !soloing" class="empty">No answers yet.</p>
 
     <ul class="names">
       <li
@@ -233,7 +301,7 @@ function confirmSwitch() {
           dimmed: highlight !== null && highlight !== row.name,
           'is-current': row.isCurrent,
         }"
-        @pointerenter="emit('highlight', row.name)"
+        @pointerenter="onRowEnter(row.name, $event)"
         @pointerleave="emit('highlight', null)"
       >
         <span
@@ -276,9 +344,29 @@ function confirmSwitch() {
           <span class="dot" />
         </span>
 
+        <!-- Puts this person's answer on the chart on its own. A heatmap is a
+             sum, and a sum cannot say who is behind it; this is the one
+             question the list is asked that the colours cannot answer. Only
+             where the chart is showing the group's answer to narrow, and only
+             for a row with something stored to show. -->
+        <button
+          v-if="row.soloable"
+          type="button"
+          class="reveal"
+          :class="{ 'reveal--on': row.isSolo }"
+          :aria-pressed="row.isSolo"
+          :aria-label="row.isSolo ? 'Show everyone again' : `Show only ${row.name}`"
+          :title="row.isSolo ? 'Show everyone again' : `Show only ${row.name}`"
+          @click="emit('solo', row.isSolo ? null : row.name)"
+        >
+          <IconEyeOff v-if="row.isSolo" aria-hidden="true" />
+          <IconEye v-else aria-hidden="true" />
+        </button>
+
         <!-- Nothing is stored for somebody who is only here, so there is
-             nothing for a delete to do. -->
-        <template v-if="row.answers">
+             nothing for a delete to do. And with the list collapsed to a single
+             row, a bin beside it is only something to hit by mistake. -->
+        <template v-if="row.answers && !soloing">
           <span v-if="deleting === row.name" class="busy">
             <Spinner :size="15" :label="`Removing ${row.name}`" />
           </span>
@@ -296,7 +384,18 @@ function confirmSwitch() {
         </template>
       </li>
 
-      <li class="add">
+      <!-- The way back to the group's answer, in the place the list's own
+           action row always sits. -->
+      <li v-if="soloing" class="add">
+        <button type="button" class="add__button" @click="emit('solo', null)">
+          <span class="avatar" aria-hidden="true">
+            <IconPeople />
+          </span>
+          <span class="text">Show everyone</span>
+        </button>
+      </li>
+
+      <li v-else class="add">
         <button type="button" class="add__button" @click="emit('add')">
           <span class="avatar" aria-hidden="true">
             <IconPlus stroke-width="2" />
@@ -476,8 +575,13 @@ function confirmSwitch() {
   cursor: default;
 }
 
-.name:hover {
-  background: var(--color-subtle);
+/* Only where a pointer can actually hover. A tap is followed by a compatibility
+   mouse event, which would otherwise leave whichever row the finger last touched
+   lit as though the pointer were still resting on it. */
+@media (hover: hover) {
+  .name:hover {
+    background: var(--color-subtle);
+  }
 }
 
 .name.unavailable .text {
@@ -552,8 +656,10 @@ function confirmSwitch() {
   cursor: pointer;
 }
 
-.text--switch:hover {
-  text-decoration: underline;
+@media (hover: hover) {
+  .text--switch:hover {
+    text-decoration: underline;
+  }
 }
 
 .text--switch:focus-visible {
@@ -637,14 +743,24 @@ function confirmSwitch() {
    sit beside it. */
 .tag,
 .busy,
+.reveal,
 .remove {
   margin-left: auto;
+}
+
+/* Only the first of them takes the slack. Two controls each claiming it would
+   leave the first stranded in the middle of the row instead of beside the
+   second, at the edge where the row's controls live. */
+.reveal ~ .busy,
+.reveal ~ .remove {
+  margin-left: 0;
 }
 
 /* Full-height square hard against the row's right edge — no padding of its
    own, so the glyph is as big as the row allows and there is nothing to miss.
    The spinner takes the same box so the row does not resize mid-delete. */
 .busy,
+.reveal,
 .remove {
   display: grid;
   flex: none;
@@ -678,9 +794,11 @@ function confirmSwitch() {
   opacity: 1;
 }
 
-.remove:hover:not(:disabled) {
-  color: var(--color-danger);
-  background: var(--color-danger-soft);
+@media (hover: hover) {
+  .remove:hover:not(:disabled) {
+    color: var(--color-danger);
+    background: var(--color-danger-soft);
+  }
 }
 
 .remove:focus-visible {
@@ -690,6 +808,55 @@ function confirmSwitch() {
 
 .remove:disabled {
   cursor: not-allowed;
+}
+
+/* --- one person's answer, alone -------------------------------------------- */
+
+/* Sits where the delete does when both are there, and takes the row's edge when
+   it is alone — collapsed to a single row the delete is gone, and this is the
+   only thing at that end. Always visible: there is no hover to reveal it on
+   where it is offered at all. */
+.reveal {
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.reveal svg {
+  width: 58%;
+  max-width: 1.3rem;
+  height: auto;
+}
+
+@media (hover: hover) {
+  .reveal:hover {
+    color: var(--color-text);
+    background: var(--color-subtle);
+  }
+}
+
+/* On, and the only thing on the row that says so besides the chart itself. The
+   accent rather than a neutral fill: it is the same "you asked for this" the
+   page uses everywhere, and it has to read at a glance from a row that is now
+   the whole list. */
+.reveal--on,
+.reveal--on:hover {
+  color: var(--color-accent-contrast);
+  background: var(--color-accent);
+}
+
+.reveal:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: calc(var(--focus-ring-offset) * -1);
+}
+
+/* Collapsed, the panel is two rows and no more: the chart above it is what the
+   drawer is now for, so it spends nothing on anything else. */
+.panel--solo .names {
+  gap: 0.25rem;
+}
+
+.panel--solo .name {
+  background: var(--color-subtle);
 }
 
 /* --- add someone ---------------------------------------------------------- */
@@ -716,10 +883,12 @@ function confirmSwitch() {
     background var(--transition-fast);
 }
 
-.add__button:hover {
-  color: var(--color-text);
-  background: var(--color-subtle);
-  border-color: var(--color-accent);
+@media (hover: hover) {
+  .add__button:hover {
+    color: var(--color-text);
+    background: var(--color-subtle);
+    border-color: var(--color-accent);
+  }
 }
 
 .add__button:focus-visible {
@@ -765,6 +934,7 @@ function confirmSwitch() {
 
 @media (prefers-reduced-motion: reduce) {
   .remove,
+  .reveal,
   .add__button {
     transition: none;
   }
