@@ -678,19 +678,42 @@ text.
   DOW events reference it.
 - The grid uses a **single delegated pointer handler** on the container with
   pixel→(row, column) hit-testing, not per-cell listeners.
+- **Selecting is two gestures, one per hand.** A mouse paints by dragging: the
+  rectangle between press and release is committed in one go. A finger cannot,
+  because that drag is the only way to scroll a chart bigger than the screen — so
+  on touch the drag belongs to the platform, and a **tap** marks its cell and
+  leaves **drag handles** on the opposite corners of the rectangle to grow it
+  with. `touch-action: none` appears in exactly one place, under those handles.
+  Both paths reach the same commit, the same floating options and the same undo.
+- A resize commits on every step, so its undo is a record that **grows** rather
+  than a snapshot taken once (`selectionStep` in `src/lib/grid.ts`): a cell is
+  recorded the first time the rectangle takes it in and never again, since after
+  that what it holds is the selection's own doing. Cancelling therefore restores
+  the state the tap interrupted however far the handles travelled, and a deletion
+  region dragged over a mixed block puts each mark back as its own kind.
 - Every column is laid out once inside a **native scroll container**, which the
   track may rest anywhere on — there is no paging and no snapping. Native
   because `getBoundingClientRect()` already carries the scroll offset, so
   hit-testing stays correct mid-scroll, and because momentum, shift+wheel and
   keyboard scrolling come with it. The time gutter and the day headings sit
   inside that container, pinned with `position: sticky` on their own axis. A
-  paint drag held at a clipped edge glides the scroll position under it,
-  quantised to whole columns under `prefers-reduced-motion`.
+  paint drag — or a handle drag — held at a clipped edge glides the scroll
+  position under it, quantised to whole columns under `prefers-reduced-motion`.
 - Below **820px** the event page is an app rather than a document: the page
   itself does not scroll, the chart fills the space between the header bar and
   the identity bar and scrolls inside it on both axes, and the respondents and
-  the view settings move into bottom-sheet drawers. A finger drag on the chart
-  can then only ever mean selection.
+  the view settings move into bottom-sheet drawers. The chart's foot keeps the
+  clock and the mode's own control on one row and drops the legend, because
+  every pixel it spends there comes off the grid.
+- Two readings of the group's answer that the desktop gets from the column
+  beside the chart are given back to the phone, where that column is behind a
+  drawer. A **tap** on a cell raises a card over it naming who is free at that
+  slot in the respondents list's own glyphs — the pinned slot, read a second
+  way, not a second kind of selection. And an **eye** on each answered row of
+  the drawer puts that one person's answer on the chart alone, since a heatmap
+  is a sum and a sum cannot say who is behind it. The single-person view lives
+  exactly as long as the drawer does; turning it on collapses the drawer to that
+  row and stops it dimming, or it would be covering the chart it just changed.
 - The heatmap tints each cell with the `--color-slot-available` green at an
   alpha scaled by respondent-count over the maximum, and a separate tone for
   if-needed. Because the token is declared with `light-dark()`, the actual

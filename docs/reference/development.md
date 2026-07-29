@@ -188,7 +188,10 @@ through computed styles (`src/lib/colors.ts`) rather than parsing the token.
 ### Mobile matters
 
 Every view has to work at 360px wide: tap targets ≥ 44px, no horizontal page
-overflow, grid drag that does not scroll the page underneath it.
+overflow, and a finger's drag doing what a finger's drag does everywhere else on
+the phone — scrolling. Where a gesture has to mean something other than that,
+it is a tap on something 44px wide, and `touch-action: none` goes on that thing
+alone rather than on the surface around it.
 
 ### Storage goes through `storage.ts`
 
