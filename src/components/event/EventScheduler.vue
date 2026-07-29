@@ -949,6 +949,7 @@ function onPin(slot: number | null) {
   min-height: 2.25rem;
   font-size: 0.8125rem;
   color: var(--color-text-muted);
+  white-space: nowrap;
   cursor: pointer;
 }
 

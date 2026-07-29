@@ -315,11 +315,19 @@ function toggle(key: string): void {
   align-items: center;
 }
 
+/* Squeezed between two fixed nav groups on a 320px screen this has about a
+   hundred pixels to work with, and a locale that spells the month out — or an
+   arrow tap into a longer one — used to wrap it and change the header's height
+   under the grid the component otherwise keeps perfectly still. */
 .calendar__month {
   flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
   font-size: 0.875rem;
   font-weight: 500;
   text-align: center;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   color: var(--color-text);
 }
 

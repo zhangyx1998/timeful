@@ -64,10 +64,14 @@ const steps = computed(() => {
   color: var(--color-text-muted);
 }
 
+/* Whole entries wrap to the next line; "If needed" never comes apart from
+   itself, and a swatch never ends up on a line without its word. */
 .item {
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 0.25rem;
+  white-space: nowrap;
 }
 
 .caption {

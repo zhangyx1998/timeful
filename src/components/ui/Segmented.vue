@@ -81,13 +81,19 @@ defineSlots<{
   max-width: 100%;
 }
 
+/* An option's label is a label, not a sentence: "Days of week" breaking across
+   two lines inside its own segment makes the control grow a row and stops the
+   two options reading as a pair. Callers that need a long label to shorten wrap
+   it in their own truncating span (see the scheduler's view switch). */
 .segmented__option {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 0.35rem;
+  min-width: 0;
   font: inherit;
   font-size: 0.875rem;
+  white-space: nowrap;
   color: var(--color-text-muted);
   background: none;
   border: none;

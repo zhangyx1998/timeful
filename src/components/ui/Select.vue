@@ -99,6 +99,10 @@ const selectId = computed(() => props.id || generatedId);
   border-radius: var(--radius-md);
   outline: none;
   appearance: none;
+  /* The ellipsis here was inert without this: a long timezone label is one
+     line that gets cut, not two that fit. */
+  white-space: nowrap;
+  overflow: hidden;
   text-overflow: ellipsis;
   cursor: pointer;
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
