@@ -18,6 +18,7 @@ import {
   CLOSE_OCCUPIED,
   CLOSE_REPLACED,
   connectRealtime,
+  DEGRADED_AFTER_FAILURES,
   MAX_FAILED_ATTEMPTS,
   MAX_RETRY_MS,
   parseRealtimeMessage,
@@ -750,6 +751,102 @@ describe("connectRealtime", () => {
       vi.advanceTimersByTime(MAX_RETRY_MS);
       expect(sockets.length).toBeGreaterThan(MAX_FAILED_ATTEMPTS - 1);
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // saying when it is down
+  // -------------------------------------------------------------------------
+
+  /** Drops the current socket and rides the backoff to the next attempt. */
+  function failOnce(): void {
+    latest().dropped();
+    vi.advanceTimersByTime(MAX_RETRY_MS);
+  }
+
+  it("says nothing about one dropped connection", () => {
+    // The ordinary reconnect dance — a drop, a moment, the socket back — is
+    // exactly what must never surface. No call at all, in either direction.
+    vi.useFakeTimers();
+    const onDegraded = vi.fn();
+    connect({ onDegraded });
+    latest().opened();
+
+    failOnce();
+    latest().opened();
+
+    expect(onDegraded).not.toHaveBeenCalled();
+  });
+
+  it("reports degraded once a run of failures is long enough, and only once", () => {
+    vi.useFakeTimers();
+    const onDegraded = vi.fn();
+    connect({ onDegraded });
+
+    for (let i = 0; i < DEGRADED_AFTER_FAILURES - 1; i += 1) failOnce();
+    expect(onDegraded).not.toHaveBeenCalled();
+
+    failOnce();
+    expect(onDegraded.mock.calls).toEqual([[true]]);
+
+    // Said once on the way past the threshold: the run going on to exhaust
+    // the whole budget adds nothing, and the notice stands after it gives up.
+    for (let i = 0; i < MAX_FAILED_ATTEMPTS; i += 1) failOnce();
+    expect(onDegraded.mock.calls).toEqual([[true]]);
+  });
+
+  it("withdraws the notice when a reconnect lands", () => {
+    vi.useFakeTimers();
+    const onDegraded = vi.fn();
+    connect({ onDegraded });
+
+    for (let i = 0; i < DEGRADED_AFTER_FAILURES; i += 1) failOnce();
+    latest().opened();
+    expect(onDegraded.mock.calls).toEqual([[true], [false]]);
+
+    // And the next outage starts from silence again: one drop, no news.
+    onDegraded.mockClear();
+    failOnce();
+    latest().opened();
+    expect(onDegraded).not.toHaveBeenCalled();
+  });
+
+  it("does not let a session switch pass for a recovery", () => {
+    // Switching identities resets the retry counters — it is a deliberate new
+    // connection — but resetting a count is not the server answering, so the
+    // notice stays up until a connection actually opens.
+    vi.useFakeTimers();
+    const onDegraded = vi.fn();
+    const handle = connect({ session: ADA, onDegraded });
+
+    for (let i = 0; i < DEGRADED_AFTER_FAILURES; i += 1) failOnce();
+    expect(onDegraded.mock.calls).toEqual([[true]]);
+
+    handle.setSession(GRACE);
+    expect(onDegraded.mock.calls).toEqual([[true]]);
+
+    // Still down: the fresh run reaches the threshold again without saying
+    // the same thing twice …
+    for (let i = 0; i < DEGRADED_AFTER_FAILURES; i += 1) failOnce();
+    expect(onDegraded.mock.calls).toEqual([[true]]);
+
+    // … and the open, whenever it comes, is what takes it back.
+    latest().opened();
+    expect(onDegraded.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it("counts a refused session as no failure at all", () => {
+    // Occupied is somebody else holding the key, not the network failing: the
+    // connector drops to the browse socket immediately and nothing about the
+    // connection is degraded.
+    vi.useFakeTimers();
+    const onDegraded = vi.fn();
+    connect({ session: ADA, onOccupied: () => {}, onDegraded });
+    latest().opened();
+
+    latest().dropped(CLOSE_OCCUPIED);
+    latest().opened();
+
+    expect(onDegraded).not.toHaveBeenCalled();
   });
 
   it("treats a constructor that throws as a failed attempt", () => {

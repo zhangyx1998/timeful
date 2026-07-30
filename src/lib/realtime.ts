@@ -181,6 +181,21 @@ export const MAX_RETRY_MS = 30_000;
 export const MAX_FAILED_ATTEMPTS = 8;
 
 /**
+ * Consecutive failed attempts before the connector says so out loud.
+ *
+ * The channel is silent by design — one dropped connection and the reconnect
+ * a second later must never surface anywhere. But a connection that keeps
+ * failing is a page quietly going stale, and the reader deserves a sentence
+ * about it. Three straight failures is past every ordinary blip (the first
+ * two retries land within about three seconds) while still early enough that
+ * the notice appears long before the connector gives up for good; any
+ * successful open withdraws it. The cost of showing it during a slow server
+ * restart is a true sentence — live updates really are down — that retracts
+ * itself the moment the reconnect lands.
+ */
+export const DEGRADED_AFTER_FAILURES = 3;
+
+/**
  * How long to wait before reconnect attempt number `attempt` (0-based).
  *
  * Doubles to a cap — 1s, 2s, 4s … 30s — and then spreads each wait over
@@ -276,6 +291,18 @@ export interface RealtimeOptions {
   onReplaced?: (session: RealtimeSession) => void;
   /** A write session opened and is accepting saves. */
   onSessionOpen?: (session: RealtimeSession) => void;
+  /**
+   * The connection has been failing long enough to be worth a sentence
+   * (`true`), or came back after saying so (`false`).
+   *
+   * Fired only on the transition, `true` after `DEGRADED_AFTER_FAILURES`
+   * consecutive failed attempts and `false` on the next successful open — so
+   * a single dropped connection and its quick reconnect fire nothing at all.
+   * Once the connector gives up (`MAX_FAILED_ATTEMPTS`) the `true` already
+   * fired stands, and nothing retracts it short of a reload: that is exactly
+   * the state the callback exists to report.
+   */
+  onDegraded?: (degraded: boolean) => void;
   /** Test seam: build the socket. Defaults to the global `WebSocket`. */
   createSocket?: (url: string) => RealtimeSocket;
   /**
@@ -404,6 +431,8 @@ export function connectRealtime(
   let attempt = 0;
   /** The same count, against `MAX_FAILED_ATTEMPTS` rather than the schedule. */
   let failures = 0;
+  /** Whether `onDegraded(true)` has been said and not yet taken back. */
+  let degraded = false;
   /** Set by `close()` and by `gone`. Both are final. */
   let stopped = false;
 
@@ -461,6 +490,13 @@ export function connectRealtime(
       // gets the full budget of attempts again.
       attempt = 0;
       failures = 0;
+      // And takes back anything said about the connection being down. Only an
+      // open does: a session switch resets the counters too, but resetting a
+      // count is not the same as the server answering.
+      if (degraded) {
+        degraded = false;
+        options.onDegraded?.(false);
+      }
       // The takeover was for this one attempt. Spent whether or not it was
       // needed, so a later reconnect never silently evicts anybody.
       takeover = false;
@@ -557,6 +593,13 @@ export function connectRealtime(
   function retry(): void {
     if (stopped || timer !== null) return;
     failures += 1;
+    // Enough straight failures to say so — once, on the way past the
+    // threshold. A run that goes on to exhaust the budget below has already
+    // said everything there is to say.
+    if (!degraded && failures >= DEGRADED_AFTER_FAILURES) {
+      degraded = true;
+      options.onDegraded?.(true);
+    }
     if (failures >= MAX_FAILED_ATTEMPTS) {
       // Nothing here is coming back on its own — most likely this event's live
       // updates were switched off. Stop rather than knock forever.

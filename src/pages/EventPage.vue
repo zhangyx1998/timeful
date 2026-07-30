@@ -24,7 +24,7 @@ import {
   getLocalTimezone,
   getScheduleTimezoneOffset,
 } from "../lib/dates";
-import type { EventDoc } from "../lib/event";
+import { realtimeAllowed, type EventDoc } from "../lib/event";
 import {
   connectRealtime,
   type PresenceEntry,
@@ -81,6 +81,20 @@ const gone = ref(false);
 
 /** The realtime subscription, while the page is mounted. */
 let realtime: RealtimeHandle | null = null;
+
+/**
+ * The connector has been failing long enough to say so (`lib/realtime.ts`,
+ * `onDegraded`). Raw here; what the footer actually shows is `realtimeDown`
+ * below, which also asks whether this event was supposed to have live updates
+ * at all — an event with them switched off gets the same refusals off the
+ * server, and they are not news.
+ */
+const realtimeDegraded = ref(false);
+
+const realtimeDown = computed(
+  () =>
+    realtimeDegraded.value && event.value !== null && realtimeAllowed(event.value),
+);
 
 /**
  * Who is on this page right now, straight off the channel — so it is empty
@@ -266,6 +280,9 @@ onMounted(() => {
       onOccupied,
       onReplaced,
       onSessionOpen,
+      onDegraded: (down) => {
+        realtimeDegraded.value = down;
+      },
     });
   }
 });
@@ -320,6 +337,7 @@ onBeforeUnmount(() => {
           :event="event"
           :present="present"
           :writer="writer"
+          :realtime-down="realtimeDown"
           @refresh="refresh"
           @identity="onIdentity"
           @claim="onClaim"
