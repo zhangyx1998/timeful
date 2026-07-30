@@ -480,6 +480,16 @@ function slotFor(cell: Cell | null): number | null {
 }
 
 /**
+ * What a rectangle of slots currently means, read off the answer itself rather
+ * than remembered anywhere: a flip is applied by the parent, and this follows
+ * it. The options strip and a handle's resize both ask, and they must get the
+ * same answer.
+ */
+function currentType(slots: number[]): AvailabilityType {
+  return slots.some((slot) => props.ifNeeded.has(slot)) ? "if_needed" : "available";
+}
+
+/**
  * The body's client rect already includes the scroll offset, so pointer
  * coordinates translate into track space without knowing where the track is —
  * mid-glide and mid-momentum as well as at rest.
@@ -1013,15 +1023,9 @@ const menu = computed(() => {
   // there is nothing to tell it it meant and nothing to take back.
   if (state.kind === "view") return null;
 
-  // Which of the two it currently is, read off the answer itself rather than
-  // remembered here: a flip is applied by the parent, and this follows it.
-  const type: AvailabilityType = state.slots.some((slot) => props.ifNeeded.has(slot))
-    ? "if_needed"
-    : "available";
-
   return {
     kind: state.kind,
-    type,
+    type: currentType(state.slots),
     live: state.live,
     anchor: { x: state.x, y: state.y, touch: state.touch },
   };
@@ -1074,6 +1078,9 @@ const region = computed(() => {
 // would be sliced in half along with the 44 pixels a finger has to find it by.
 // They still scroll with the columns, because the layer is in the track.
 
+/** The two ends a handle can hold, for the template's pair of discs. */
+const GRIP_ENDS = ["from", "to"] as const;
+
 /** Where the two handles sit, in the track's own pixels. */
 const handles = computed(() => {
   const state = menuState.value;
@@ -1115,11 +1122,8 @@ function applyResize(cell: Cell) {
   }
   if (!state.snapshot) return;
 
-  // What the selection currently means, read off the answer itself — the same
-  // way the options strip reads it — before any of this step's emits move it.
-  const type: AvailabilityType = state.slots.some((slot) => props.ifNeeded.has(slot))
-    ? "if_needed"
-    : "available";
+  // Read before any of this step's emits move it.
+  const type = currentType(state.slots);
 
   state.start = cell;
   const step = selectionStep({
@@ -1713,22 +1717,15 @@ defineExpose({ measure, clearSelection });
                    hole; only the two discs take the pointer. -->
               <div v-if="handles" ref="gripsEl" class="grips" aria-hidden="true">
                 <div
+                  v-for="end in GRIP_ENDS"
+                  :key="end"
                   class="grip"
                   :class="`grip--${handles.kind}`"
                   :style="{
-                    left: `${handles.from.x}px`,
-                    top: `${HEADER_HEIGHT + handles.from.y}px`,
+                    left: `${handles[end].x}px`,
+                    top: `${HEADER_HEIGHT + handles[end].y}px`,
                   }"
-                  @pointerdown="startResize('from', $event)"
-                />
-                <div
-                  class="grip"
-                  :class="`grip--${handles.kind}`"
-                  :style="{
-                    left: `${handles.to.x}px`,
-                    top: `${HEADER_HEIGHT + handles.to.y}px`,
-                  }"
-                  @pointerdown="startResize('to', $event)"
+                  @pointerdown="startResize(end, $event)"
                 />
               </div>
             </div>
@@ -1979,11 +1976,17 @@ defineExpose({ measure, clearSelection });
   transition: opacity var(--transition-fast);
 }
 
+/* `--dir` is the way each knob takes the grid: every lean below multiplies it,
+   so the two mirrored variants share one transform rule per state. */
 .knob--prev {
+  --dir: -1;
+
   left: calc(var(--gutter) + 0.15rem);
 }
 
 .knob--next {
+  --dir: 1;
+
   right: 0.15rem;
 }
 
@@ -2017,14 +2020,7 @@ defineExpose({ measure, clearSelection });
     color: var(--color-accent-contrast);
     background: var(--color-accent);
     border-color: var(--color-accent);
-  }
-
-  .knob--prev:hover:not(:disabled) .knob__glyph {
-    transform: translateX(-1px);
-  }
-
-  .knob--next:hover:not(:disabled) .knob__glyph {
-    transform: translateX(1px);
+    transform: translateX(calc(var(--dir) * 1px));
   }
 }
 
@@ -2058,14 +2054,7 @@ defineExpose({ measure, clearSelection });
   color: var(--color-accent-contrast);
   background: var(--color-accent);
   border-color: var(--color-accent);
-}
-
-.stage.dragging .knob--prev.armed .knob__glyph {
-  transform: translateX(-2px);
-}
-
-.stage.dragging .knob--next.armed .knob__glyph {
-  transform: translateX(2px);
+  transform: translateX(calc(var(--dir) * 2px));
 }
 
 .knob:focus-visible {
@@ -2270,6 +2259,9 @@ defineExpose({ measure, clearSelection });
    here and nowhere else on the chart: this is the one place a finger's drag means
    something other than scrolling. */
 .grip {
+  /* The selection's own colour; the erase variant only swaps this. */
+  --sel: var(--color-selection-create);
+
   position: absolute;
   display: grid;
   place-items: center;
@@ -2288,18 +2280,15 @@ defineExpose({ measure, clearSelection });
   content: "";
   width: 0.95rem;
   height: 0.95rem;
-  background: var(--color-selection-create);
+  background: var(--sel);
   border: 2px solid var(--color-bg);
   border-radius: var(--radius-pill);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-selection-create) 60%, transparent),
-    var(--shadow-sm);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--sel) 60%, transparent), var(--shadow-sm);
   transition: transform var(--transition-fast);
 }
 
-.grip--erase::after {
-  background: var(--color-selection-delete);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-selection-delete) 60%, transparent),
-    var(--shadow-sm);
+.grip--erase {
+  --sel: var(--color-selection-delete);
 }
 
 /* Under the finger. Grown rather than recoloured: the colour is what it means,
