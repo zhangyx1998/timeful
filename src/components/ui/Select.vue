@@ -137,10 +137,4 @@ const selectId = computed(() => props.id || generatedId);
   font-size: 0.75rem;
   color: var(--color-text-muted);
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .select-field__select {
-    transition: none;
-  }
-}
 </style>

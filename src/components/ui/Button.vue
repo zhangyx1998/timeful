@@ -59,11 +59,6 @@ withDefaults(
     color var(--transition-fast);
 }
 
-.btn:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-}
-
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -139,11 +134,5 @@ withDefaults(
   color: var(--color-danger-contrast);
   background: var(--color-danger);
   border-color: var(--color-danger);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .btn {
-    transition: none;
-  }
 }
 </style>

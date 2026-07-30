@@ -201,6 +201,8 @@ const emit = defineEmits<{
 /* At the tap floor in both directions: this is a phone's only undo, and it is
    pressed repeatedly, so it is the last thing that should ask for precision. */
 .step {
+  --focus-ring-inset: calc(var(--focus-ring-offset) * -1);
+
   display: grid;
   place-items: center;
   width: var(--tap-min);
@@ -224,11 +226,6 @@ const emit = defineEmits<{
 
 .step:hover:not(:disabled) {
   background: var(--color-subtle);
-}
-
-.step:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: calc(var(--focus-ring-offset) * -1);
 }
 
 /* Dimmed rather than gone: the pair stays where it was so the one that still

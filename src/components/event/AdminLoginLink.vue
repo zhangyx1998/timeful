@@ -83,21 +83,10 @@ async function onAuthed(): Promise<void> {
   color: var(--color-text);
 }
 
-.link:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-}
-
 /* A finger needs somewhere to land even for something this quiet. */
 @media (pointer: coarse) {
   .link {
     min-height: var(--tap-min);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .link {
-    transition: none;
   }
 }
 </style>

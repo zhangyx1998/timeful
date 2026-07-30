@@ -51,6 +51,8 @@ const label = computed(() =>
 
 <style scoped>
 .toggle {
+  --focus-ring-inset: calc(var(--focus-ring-offset) * -1);
+
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -62,11 +64,6 @@ const label = computed(() =>
   border: none;
   border-radius: var(--radius-md);
   cursor: pointer;
-}
-
-.toggle:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: calc(var(--focus-ring-offset) * -1);
 }
 
 .track {
@@ -154,13 +151,5 @@ html[data-theme="dark"] .icon--sun {
 html[data-theme="dark"] .icon--moon {
   opacity: 1;
   transform: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .track,
-  .knob,
-  .icon {
-    transition: none;
-  }
 }
 </style>

@@ -201,10 +201,4 @@ const messageId = computed(() => `${inputId.value}-message`);
 .text-field__message--error {
   color: var(--color-danger);
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .text-field__control {
-    transition: none;
-  }
-}
 </style>

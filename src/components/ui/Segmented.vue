@@ -86,6 +86,8 @@ defineSlots<{
    two options reading as a pair. Callers that need a long label to shorten wrap
    it in their own truncating span (see the scheduler's view switch). */
 .segmented__option {
+  --focus-ring-inset: calc(var(--focus-ring-offset) * -1);
+
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -108,11 +110,6 @@ defineSlots<{
 .segmented__option:hover:not(.segmented__option--on) {
   color: var(--color-text);
   background: var(--color-subtle);
-}
-
-.segmented__option:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: calc(var(--focus-ring-offset) * -1);
 }
 
 .segmented--md .segmented__option {
@@ -143,11 +140,5 @@ defineSlots<{
   font-weight: 600;
   color: var(--color-accent-contrast);
   background: var(--color-accent);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .segmented__option {
-    transition: none;
-  }
 }
 </style>

@@ -162,6 +162,8 @@ const emit = defineEmits<{ "exit-isolation": []; "exit-best-times": [] }>();
 /* Divided from the label by a rule rather than by space: it is a second control
    on one chip, and the two must not read as one long button. */
 .pill__exit {
+  --focus-ring-inset: calc(var(--focus-ring-offset) * -1);
+
   position: relative;
   display: grid;
   flex: none;
@@ -186,11 +188,6 @@ const emit = defineEmits<{ "exit-isolation": []; "exit-best-times": [] }>();
 .pill__exit:hover {
   color: var(--color-text);
   background: var(--color-subtle);
-}
-
-.pill__exit:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: calc(var(--focus-ring-offset) * -1);
 }
 
 /* The chip stays small under a finger — it is covering the chart, and a chip
@@ -222,12 +219,6 @@ const emit = defineEmits<{ "exit-isolation": []; "exit-best-times": [] }>();
 @media (max-width: 820px) {
   .pills {
     bottom: calc(4.75rem + var(--safe-bottom));
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .pill__exit {
-    transition: none;
   }
 }
 </style>

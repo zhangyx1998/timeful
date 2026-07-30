@@ -258,11 +258,6 @@ async function signOut(): Promise<void> {
   background: var(--color-subtle);
 }
 
-.tool--link:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-}
-
 @media (pointer: coarse) {
   .tool--link {
     min-height: var(--tap-min);
@@ -366,11 +361,5 @@ async function signOut(): Promise<void> {
   margin-top: 0.25rem;
   font-size: 0.8125rem;
   color: var(--color-text-muted);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .tool--link {
-    transition: none;
-  }
 }
 </style>

@@ -87,10 +87,4 @@ onBeforeUnmount(() => clearTimeout(timer));
 .tip--on {
   opacity: 1;
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .tip {
-    transition: none;
-  }
-}
 </style>

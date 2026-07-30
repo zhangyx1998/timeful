@@ -290,11 +290,6 @@ function pick(person: KnownPerson) {
   border-color: var(--color-accent);
 }
 
-.chip:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-}
-
 @media (pointer: coarse) {
   .chip {
     min-height: var(--tap-min);
