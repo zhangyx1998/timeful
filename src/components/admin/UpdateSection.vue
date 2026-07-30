@@ -17,6 +17,7 @@ import { api, apiError } from "../../lib/api";
 import { copyText } from "../../lib/clipboard";
 import Button from "../ui/Button.vue";
 import Card from "../ui/Card.vue";
+import ErrorNote from "../ui/ErrorNote.vue";
 import IconAlertTriangle from "../../assets/icons/alert-triangle.svg";
 import IconCircleCheck from "../../assets/icons/circle-check.svg";
 import IconRotateCw from "../../assets/icons/rotate-cw.svg";
@@ -82,7 +83,8 @@ async function copy(): Promise<void> {
         <span v-if="result?.development" class="note">development build</span>
       </p>
 
-      <p v-if="error" class="error">{{ error }}</p>
+      <!-- The v-if is not redundant: the chain below hangs off it. -->
+      <ErrorNote v-if="error" :message="error" />
 
       <template v-else-if="checking">
         <p class="state state--muted">Asking the npm registry…</p>
@@ -216,15 +218,6 @@ async function copy(): Promise<void> {
   line-height: 1.6;
   white-space: pre;
   color: var(--color-text);
-}
-
-.error {
-  margin: 0;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.875rem;
-  color: var(--color-danger);
-  background: var(--color-danger-soft);
-  border-radius: var(--radius-md);
 }
 
 /* Phones: the command and its button stack, so neither is squeezed to nothing

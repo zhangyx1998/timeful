@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { api, apiError } from "../../lib/api";
 import AppHeader from "../ui/AppHeader.vue";
 import Button from "../ui/Button.vue";
+import ErrorNote from "../ui/ErrorNote.vue";
 import TextInput from "../ui/TextInput.vue";
 import ThemeToggle from "../ui/ThemeToggle.vue";
 import type { AuthResponse } from "../../lib/api";
@@ -89,7 +90,7 @@ async function submit(): Promise<void> {
             required
           />
 
-          <p v-if="error" class="error">{{ error }}</p>
+          <ErrorNote :message="error" />
 
           <Button variant="primary" type="submit" block :loading="saving">
             {{ saving ? "Creating…" : "Create account" }}
@@ -136,14 +137,5 @@ async function submit(): Promise<void> {
   flex-direction: column;
   gap: 1rem;
   margin-top: 1.5rem;
-}
-
-.error {
-  margin: 0;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.875rem;
-  color: var(--color-danger);
-  background: var(--color-danger-soft);
-  border-radius: var(--radius-md);
 }
 </style>

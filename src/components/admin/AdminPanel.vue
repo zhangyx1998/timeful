@@ -16,6 +16,7 @@ import SessionsSection from "./SessionsSection.vue";
 import UpdateSection from "./UpdateSection.vue";
 import AppHeader from "../ui/AppHeader.vue";
 import Button from "../ui/Button.vue";
+import ErrorNote from "../ui/ErrorNote.vue";
 import Segmented from "../ui/Segmented.vue";
 import ThemeToggle from "../ui/ThemeToggle.vue";
 import IconCalendar from "../../assets/icons/calendar.svg";
@@ -113,7 +114,7 @@ onMounted(loadEvents);
         </Segmented>
       </div>
 
-      <p v-if="error" class="error">{{ error }}</p>
+      <ErrorNote :message="error" />
 
       <EventFormDialog
         :open="form !== null"
@@ -188,14 +189,5 @@ onMounted(loadEvents);
   width: 1rem;
   height: 1rem;
   flex: none;
-}
-
-.error {
-  margin: 0;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.875rem;
-  color: var(--color-danger);
-  background: var(--color-danger-soft);
-  border-radius: var(--radius-md);
 }
 </style>

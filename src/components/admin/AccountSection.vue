@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { api, apiError } from "../../lib/api";
 import Button from "../ui/Button.vue";
 import Card from "../ui/Card.vue";
+import ErrorNote from "../ui/ErrorNote.vue";
 import TextInput from "../ui/TextInput.vue";
 import IconAlertTriangle from "../../assets/icons/alert-triangle.svg";
 import type { CredentialsPayload } from "../../lib/api";
@@ -92,7 +93,7 @@ async function submit(): Promise<void> {
         Saving signs you out everywhere.
       </p>
 
-      <p v-if="error" class="error">{{ error }}</p>
+      <ErrorNote :message="error" />
 
       <div class="actions">
         <Button variant="primary" type="submit" :loading="saving" :disabled="!changed">
@@ -127,15 +128,6 @@ async function submit(): Promise<void> {
   flex: none;
   width: 1rem;
   height: 1rem;
-}
-
-.error {
-  margin: 0;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.875rem;
-  color: var(--color-danger);
-  background: var(--color-danger-soft);
-  border-radius: var(--radius-md);
 }
 
 .actions {

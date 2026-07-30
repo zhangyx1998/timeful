@@ -15,6 +15,7 @@
 import { ref } from "vue";
 import { api, apiError } from "../../lib/api";
 import Button from "../ui/Button.vue";
+import ErrorNote from "../ui/ErrorNote.vue";
 import TextInput from "../ui/TextInput.vue";
 import type { AuthResponse } from "../../lib/api";
 
@@ -85,7 +86,7 @@ async function submit(): Promise<void> {
       Stay signed in
     </label>
 
-    <p v-if="error" class="error">{{ error }}</p>
+    <ErrorNote :message="error" />
 
     <Button variant="primary" type="submit" block :loading="saving">
       {{ saving ? "Signing in…" : "Sign in" }}
@@ -120,14 +121,5 @@ async function submit(): Promise<void> {
   .checkbox {
     min-height: var(--tap-min);
   }
-}
-
-.error {
-  margin: 0;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.875rem;
-  color: var(--color-danger);
-  background: var(--color-danger-soft);
-  border-radius: var(--radius-md);
 }
 </style>

@@ -40,6 +40,7 @@ import {
 } from "../../lib/api";
 import MonthCalendar from "./MonthCalendar.vue";
 import Button from "../ui/Button.vue";
+import ErrorNote from "../ui/ErrorNote.vue";
 import IconButton from "../ui/IconButton.vue";
 import Segmented from "../ui/Segmented.vue";
 import Select from "../ui/Select.vue";
@@ -440,7 +441,7 @@ async function submit(): Promise<void> {
       </p>
     </div>
 
-    <p v-if="error" class="error">{{ error }}</p>
+    <ErrorNote :message="error" />
 
     <!-- Same order as every other dialog in the app: the way out on the left,
          the thing you came to do at the right edge. -->
@@ -507,11 +508,6 @@ async function submit(): Promise<void> {
 
 .weekday:hover {
   background: var(--color-subtle);
-}
-
-.weekday:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
 }
 
 .weekday--active {
@@ -596,15 +592,6 @@ async function submit(): Promise<void> {
 
 .hint--url {
   overflow-wrap: anywhere;
-}
-
-.error {
-  margin: 0;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.875rem;
-  color: var(--color-danger);
-  background: var(--color-danger-soft);
-  border-radius: var(--radius-md);
 }
 
 .actions {
