@@ -1,43 +1,10 @@
 import { describe, expect, it } from "vitest";
 import path from "node:path";
-import { PassThrough, Writable } from "node:stream";
 import type { ResolvedConfig } from "./config.ts";
+import { scripted } from "./fixtures.ts";
 import { runWizard } from "./wizard.ts";
 
 const CWD = "/srv/timeful";
-
-/**
- * A scripted stdin that answers one prompt at a time, plus a transcript of
- * everything the wizard printed.
- *
- * Answers are fed reactively rather than all at once: readline hands over a
- * single line per `question()` and leaves the rest of an already-buffered
- * chunk sitting in its internal buffer, so a stdin written up front would
- * stall after the first answer. Waiting for each prompt is also what a person
- * does. A prompt is recognisable as the only output with no trailing newline.
- */
-function scripted(answers: string[], endWhenExhausted = false) {
-  const queue = [...answers];
-  const input = new PassThrough();
-  const written: string[] = [];
-  const output = new Writable({
-    write(chunk, _encoding, callback) {
-      const text = String(chunk);
-      written.push(text);
-      if (text.endsWith("\n")) return callback();
-      const next = queue.shift();
-      // Out of answers: either close the input (to exercise EOF) or leave the
-      // wizard waiting, which fails the test rather than hiding a stray prompt.
-      if (next === undefined) {
-        if (endWhenExhausted) setImmediate(() => input.end());
-        return callback();
-      }
-      setImmediate(() => input.write(`${next}\n`));
-      callback();
-    },
-  });
-  return { input, output, text: () => written.join("") };
-}
 
 function run(
   answers: string[],

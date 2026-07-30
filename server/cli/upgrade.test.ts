@@ -9,11 +9,11 @@ import { describe, expect, it } from "vitest";
 import {
   formatCommand,
   unitFor,
-  type ServiceCommand,
   type ServiceHost,
   type ServiceSpec,
   type ServiceUnit,
 } from "./service.ts";
+import { fakeHost } from "./fixtures.ts";
 import { pinnedCliPath } from "./discover.ts";
 import {
   installKind,
@@ -26,45 +26,6 @@ import {
 const WEBROOT = "/srv/scheduling";
 const OLD_CLI = "/home/ada/.npm/_npx/1a2b3c4d5e6f7a8b/node_modules/timeful/cli.js";
 const NEW_CLI = "/home/ada/.npm/_npx/ffffffffffffffff/node_modules/timeful/cli.js";
-
-/** A host that records instead of acting, and reads back what it was seeded with. */
-function fakeHost(seed: Record<string, string> = {}, dryRun = false) {
-  const files = new Map(Object.entries(seed));
-  const ran: ServiceCommand[] = [];
-  const lines: string[] = [];
-  const host: ServiceHost = {
-    dryRun,
-    async writeFile(file, contents) {
-      if (dryRun) return;
-      files.set(file, contents);
-    },
-    async readFile(file) {
-      return files.get(file) ?? null;
-    },
-    async removeFile(file) {
-      if (dryRun) return;
-      files.delete(file);
-    },
-    async exists(file) {
-      return files.has(file);
-    },
-    async run(cmd) {
-      if (dryRun) {
-        lines.push(`  would run: ${formatCommand(cmd)}`);
-        return { code: 0, stdout: "", stderr: "" };
-      }
-      ran.push(cmd);
-      return { code: 0, stdout: "", stderr: "" };
-    },
-    async which() {
-      return true;
-    },
-    log(line = "") {
-      lines.push(line);
-    },
-  };
-  return { host, files, ran, text: () => lines.join("\n") };
-}
 
 function spec(overrides: Partial<ServiceSpec> = {}): ServiceSpec {
   return {
@@ -109,15 +70,19 @@ describe("installKind", () => {
 describe("versionBeside", () => {
   it("reads the package.json the build writes beside the CLI", async () => {
     const { host } = fakeHost({
-      "/opt/timeful/package.json": JSON.stringify({ name: "timeful", version: "1.4.0" }),
+      seed: {
+        "/opt/timeful/package.json": JSON.stringify({ name: "timeful", version: "1.4.0" }),
+      },
     });
     expect(await versionBeside(host, "/opt/timeful/cli.js")).toBe("1.4.0");
   });
 
   it("answers null for anything it cannot read or make sense of", async () => {
     const { host } = fakeHost({
-      "/opt/broken/package.json": "{ not json",
-      "/opt/empty/package.json": "{}",
+      seed: {
+        "/opt/broken/package.json": "{ not json",
+        "/opt/empty/package.json": "{}",
+      },
     });
     expect(await versionBeside(host, "/opt/broken/cli.js")).toBeNull();
     expect(await versionBeside(host, "/opt/empty/cli.js")).toBeNull();
@@ -150,7 +115,7 @@ describe("pinnedCliPath", () => {
 describe("upgradeWebroot", () => {
   it("rewrites the unit to exec the running CLI, then restarts the service", async () => {
     const old = installedUnit(OLD_CLI);
-    const { host, files, ran, text } = fakeHost({ [old.file]: old.contents });
+    const { host, files, ran, text } = fakeHost({ seed: { [old.file]: old.contents } });
     const next = installedUnit(NEW_CLI);
 
     expect(await upgradeWebroot(WEBROOT, [next], context(host))).toBe("upgraded");
@@ -170,10 +135,12 @@ describe("upgradeWebroot", () => {
   it("says so and does nothing when the unit already execs this build", async () => {
     const current = installedUnit(NEW_CLI);
     const { host, ran, text } = fakeHost({
-      [current.file]: current.contents,
-      [`${NEW_CLI.replace(/\/cli\.js$/, "")}/package.json`]: JSON.stringify({
-        version: "1.4.0",
-      }),
+      seed: {
+        [current.file]: current.contents,
+        [`${NEW_CLI.replace(/\/cli\.js$/, "")}/package.json`]: JSON.stringify({
+          version: "1.4.0",
+        }),
+      },
     });
 
     expect(await upgradeWebroot(WEBROOT, [current], context(host))).toBe("unchanged");
@@ -185,10 +152,12 @@ describe("upgradeWebroot", () => {
   it("upgrades anyway when the path matches but the build behind it does not", async () => {
     const current = installedUnit(NEW_CLI);
     const { host, ran, text } = fakeHost({
-      [current.file]: current.contents,
-      [`${NEW_CLI.replace(/\/cli\.js$/, "")}/package.json`]: JSON.stringify({
-        version: "1.3.0",
-      }),
+      seed: {
+        [current.file]: current.contents,
+        [`${NEW_CLI.replace(/\/cli\.js$/, "")}/package.json`]: JSON.stringify({
+          version: "1.3.0",
+        }),
+      },
     });
 
     expect(await upgradeWebroot(WEBROOT, [current], context(host))).toBe("upgraded");
@@ -198,7 +167,7 @@ describe("upgradeWebroot", () => {
 
   it("rewrites a unit whose old CLI path cannot be read out of it", async () => {
     const next = installedUnit(NEW_CLI);
-    const { host, files, text } = fakeHost({ [next.file]: "[Service]\nType=simple\n" });
+    const { host, files, text } = fakeHost({ seed: { [next.file]: "[Service]\nType=simple\n" } });
 
     expect(await upgradeWebroot(WEBROOT, [next], context(host))).toBe("upgraded");
     expect(text()).toContain("names no CLI path");
@@ -207,7 +176,10 @@ describe("upgradeWebroot", () => {
 
   it("prints every command and touches nothing under a dry run", async () => {
     const old = installedUnit(OLD_CLI);
-    const { host, files, ran, text } = fakeHost({ [old.file]: old.contents }, true);
+    const { host, files, ran, text } = fakeHost({
+      seed: { [old.file]: old.contents },
+      dryRun: true,
+    });
     const next = installedUnit(NEW_CLI);
 
     await upgradeWebroot(WEBROOT, [next], context(host));
@@ -245,8 +217,10 @@ describe("upgradeWebroot", () => {
     const user = installedUnit(OLD_CLI, { tier: "user" });
     const system = installedUnit(OLD_CLI, { tier: "system" });
     const { host, ran } = fakeHost({
-      [user.file]: user.contents,
-      [system.file]: system.contents,
+      seed: {
+        [user.file]: user.contents,
+        [system.file]: system.contents,
+      },
     });
 
     await upgradeWebroot(
@@ -292,7 +266,7 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 `;
-    const { host, files, ran, text } = fakeHost({ [next.file]: legacy });
+    const { host, files, ran, text } = fakeHost({ seed: { [next.file]: legacy } });
 
     expect(await upgradeWebroot(WEBROOT, [next], context(host))).toBe("upgraded");
     expect(text()).toContain(`was ${OLD_CLI}`);
@@ -323,7 +297,7 @@ WantedBy=multi-user.target
       tier: "system",
       nodePath: "/home/ada/.nvm/versions/node/v22.18.0/bin/node",
     });
-    const { host, files } = fakeHost({ [next.file]: next.contents });
+    const { host, files } = fakeHost({ seed: { [next.file]: next.contents } });
 
     await expect(upgradeWebroot(WEBROOT, [next], context(host))).rejects.toThrow(
       /cannot use this Node installation/,

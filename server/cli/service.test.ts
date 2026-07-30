@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import os from "node:os";
 import path from "node:path";
 import { CliError } from "./errors.ts";
+import { fakeHost } from "./fixtures.ts";
 import {
   availableTiers,
   controlFor,
@@ -21,7 +22,6 @@ import {
   unitFor,
   webrootHash,
   type ServiceCommand,
-  type ServiceHost,
   type ServiceRef,
   type ServiceSpec,
   type ServiceTier,
@@ -42,58 +42,6 @@ function spec(overrides: Partial<ServiceSpec> = {}): ServiceSpec {
     uid: 501,
     ...overrides,
   };
-}
-
-/** A host that records everything instead of touching the machine. */
-function fakeHost(
-  options: {
-    existing?: string[];
-    which?: (bin: string) => boolean;
-    fail?: string;
-    /** Mirrors the real host: narrate, change nothing. */
-    dryRun?: boolean;
-  } = {},
-) {
-  const files = new Map<string, string>();
-  const ran: ServiceCommand[] = [];
-  const lines: string[] = [];
-  const existing = new Set(options.existing ?? []);
-  const host: ServiceHost = {
-    dryRun: options.dryRun,
-    async writeFile(file, contents) {
-      if (options.dryRun) return;
-      files.set(file, contents);
-      existing.add(file);
-    },
-    async readFile(file) {
-      // Reads are honoured in a dry run too, exactly as the real host does.
-      return files.get(file) ?? null;
-    },
-    async removeFile(file) {
-      if (options.dryRun) return;
-      files.delete(file);
-      existing.delete(file);
-    },
-    async exists(file) {
-      return existing.has(file);
-    },
-    async run(cmd) {
-      if (options.dryRun) {
-        lines.push(`  would run: ${formatCommand(cmd)}`);
-        return { code: 0, stdout: "", stderr: "" };
-      }
-      ran.push(cmd);
-      const failed = options.fail && formatCommand(cmd).includes(options.fail);
-      return { code: failed ? 3 : 0, stdout: failed ? "" : "active (running)", stderr: "" };
-    },
-    async which(binary) {
-      return options.which ? options.which(binary) : true;
-    },
-    log(line = "") {
-      lines.push(line);
-    },
-  };
-  return { host, files, ran, text: () => lines.join("\n") };
 }
 
 const commands = (cmds: ServiceCommand[]) => cmds.map(formatCommand);

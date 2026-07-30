@@ -9,6 +9,7 @@
 import { describe, expect, it } from "vitest";
 import { PassThrough, Writable } from "node:stream";
 import { CliError } from "./errors.ts";
+import { scripted } from "./fixtures.ts";
 import {
   CancelledError,
   InputEndedError,
@@ -62,32 +63,6 @@ function fakeTty() {
     type: (line: string) => input.write(line),
     end: () => input.end(),
   };
-}
-
-/**
- * A stdin that is a pipe, answering one prompt at a time. Answers are fed
- * reactively: a prompt is the only output with no trailing newline, and an
- * answer written before its question would be swallowed by readline's buffer.
- */
-function scripted(answers: string[], endWhenExhausted = false) {
-  const queue = [...answers];
-  const input = new PassThrough();
-  const written: string[] = [];
-  const output = new Writable({
-    write(chunk, _encoding, callback) {
-      const line = String(chunk);
-      written.push(line);
-      if (line.endsWith("\n")) return callback();
-      const next = queue.shift();
-      if (next === undefined) {
-        if (endWhenExhausted) setImmediate(() => input.end());
-        return callback();
-      }
-      setImmediate(() => input.write(`${next}\n`));
-      callback();
-    },
-  });
-  return { io: { input, output } as Tty, text: () => written.join("") };
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
