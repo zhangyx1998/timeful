@@ -26,10 +26,7 @@
  * the temp dir in the pre-key shape and asks the API what it makes of it.
  */
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import type { AddressInfo } from "node:net";
-import type { Server } from "node:http";
 import {
   afterAll,
   afterEach,
@@ -52,115 +49,56 @@ const originalMissDelay = vi.hoisted(() => {
   return previous;
 });
 
-import { createApp, type Renderer } from "../app.ts";
-import { createSession, setCredential } from "../auth.ts";
 import { missTarpit } from "../tarpit.ts";
 import type { StoredEvent } from "../types.ts";
+import {
+  adminCookie,
+  apiCall,
+  createTestEvent,
+  eventFixture,
+  makeVarDir,
+  removeVarDir,
+  startTestServer,
+  type CallFn,
+  type TestServer,
+} from "../test-support.ts";
 
-/** The page handler is irrelevant here; only the JSON routes are exercised. */
-const renderer: Renderer = {
-  loadTemplate: () => Promise.resolve("<!doctype html><div id=\"app\"><!--app-html--></div>"),
-  loadRender: () => Promise.reject(new Error("SSR is not used in these tests")),
-};
-
-let server: Server;
-let base: string;
+let api: TestServer;
 let varDir: string;
-const originalVarDir = process.env.VAR_DIR;
 
 beforeAll(async () => {
-  const app = createApp({ trustProxy: false, renderer });
-  server = await new Promise<Server>((resolve, reject) => {
-    const listening = app.listen(0, "127.0.0.1", () => resolve(listening));
-    listening.on("error", reject);
-  });
-  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  api = await startTestServer();
 });
 
 afterAll(async () => {
-  await new Promise<void>((resolve) => server.close(() => resolve()));
+  await api.close();
   if (originalMissDelay === undefined) delete process.env.MISS_DELAY_MS;
   else process.env.MISS_DELAY_MS = originalMissDelay;
 });
 
 beforeEach(async () => {
-  varDir = await fs.mkdtemp(path.join(os.tmpdir(), "timeful-events-"));
-  process.env.VAR_DIR = varDir;
+  varDir = await makeVarDir("timeful-events-");
 });
 
 afterEach(async () => {
   // Spies are taken per test (the tarpit queue, `console.warn`); none of them
   // may outlive the test that wanted them.
   vi.restoreAllMocks();
-  if (originalVarDir === undefined) delete process.env.VAR_DIR;
-  else process.env.VAR_DIR = originalVarDir;
-  // Retries because a request can outlive its own response: `touchSession`
-  // refreshes `lastSeenAt` fire-and-forget (ARCHITECTURE.md § Passwords and
-  // sessions), so an authenticated call may still be landing a write in here
-  // when the directory goes. Without the retries that surfaces, rarely and
-  // only under load, as ENOTEMPTY from a test that has already passed.
-  await fs.rm(varDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
+  await removeVarDir(varDir);
 });
 
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 
-interface Call {
-  status: number;
-  body: unknown;
-}
-
-async function call(
-  method: string,
-  path: string,
-  {
-    body,
-    cookie,
-    headers,
-  }: { body?: unknown; cookie?: string; headers?: Record<string, string> } = {},
-): Promise<Call> {
-  const res = await fetch(`${base}${path}`, {
-    method,
-    headers: {
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-      ...(cookie ? { Cookie: cookie } : {}),
-      ...headers,
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  const text = await res.text();
-  let parsed: unknown = null;
-  try {
-    parsed = text ? JSON.parse(text) : null;
-  } catch {
-    parsed = text;
-  }
-  return { status: res.status, body: parsed };
-}
-
-/** A session cookie for the one owner account. */
-async function adminCookie(): Promise<string> {
-  await setCredential({ email: "owner@example.com", password: "hunter2hunter2" });
-  return `session=${await createSession({})}`;
-}
+/** `apiCall` against this file's one server. */
+const call: CallFn = (method, route, options) => apiCall(api.base, method, route, options);
 
 /** Creates an event straight through the admin API and returns it. */
-async function createEvent(cookie: string): Promise<StoredEvent> {
-  const res = await call("POST", "/api/events", {
-    cookie,
-    body: {
-      name: "Team Offsite",
-      type: "specific_dates",
-      dates: ["2026-08-03T00:00:00.000Z", "2026-08-04T00:00:00.000Z"],
-      duration: 8,
-      timeIncrement: 30,
-      startOnMonday: true,
-    },
-  });
-  expect(res.status).toBe(201);
-  return res.body as StoredEvent;
-}
+const createEvent = (cookie: string) => createTestEvent(call, cookie);
+
+/** The common opener: a signed-in owner and one event of theirs. */
+const fixture = () => eventFixture(call);
 
 /** The event exactly as it sits on disk. */
 async function onDisk(id: string): Promise<StoredEvent> {
@@ -209,8 +147,7 @@ const SLOTS = ["2026-08-03T13:00:00.000Z", "2026-08-03T13:30:00.000Z"];
 
 describe("the /api and event-scoped namespaces", () => {
   it("keeps the list and the create under /api, admin-only", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { cookie, event } = await fixture();
 
     const listed = await call("GET", "/api/events", { cookie });
     expect(listed.status).toBe(200);
@@ -227,8 +164,7 @@ describe("the /api and event-scoped namespaces", () => {
   });
 
   it("moved every event-scoped endpoint off /api, with nothing left behind", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { cookie, event } = await fixture();
 
     // Each row is one endpoint's old spelling and its new one. Ordered so the
     // second pass is a legal sequence of operations on one event, ending by
@@ -305,8 +241,7 @@ describe("paths that do not resolve", () => {
   });
 
   it("plain-404s an unknown sub-segment under a slug that does resolve", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
     const enter = vi.spyOn(missTarpit, "enter");
 
     // Whoever asked has already proved they hold the capability URL, so this is
@@ -360,8 +295,7 @@ describe("paths that do not resolve", () => {
 
 describe("GET /<slug>/data", () => {
   it("hands the whole document to anyone holding the link", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
 
     // No session anywhere in here: the URL is the credential.
     expect(await viaApi(event.slug)).toEqual(event);
@@ -376,8 +310,7 @@ describe("GET /<slug>/data", () => {
 
 describe("PATCH /<slug>/settings", () => {
   it("takes the slug as well as the uuid", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { cookie, event } = await fixture();
 
     const bySlug = await call("PATCH", `/${event.slug}/settings`, {
       cookie,
@@ -395,8 +328,7 @@ describe("PATCH /<slug>/settings", () => {
   });
 
   it("is admin-only, on a known slug and an unknown one alike", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
 
     for (const route of [`/${event.slug}/settings`, "/nope/settings"]) {
       expect(await call("PATCH", route, { body: { name: "Renamed" } }), route).toEqual({
@@ -430,8 +362,7 @@ describe("DELETE /<slug>/settings", () => {
   });
 
   it("is admin-only", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
 
     expect(await call("DELETE", `/${event.slug}/settings`)).toEqual({
       status: 401,
@@ -449,8 +380,7 @@ describe("DELETE /<slug>/settings", () => {
  */
 describe("PATCH /<slug>/settings renaming onto a leased slug", () => {
   it("consumes the lease instead of colliding with it", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { cookie, event } = await fixture();
 
     const lease = await call("POST", "/api/slug-leases", { cookie });
     expect(lease.status).toBe(201);
@@ -484,8 +414,7 @@ describe("PATCH /<slug>/settings renaming onto a leased slug", () => {
   });
 
   it("refuses an illegal path with the shared rules' own wording", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { cookie, event } = await fixture();
 
     const res = await call("PATCH", `/${event.id}/settings`, {
       cookie,
@@ -505,8 +434,7 @@ describe("PATCH /<slug>/settings renaming onto a leased slug", () => {
 
 describe("PUT /<slug>/users/<userKey>", () => {
   it("stores a response that has entries", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
 
     const res = await call("PUT", `/${event.id}/users/alice`, {
       body: { displayName: "Alice", availability: SLOTS, ifNeeded: [] },
@@ -522,8 +450,7 @@ describe("PUT /<slug>/users/<userKey>", () => {
   });
 
   it("stores a response carrying only if-needed entries", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
 
     const res = await call("PUT", `/${event.id}/users/bob`, {
       body: { displayName: "Bob", availability: [], ifNeeded: SLOTS },
@@ -534,8 +461,7 @@ describe("PUT /<slug>/users/<userKey>", () => {
   });
 
   it("deletes the record when both arrays come back empty", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
     await call("PUT", `/${event.id}/users/alice`, {
       body: { displayName: "Alice", availability: SLOTS, ifNeeded: [] },
     });
@@ -554,8 +480,7 @@ describe("PUT /<slug>/users/<userKey>", () => {
   });
 
   it("is a no-op when the key was never on the event", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
     const before = await onDisk(event.id);
 
     const res = await call("PUT", `/${event.id}/users/nobody`, {
@@ -569,8 +494,7 @@ describe("PUT /<slug>/users/<userKey>", () => {
   });
 
   it("leaves the other respondents alone when one clears", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
     for (const name of ["Alice", "Bob", "Carol"]) {
       await call("PUT", `/${event.id}/users/${name.toLowerCase()}`, {
         body: { displayName: name, availability: SLOTS, ifNeeded: [] },
@@ -585,8 +509,7 @@ describe("PUT /<slug>/users/<userKey>", () => {
   });
 
   it("treats a body with no arrays at all as a clear", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
     await call("PUT", `/${event.id}/users/alice`, {
       body: { displayName: "Alice", availability: SLOTS, ifNeeded: [] },
     });
@@ -600,8 +523,7 @@ describe("PUT /<slug>/users/<userKey>", () => {
   });
 
   it("keeps a record whose entries all collapse into availability", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
 
     // The same slot in both arrays: availability wins, ifNeeded ends up empty,
     // but the record still has an entry and must survive.
@@ -624,8 +546,7 @@ describe("PUT /<slug>/users/<userKey>", () => {
   });
 
   it("requires a display name", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
 
     // The key alone says how to file the record, not what to render for it.
     for (const body of [
@@ -642,8 +563,7 @@ describe("PUT /<slug>/users/<userKey>", () => {
   });
 
   it("refuses a dash in the display name, in the identity dialog's words", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
 
     // A dash in a key can only ever have come from whitespace; allowing one in
     // a name would make "ada-lovelace" and "ada lovelace" one key with two
@@ -660,8 +580,7 @@ describe("PUT /<slug>/users/<userKey>", () => {
   });
 
   it("refuses a name that does not normalize to the key in the path", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
 
     // A record whose name does not match its own key would show up twice or
     // not at all: the page renders names and matches on keys.
@@ -677,8 +596,7 @@ describe("PUT /<slug>/users/<userKey>", () => {
   });
 
   it("refuses an over-long display name", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
 
     const res = await call("PUT", `/${event.id}/users/alice`, {
       body: { displayName: "a".repeat(101), availability: SLOTS },
@@ -693,8 +611,7 @@ describe("PUT /<slug>/users/<userKey>", () => {
   });
 
   it("re-normalizes the key in the path", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
 
     // `/users/Ada%20Lovelace` is not a second person: a key arriving from a URL
     // is normalized like any other, so a hand-written path cannot invent a
@@ -712,8 +629,7 @@ describe("PUT /<slug>/users/<userKey>", () => {
   });
 
   it("files two spellings of one name as one record", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
 
     await call("PUT", `/${event.id}/users/ada-lovelace`, {
       body: { displayName: "Ada Lovelace", availability: [SLOTS[0]] },
@@ -738,8 +654,7 @@ describe("PUT /<slug>/users/<userKey>", () => {
 
 describe("DELETE /<slug>/users/<userKey>", () => {
   it("is public: a guest with no session may clear their own record", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
     await call("PUT", `/${event.id}/users/alice`, {
       body: { displayName: "Alice", availability: SLOTS, ifNeeded: [] },
     });
@@ -752,8 +667,7 @@ describe("DELETE /<slug>/users/<userKey>", () => {
   });
 
   it("also works for the admin, and by slug as well as id", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { cookie, event } = await fixture();
     await call("PUT", `/${event.id}/users/bob`, {
       body: { displayName: "Bob", availability: SLOTS, ifNeeded: [] },
     });
@@ -765,8 +679,7 @@ describe("DELETE /<slug>/users/<userKey>", () => {
   });
 
   it("404s a key that is not on the event", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
 
     const res = await call("DELETE", `/${event.id}/users/ghost`);
 
@@ -791,8 +704,7 @@ describe("DELETE /<slug>/users/<userKey>", () => {
  */
 describe("legacy response files", () => {
   it("keys a pre-key file on read, keeping the spelling it was written with", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
     await writeLegacyResponses(event.id, {
       // A legacy dash stands in for the space it replaced, so this is the same
       // person a new "Ada Lovelace" would be — not a second row in the list.
@@ -819,8 +731,7 @@ describe("legacy response files", () => {
   });
 
   it("keeps the more recently updated of two legacy names that collide", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const newer = { availability: SLOTS, updatedAt: "2026-02-02T00:00:00.000Z" };
@@ -849,8 +760,7 @@ describe("legacy response files", () => {
   });
 
   it("persists the normalized form on the next ordinary write", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
     await writeLegacyResponses(event.id, {
       "Ada-Lovelace": { availability: SLOTS, updatedAt: "2026-01-01T00:00:00.000Z" },
     });
@@ -887,8 +797,7 @@ describe("last-edit tracking", () => {
   const UA = "Mozilla/5.0 (TestBrowser) AppleWebKit/1.0";
 
   it("records the origin of a PUT, and overwrites it on the next one", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
 
     const before = Date.now();
     await call("PUT", `/${event.id}/users/ada-lovelace`, {
@@ -918,8 +827,7 @@ describe("last-edit tracking", () => {
   });
 
   it("caps a hostile user agent rather than storing all of it", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { event } = await fixture();
 
     await call("PUT", `/${event.id}/users/ada-lovelace`, {
       headers: { "User-Agent": "x".repeat(5000) },
@@ -932,8 +840,7 @@ describe("last-edit tracking", () => {
   });
 
   it("never hands the origin back to anyone holding only the link", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { cookie, event } = await fixture();
 
     // The PUT's own answer carries the record it just wrote.
     const put = await call("PUT", `/${event.id}/users/ada-lovelace`, {
@@ -961,8 +868,7 @@ describe("last-edit tracking", () => {
   });
 
   it("keeps the origin out of what a PATCH hands back", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { cookie, event } = await fixture();
     await call("PUT", `/${event.id}/users/ada-lovelace`, {
       headers: { "User-Agent": UA },
       body: { displayName: "Ada Lovelace", availability: SLOTS },
@@ -979,8 +885,7 @@ describe("last-edit tracking", () => {
   });
 
   it("leaves a record written before tracking existed alone", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { cookie, event } = await fixture();
     await writeLegacyResponses(event.id, {
       "Ada Lovelace": { availability: SLOTS, updatedAt: "2026-01-01T00:00:00.000Z" },
     });
@@ -998,8 +903,7 @@ describe("last-edit tracking", () => {
 
 describe("the details endpoint", () => {
   it("is the login wall: 401 without a session, whether or not the event exists", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { cookie, event } = await fixture();
 
     expect(await call("GET", `/${event.slug}/details`)).toEqual({
       status: 401,
@@ -1014,8 +918,7 @@ describe("the details endpoint", () => {
   });
 
   it("lists every respondent with the origin of their last save", async () => {
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { cookie, event } = await fixture();
 
     await call("PUT", `/${event.id}/users/grace-hopper`, {
       headers: { "User-Agent": "Grace/1.0" },

@@ -19,10 +19,6 @@
  *   exclusivity — and the REST API carries on being the write path;
  * - rooms do not outlive their subscribers.
  */
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Node's own global `WebSocket` answers pings by itself, which is the one thing
@@ -38,8 +34,6 @@ const { MISS_DELAY_MS } = vi.hoisted(() => {
 });
 
 import { CLOSE_OCCUPIED, CLOSE_REPLACED } from "../src/lib/realtime.ts";
-import { createApp, type Renderer } from "./app.ts";
-import { createSession, setCredential } from "./auth.ts";
 import {
   attachRealtime,
   clientCount,
@@ -51,46 +45,39 @@ import {
 import { resolveEvent, writeResponse } from "./routes/events.ts";
 import { readEvent, updateEvent } from "./storage.ts";
 import { missTarpit } from "./tarpit.ts";
+import {
+  adminCookie,
+  apiCall,
+  createTestEvent,
+  eventFixture,
+  makeVarDir,
+  removeVarDir,
+  startTestServer,
+  type CallFn,
+} from "./test-support.ts";
 import type { PresenceEntry, RealtimeMessage, StoredEvent } from "./types.ts";
-
-/** No page is rendered in these tests; only the API and the upgrade paths. */
-const renderer: Renderer = {
-  loadTemplate: () => Promise.resolve("<!doctype html><div id=\"app\"></div>"),
-  loadRender: () => Promise.reject(new Error("SSR is not used in these tests")),
-};
 
 let server: Server;
 let hub: RealtimeServer | null = null;
 let base: string;
 let wsBase: string;
+let closeServer: () => Promise<void>;
 let varDir: string;
-const originalVarDir = process.env.VAR_DIR;
 const clients: WebSocket[] = [];
 
 beforeEach(async () => {
-  varDir = await fs.mkdtemp(path.join(os.tmpdir(), "timeful-realtime-"));
-  process.env.VAR_DIR = varDir;
-  const app = createApp({ trustProxy: false, renderer });
-  server = await new Promise<Server>((resolve, reject) => {
-    const listening = app.listen(0, "127.0.0.1", () => resolve(listening));
-    listening.on("error", reject);
-  });
-  const { port } = server.address() as AddressInfo;
-  base = `http://127.0.0.1:${port}`;
-  wsBase = `ws://127.0.0.1:${port}`;
+  // The temp `VAR_DIR` and the app are made together, in this order: the app
+  // must never observe the previous test's directory.
+  varDir = await makeVarDir("timeful-realtime-");
+  ({ server, base, wsBase, close: closeServer } = await startTestServer());
 });
 
 afterEach(async () => {
   for (const socket of clients.splice(0)) socket.close();
   await hub?.close();
   hub = null;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  if (originalVarDir === undefined) delete process.env.VAR_DIR;
-  else process.env.VAR_DIR = originalVarDir;
-  // Retried for the same reason as in routes/events.test.ts: an authenticated
-  // request refreshes `lastSeenAt` fire-and-forget, so a write can still be
-  // landing here after the response that triggered it has been read.
-  await fs.rm(varDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
+  await closeServer();
+  await removeVarDir(varDir);
 });
 
 // ---------------------------------------------------------------------------
@@ -103,53 +90,14 @@ function attach(heartbeatMs?: number): RealtimeServer {
   return hub;
 }
 
-async function call(
-  method: string,
-  route: string,
-  { body, cookie }: { body?: unknown; cookie?: string } = {},
-): Promise<{ status: number; body: unknown }> {
-  const res = await fetch(`${base}${route}`, {
-    method,
-    headers: {
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-      ...(cookie ? { Cookie: cookie } : {}),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  const text = await res.text();
-  let parsed: unknown = null;
-  try {
-    parsed = text ? JSON.parse(text) : null;
-  } catch {
-    parsed = text;
-  }
-  return { status: res.status, body: parsed };
-}
+/** `apiCall` against this test's server of the moment. */
+const call: CallFn = (method, route, options) => apiCall(base, method, route, options);
 
-async function adminCookie(): Promise<string> {
-  await setCredential({ email: "owner@example.com", password: "hunter2hunter2" });
-  return `session=${await createSession({})}`;
-}
+const createEvent = (cookie: string, extra: Record<string, unknown> = {}) =>
+  createTestEvent(call, cookie, extra);
 
-async function createEvent(
-  cookie: string,
-  extra: Record<string, unknown> = {},
-): Promise<StoredEvent> {
-  const res = await call("POST", "/api/events", {
-    cookie,
-    body: {
-      name: "Team Offsite",
-      type: "specific_dates",
-      dates: ["2026-08-03T00:00:00.000Z", "2026-08-04T00:00:00.000Z"],
-      duration: 8,
-      timeIncrement: 30,
-      startOnMonday: true,
-      ...extra,
-    },
-  });
-  expect(res.status).toBe(201);
-  return res.body as StoredEvent;
-}
+/** The common opener: a signed-in owner and one event of theirs. */
+const fixture = (extra?: Record<string, unknown>) => eventFixture(call, extra);
 
 /** The REST write, as the page makes it when there is no session. */
 function put(
@@ -338,8 +286,7 @@ describe("the realtime channel", () => {
 
   it("announces a deleted response, and a deleted event", async () => {
     attach();
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { cookie, event } = await fixture();
     await put(event.id, "carol", "Carol");
     const watcher = await subscribe(event.slug);
 
@@ -356,8 +303,7 @@ describe("the realtime channel", () => {
 
   it("carries the new slug when the event is renamed", async () => {
     attach();
-    const cookie = await adminCookie();
-    const event = await createEvent(cookie);
+    const { cookie, event } = await fixture();
     const watcher = await subscribe(event.slug);
 
     expect(
@@ -838,8 +784,7 @@ describe("the realtime channel", () => {
 
     it("hangs up on the room when the owner switches it off", async () => {
       attach();
-      const cookie = await adminCookie();
-      const event = await createEvent(cookie);
+      const { cookie, event } = await fixture();
       const watcher = await subscribe(event.slug);
 
       expect(
@@ -863,8 +808,7 @@ describe("the realtime channel", () => {
 
     it("starts pushing again when the owner switches it back on", async () => {
       attach();
-      const cookie = await adminCookie();
-      const event = await createEvent(cookie, { realtime: false });
+      const { cookie, event } = await fixture({ realtime: false });
       await expect(subscribe(event.slug)).rejects.toThrow("upgrade refused");
 
       await call("PATCH", `/${event.id}/settings`, {

@@ -7,57 +7,40 @@
  * through, which is also how the "was the registry asked at all?" assertions
  * work.
  */
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import type { AddressInfo } from "node:net";
-import type { Server } from "node:http";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { createApp, type Renderer } from "../app.ts";
-import { createSession, setCredential } from "../auth.ts";
+import { setCredential } from "../auth.ts";
 import { REGISTRY_URL } from "../registry.ts";
 import { VERSION } from "../cli/version.ts";
+import {
+  adminCookie,
+  makeVarDir,
+  removeVarDir,
+  startTestServer,
+  type TestServer,
+} from "../test-support.ts";
 
-const renderer: Renderer = {
-  loadTemplate: () => Promise.resolve("<!doctype html><div id=\"app\"></div>"),
-  loadRender: () => Promise.reject(new Error("SSR is not used in these tests")),
-};
-
-let server: Server;
-let base: string;
+let api: TestServer;
 let varDir: string;
-const originalVarDir = process.env.VAR_DIR;
 
 beforeAll(async () => {
-  const app = createApp({ trustProxy: false, renderer });
-  server = await new Promise<Server>((resolve, reject) => {
-    const listening = app.listen(0, "127.0.0.1", () => resolve(listening));
-    listening.on("error", reject);
-  });
-  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  api = await startTestServer();
 });
 
 afterAll(async () => {
-  await new Promise<void>((resolve) => server.close(() => resolve()));
+  await api.close();
 });
 
 beforeEach(async () => {
-  varDir = await fs.mkdtemp(path.join(os.tmpdir(), "timeful-update-"));
-  process.env.VAR_DIR = varDir;
+  varDir = await makeVarDir("timeful-update-");
 });
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  if (originalVarDir === undefined) delete process.env.VAR_DIR;
-  else process.env.VAR_DIR = originalVarDir;
-  await fs.rm(varDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
+  await removeVarDir(varDir);
 });
 
 /** A signed-in owner, as a cookie header. */
-async function admin(): Promise<string> {
-  await setCredential({ email: "owner@example.com", password: "password123" });
-  return `session=${await createSession({})}`;
-}
+const admin = () => adminCookie("password123");
 
 /**
  * Stubs the registry and nothing else: any other URL — the test's own request
@@ -83,7 +66,7 @@ function stubRegistry(
 }
 
 async function check(cookie?: string): Promise<{ status: number; body: any }> {
-  const res = await fetch(`${base}/api/update-check`, {
+  const res = await fetch(`${api.base}/api/update-check`, {
     headers: cookie ? { Cookie: cookie } : {},
   });
   return { status: res.status, body: await res.json() };
