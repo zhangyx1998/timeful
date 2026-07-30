@@ -7,6 +7,7 @@
  * middleware in development (`server/dev.ts`, which is never bundled).
  */
 import fs from "node:fs/promises";
+import http from "node:http";
 import path from "node:path";
 import type { IncomingMessage, Server } from "node:http";
 import { pathToFileURL } from "node:url";
@@ -302,9 +303,19 @@ async function resolveSlugPath(pathname: string): Promise<StoredEvent | null> {
 // listening
 // ---------------------------------------------------------------------------
 
-export interface ServeOptions extends AppOptions {
+/**
+ * Builds a renderer against the HTTP server it will be served from. The
+ * factory form exists for development: Vite serves its HMR WebSocket off the
+ * app's own server (`server.hmr.server` in `server/dev.ts`), so it needs the
+ * instance before the middleware attaches — which is before `listen`.
+ */
+export type RendererFactory = (server: Server) => Renderer | Promise<Renderer>;
+
+export interface ServeOptions extends Omit<AppOptions, "renderer"> {
   host: string;
   port: number;
+  /** A renderer, or a factory handed the not-yet-listening HTTP server. */
+  renderer: Renderer | RendererFactory;
   /** Named in the startup line, e.g. "dev" or "production". */
   mode?: string;
   /**
@@ -353,28 +364,42 @@ function upgradeClientIp(app: Express, req: IncomingMessage): string {
 }
 
 /** Builds the app and listens. Resolves once the socket is open. */
-export function serve(options: ServeOptions): Promise<Server> {
-  const app = createApp(options);
+export async function serve(options: ServeOptions): Promise<Server> {
+  // The server exists before the app so a renderer factory can be handed it:
+  // in dev, Vite attaches its HMR upgrade listener here and hot reload rides
+  // the app's own port instead of a fixed second one. `server.on("request",
+  // app)` is exactly what `app.listen` would have done.
+  const server = http.createServer();
+  const renderer =
+    typeof options.renderer === "function"
+      ? await options.renderer(server)
+      : options.renderer;
+  const app = createApp({ trustProxy: options.trustProxy, renderer });
+  server.on("request", app);
+
   const realtime = options.realtime ?? realtimeEnabled();
-  return new Promise((resolve, reject) => {
-    const server = app.listen(options.port, options.host, () => {
-      // Attached to the listening server, never to the app: an upgrade is a
-      // property of the HTTP connection and never reaches Express at all.
-      if (realtime) {
-        const hub = attachRealtime(server, {
-          resolveEvent,
-          writeResponse,
-          clientIp: (req) => upgradeClientIp(app, req),
-        });
-        server.on("close", () => void hub.close());
-      }
-      console.log(
-        `Timeful ${options.mode ?? "production"} server on http://${options.host}:${options.port}`,
-      );
-      console.log(`Trusted proxies: ${describeTrustedProxies(options.trustProxy)}`);
-      console.log(`Realtime updates: ${realtime ? "on" : "off"}`);
-      resolve(server);
-    });
+  await new Promise<void>((resolve, reject) => {
+    // Left attached: a rejection after settling is a no-op, and a later
+    // 'error' with no listener would crash the process instead.
     server.on("error", reject);
+    server.listen(options.port, options.host, resolve);
   });
+
+  // Attached to the listening server, never to the app: an upgrade is a
+  // property of the HTTP connection and never reaches Express at all.
+  if (realtime) {
+    const hub = attachRealtime(server, {
+      resolveEvent,
+      writeResponse,
+      clientIp: (req) => upgradeClientIp(app, req),
+    });
+    server.on("close", () => void hub.close());
+  }
+
+  console.log(
+    `Timeful ${options.mode ?? "production"} server on http://${options.host}:${options.port}`,
+  );
+  console.log(`Trusted proxies: ${describeTrustedProxies(options.trustProxy)}`);
+  console.log(`Realtime updates: ${realtime ? "on" : "off"}`);
+  return server;
 }

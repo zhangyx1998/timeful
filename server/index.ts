@@ -8,12 +8,14 @@
  * the working directory.
  */
 import net from "node:net";
+import type { Server } from "node:http";
 import { fileURLToPath } from "node:url";
 import { serve, createStaticRenderer, type Renderer } from "./app.ts";
 import { resolveAssets } from "./paths.ts";
 import { parseTrustedProxies, type TrustProxySetting } from "./proxy.ts";
 
 const isDev = process.argv.includes("--dev");
+
 const host = process.env.HOST || "127.0.0.1";
 
 /** True when something is already listening there. */
@@ -57,11 +59,16 @@ function resolveTrustProxy(): TrustProxySetting {
   }
 }
 
-async function createRenderer(): Promise<Renderer> {
-  if (!isDev) return createStaticRenderer(resolveAssets(import.meta.url));
-  // Dynamic so the dev server (and vite itself) stays out of production.
+/**
+ * The dev renderer, built against the HTTP server `serve()` is about to
+ * listen on, so Vite can host its HMR WebSocket there (same port as the app).
+ * The import stays dynamic so the dev server (and vite itself) stays out of
+ * production — and out of the CLI bundle, whose rollup pass inlines every
+ * dynamic import it can reach.
+ */
+async function devRenderer(server: Server): Promise<Renderer> {
   const { createDevRenderer } = await import("./dev.ts");
-  return createDevRenderer(fileURLToPath(new URL("..", import.meta.url)));
+  return createDevRenderer(fileURLToPath(new URL("..", import.meta.url)), server);
 }
 
 // Nothing in this process or Vite's middleware mode sends termination signals,
@@ -79,6 +86,6 @@ await serve({
   host,
   port,
   trustProxy: resolveTrustProxy(),
-  renderer: await createRenderer(),
+  renderer: isDev ? devRenderer : createStaticRenderer(resolveAssets(import.meta.url)),
   mode: isDev ? "dev" : "production",
 });
