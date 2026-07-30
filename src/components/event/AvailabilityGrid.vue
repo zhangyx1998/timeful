@@ -1862,6 +1862,8 @@ defineExpose({ measure, clearSelection });
    chart would do nothing at all. Vertical chains to the page, which is whose
    gesture it is. */
 .viewport {
+  --focus-ring-inset: calc(var(--focus-ring-offset) * -1);
+
   position: relative;
   flex: 1 1 auto;
   min-width: 0;
@@ -1875,11 +1877,6 @@ defineExpose({ measure, clearSelection });
    and the chevrons — so the bar underneath would only cost a strip of grid. */
 .viewport::-webkit-scrollbar {
   display: none;
-}
-
-.viewport:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: calc(var(--focus-ring-offset) * -1);
 }
 
 .viewport.scrollable {
@@ -2057,9 +2054,8 @@ defineExpose({ measure, clearSelection });
   transform: translateX(calc(var(--dir) * 2px));
 }
 
+/* The ring itself is the global rule's; the pill shape is this button's own. */
 .knob:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
   border-radius: var(--radius-pill);
 }
 
@@ -2401,14 +2397,6 @@ defineExpose({ measure, clearSelection });
   .weekday,
   .date {
     font-size: 0.6875rem;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .knob,
-  .knob__glyph,
-  .grip::after {
-    transition: none;
   }
 }
 </style>
