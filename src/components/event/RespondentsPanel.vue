@@ -74,6 +74,7 @@ import IconTrash from "../../assets/icons/trash.svg";
 import IconPlus from "../../assets/icons/plus.svg";
 import IconEye from "../../assets/icons/eye.svg";
 import IconEyeOff from "../../assets/icons/eye-off.svg";
+import { STANCE_LABELS, toneFor, type SlotStance } from "../../lib/grid";
 import { isOnChart } from "../../lib/isolation";
 import type { PresenceEntry } from "../../lib/realtime";
 
@@ -205,28 +206,21 @@ const availableCount = computed(() =>
 );
 
 /**
- * How the count reads at a glance: everyone free is the answer you are looking
- * for, nobody free rules the slot out, and anything between is a compromise to
- * weigh. Same three colours the rest of the app uses for good/attention/bad.
+ * How the count reads at a glance — the same three readings the region card
+ * gives its fraction (`toneFor`), in the same three colours the rest of the
+ * app uses for good/attention/bad.
  */
-const countTone = computed(() => {
-  if (availableCount.value === 0) return "none";
-  return availableCount.value === props.keys.length ? "all" : "some";
-});
+const countTone = computed(() => toneFor(availableCount.value, props.keys.length));
 
-type SlotState = "available" | "if-needed" | "unavailable";
-
-const SLOT_STATE_LABELS: Record<SlotState, string> = {
-  available: "Available",
-  "if-needed": "If needed",
-  unavailable: "Unavailable",
-};
-
-/** What this person said about the active slot, or null when none is active. */
-function slotState(key: string): SlotState | null {
+/**
+ * What this person said about the active slot, or null when none is active.
+ * Spelled in the lib's own vocabulary (`SlotStance`), so the row's glyph, the
+ * region card's chip and the tooltip all say the answer in the same word.
+ */
+function slotState(key: string): SlotStance | null {
   if (props.availableNames === null) return null;
   if (!props.availableNames.has(key)) return "unavailable";
-  return props.ifNeededNames.has(key) ? "if-needed" : "available";
+  return props.ifNeededNames.has(key) ? "if_needed" : "available";
 }
 
 /**
@@ -259,9 +253,9 @@ const rows = computed(() =>
       answers,
       online: online.value.has(key),
       state,
-      stateLabel: state ? SLOT_STATE_LABELS[state] : null,
+      stateLabel: state ? STANCE_LABELS[state] : null,
       unavailable: state === "unavailable",
-      ifNeeded: state === "if-needed",
+      ifNeeded: state === "if_needed",
       isCurrent: key === props.currentKey,
       isSolo: key === props.solo,
       // What the eye draws: whether this answer is on the chart right now, not
@@ -356,7 +350,7 @@ function confirmSwitch() {
         class="name"
         :class="{
           unavailable: row.unavailable,
-          'if-needed': row.ifNeeded,
+          if_needed: row.ifNeeded,
           dimmed: highlight !== null && highlight !== row.key,
           'is-current': row.isCurrent,
         }"
@@ -372,7 +366,7 @@ function confirmSwitch() {
         >
           <!-- On a slot: what this person marked there. -->
           <IconCheck v-if="row.state === 'available'" />
-          <IconHourglass v-else-if="row.state === 'if-needed'" />
+          <IconHourglass v-else-if="row.state === 'if_needed'" />
           <IconClose v-else-if="row.state === 'unavailable'" stroke-width="2.2" />
           <!-- Off a slot: filled for you, outlined for everyone else. -->
           <IconPersonFilled v-else-if="row.isCurrent" />
@@ -654,7 +648,7 @@ function confirmSwitch() {
 
 /* A wash rather than the legend's own fill: the hourglass sits on top of it and
    has to stay readable, and the row is a caption for the slot, not a swatch. */
-.name.if-needed {
+.name.if_needed {
   background: var(--color-warning-soft);
 }
 
@@ -688,8 +682,8 @@ function confirmSwitch() {
   color: var(--color-accent-text);
 }
 
-.avatar--if-needed,
-.name.is-current .avatar--if-needed {
+.avatar--if_needed,
+.name.is-current .avatar--if_needed {
   color: var(--color-if-needed-text);
 }
 

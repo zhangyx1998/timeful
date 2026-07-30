@@ -791,6 +791,14 @@ export function buildResponseIndex(
 
 export type SlotStance = "available" | "if_needed" | "unavailable";
 
+/** What each stance glyph says, for anyone who is not looking at it — one
+ *  spelling and one wording wherever a stance is printed. */
+export const STANCE_LABELS: Record<SlotStance, string> = {
+  available: "Available",
+  if_needed: "If needed",
+  unavailable: "Unavailable",
+};
+
 export interface SlotOpinion {
   /** The respondent's user key, for matching. */
   key: string;
@@ -892,6 +900,17 @@ export function regionDigest(
     free: free.length,
     total,
   };
+}
+
+/**
+ * How a fraction of free people reads at a glance: everyone free is the answer
+ * you are looking for, nobody free rules the span out, and anything between is
+ * a compromise to weigh. The respondents list's header and the region card
+ * print the same fraction, so the decision lives once, beside the digest they
+ * are both a reading of.
+ */
+export function toneFor(free: number, total: number): "all" | "some" | "none" {
+  return free === 0 ? "none" : free === total ? "all" : "some";
 }
 
 /** The highest respondent count on any live slot. */

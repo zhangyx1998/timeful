@@ -25,9 +25,10 @@ import { computed, nextTick, onMounted, ref, watch } from "vue";
 import {
   placeOverlay,
   regionDigest,
+  toneFor,
+  STANCE_LABELS,
   type OverlayField,
   type ResponseIndex,
-  type SlotStance,
 } from "../../lib/grid";
 import IconCheck from "../../assets/icons/check.svg";
 import IconHourglass from "../../assets/icons/hourglass.svg";
@@ -62,12 +63,6 @@ const emit = defineEmits<{
 const SUMMARY_CAP = 8;
 /** Clearance from the chart's own edges. */
 const SUMMARY_GAP = 8;
-/** What each glyph says, for anyone who is not looking at it. */
-const STANCE_LABELS: Record<SlotStance, string> = {
-  available: "Available",
-  if_needed: "If needed",
-  unavailable: "Unavailable",
-};
 
 /** The root element, exposed: the chart tells a press on the card from a press
  *  outside it by asking this element, and a component instance cannot answer
@@ -104,13 +99,8 @@ const digest = computed(() => regionDigest(props.slotIds, props.responseIndex, {
 /** More than one cell, so the fraction is about all of them at once. */
 const whole = computed(() => props.slotIds.length > 1);
 
-// Same three readings the respondents list gives the fraction: everyone free
-// is the answer you are looking for, nobody free rules the slot out, and
-// anything between is a compromise to weigh.
-const tone = computed(() => {
-  const { free, total } = digest.value;
-  return free === 0 ? "none" : free === total ? "all" : "some";
-});
+// Same three readings the respondents list gives the fraction (`toneFor`).
+const tone = computed(() => toneFor(digest.value.free, digest.value.total));
 
 /** Above by preference: a finger covers what it has just touched, and below a
  *  region near the foot of the chart is where the least room is. */
