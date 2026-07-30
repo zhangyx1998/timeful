@@ -12,7 +12,8 @@ import { api, apiError } from "../../lib/api";
 import { formatDateTime } from "../../lib/dates";
 import Button from "../ui/Button.vue";
 import Card from "../ui/Card.vue";
-import Dialog from "../ui/Dialog.vue";
+import ConfirmDialog from "../ui/ConfirmDialog.vue";
+import ErrorNote from "../ui/ErrorNote.vue";
 import IconButton from "../ui/IconButton.vue";
 import Spinner from "../ui/Spinner.vue";
 import IconSignOut from "../../assets/icons/sign-out.svg";
@@ -112,7 +113,7 @@ defineExpose({ load });
       </Button>
     </template>
 
-    <p v-if="error" class="error">{{ error }}</p>
+    <ErrorNote class="card-error" :message="error" />
     <p v-if="loading" class="empty">Loading…</p>
 
     <div v-else class="scroller">
@@ -162,37 +163,32 @@ defineExpose({ load });
       </table>
     </div>
 
-    <Dialog :open="confirming !== null" :title="confirmTitle" @close="confirming = null">
-      <div class="confirm">
-        <p class="confirm__text">
-          <template v-if="confirming?.kind === 'purge'">
-            Every signed-in device except this one is signed out. They will each
-            need the password again.
-          </template>
-          <template v-else-if="confirming?.session.current">
-            This browser is signed out and you will need the password again.
-          </template>
-          <template v-else>
-            That device is signed out and needs the password again.
-          </template>
-        </p>
-        <div class="confirm__actions">
-          <Button variant="ghost" @click="confirming = null">Cancel</Button>
-          <Button variant="danger" @click="confirmed">Sign out</Button>
-        </div>
-      </div>
-    </Dialog>
+    <ConfirmDialog
+      :open="confirming !== null"
+      :title="confirmTitle"
+      confirm-label="Sign out"
+      @confirm="confirmed"
+      @close="confirming = null"
+    >
+      <template v-if="confirming?.kind === 'purge'">
+        Every signed-in device except this one is signed out. They will each
+        need the password again.
+      </template>
+      <template v-else-if="confirming?.session.current">
+        This browser is signed out and you will need the password again.
+      </template>
+      <template v-else>
+        That device is signed out and needs the password again.
+      </template>
+    </ConfirmDialog>
   </Card>
 </template>
 
 <style scoped>
-.error {
+/* The card is flush, so the banner keeps its own distance from the edges.
+   ErrorNote declares no margin of its own, which is what makes this safe. */
+.card-error {
   margin: 1rem;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.875rem;
-  color: var(--color-danger);
-  background: var(--color-danger-soft);
-  border-radius: var(--radius-md);
 }
 
 .empty {
@@ -271,25 +267,6 @@ defineExpose({ load });
   color: var(--color-accent-text);
   background: var(--color-accent-soft);
   border-radius: var(--radius-sm);
-}
-
-.confirm {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.confirm__text {
-  font-size: 0.875rem;
-  line-height: 1.5;
-  color: var(--color-text-muted);
-}
-
-.confirm__actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 0.5rem;
 }
 
 .sr-only {

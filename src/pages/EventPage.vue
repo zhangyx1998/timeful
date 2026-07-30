@@ -15,8 +15,7 @@ import EventFormDialog from "../components/shared/EventFormDialog.vue";
 import AppHeader from "../components/ui/AppHeader.vue";
 import IconButton from "../components/ui/IconButton.vue";
 import ThemeToggle from "../components/ui/ThemeToggle.vue";
-import Button from "../components/ui/Button.vue";
-import Dialog from "../components/ui/Dialog.vue";
+import ConfirmDialog from "../components/ui/ConfirmDialog.vue";
 import IconShield from "../assets/icons/shield-half.svg";
 import { isAdmin, refreshAdmin } from "../lib/admin";
 import { api, eventDataPath } from "../lib/api";
@@ -367,45 +366,38 @@ onBeforeUnmount(() => {
          teleport rendered into the SSR output is a hydration mismatch that
          costs the whole page. There is no socket during SSR either, so neither
          of these can have anything to say before mount. -->
-    <Dialog
+    <ConfirmDialog
       v-if="mounted"
       :open="occupiedBy !== null"
       title="Already being edited"
+      confirm-label="Take over"
+      tone="primary"
+      @confirm="takeOver"
       @close="occupiedBy = null"
     >
-      <div class="ask">
-        <p class="ask__text">
-          <strong>{{ occupiedBy?.displayName }}</strong> is being edited in
-          another session. Take over?
-        </p>
-        <div class="ask__actions">
-          <Button variant="ghost" @click="occupiedBy = null">Cancel</Button>
-          <Button variant="primary" @click="takeOver">Take over</Button>
-        </div>
-      </div>
-    </Dialog>
+      <strong>{{ occupiedBy?.displayName }}</strong> is being edited in
+      another session. Take over?
+    </ConfirmDialog>
 
     <!-- The other end of the same handshake. Said plainly, because from here it
          looks like the page simply stopped saving — and it is not reclaimed
-         automatically, or the two windows would take turns forever. -->
-    <Dialog
+         automatically, or the two windows would take turns forever. One button
+         and nothing to cancel: an acknowledgement, not a choice. -->
+    <ConfirmDialog
       v-if="mounted"
       :open="replacedFor !== null"
       title="Editing session taken over"
+      confirm-label="OK"
+      tone="primary"
+      cancel-label=""
+      @confirm="replacedFor = null"
       @close="replacedFor = null"
     >
-      <div class="ask">
-        <p class="ask__text">
-          Your editing session for
-          <strong>{{ replacedFor?.displayName }}</strong> was taken over by
-          another window or device. Your times are still saved; this page is now
-          showing the group's availability.
-        </p>
-        <div class="ask__actions">
-          <Button variant="primary" @click="replacedFor = null">OK</Button>
-        </div>
-      </div>
-    </Dialog>
+      Your editing session for
+      <strong>{{ replacedFor?.displayName }}</strong> was taken over by
+      another window or device. Your times are still saved; this page is now
+      showing the group's availability.
+    </ConfirmDialog>
   </div>
 </template>
 
@@ -460,27 +452,6 @@ onBeforeUnmount(() => {
 .loading {
   font-size: 0.875rem;
   color: var(--color-text-muted);
-}
-
-/* The two session dialogs. Same shape as every other confirm on the page: what
-   happened, then the way out of it at the trailing edge. */
-.ask {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.ask__text {
-  font-size: 0.875rem;
-  line-height: 1.5;
-  color: var(--color-text-muted);
-}
-
-.ask__actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 0.5rem;
 }
 
 /* The event went away under an open page. Centred and quiet: it is the whole

@@ -15,8 +15,9 @@ import { formatDateTime } from "../../lib/dates";
 import { eventTypeLabel } from "../../lib/event-form";
 import Button from "../ui/Button.vue";
 import Card from "../ui/Card.vue";
+import ConfirmDialog from "../ui/ConfirmDialog.vue";
 import CopyLinkButton from "../ui/CopyLinkButton.vue";
-import Dialog from "../ui/Dialog.vue";
+import ErrorNote from "../ui/ErrorNote.vue";
 import IconButton from "../ui/IconButton.vue";
 import IconPlus from "../../assets/icons/plus.svg";
 import IconPersonFilled from "../../assets/icons/person-filled.svg";
@@ -71,7 +72,7 @@ async function remove(): Promise<void> {
       </Button>
     </template>
 
-    <p v-if="error" class="error" role="alert">{{ error }}</p>
+    <ErrorNote class="card-error" :message="error" alert />
 
     <p v-if="props.loading" class="empty">Loading…</p>
     <p v-else-if="!props.events.length" class="empty">No events yet.</p>
@@ -125,33 +126,25 @@ async function remove(): Promise<void> {
       </li>
     </ul>
 
-    <Dialog
+    <ConfirmDialog
       :open="confirming !== null"
       title="Delete this event?"
+      confirm-label="Delete"
+      :loading="deleting"
+      @confirm="remove"
       @close="confirming = null"
     >
-      <div class="confirm">
-        <p class="confirm__text">
-          <strong>{{ confirming?.name }}</strong> and every answer on it go, and
-          its link stops working. This cannot be undone.
-        </p>
-        <div class="confirm__actions">
-          <Button variant="ghost" @click="confirming = null">Cancel</Button>
-          <Button variant="danger" :loading="deleting" @click="remove">Delete</Button>
-        </div>
-      </div>
-    </Dialog>
+      <strong>{{ confirming?.name }}</strong> and every answer on it go, and
+      its link stops working. This cannot be undone.
+    </ConfirmDialog>
   </Card>
 </template>
 
 <style scoped>
-.error {
+/* The card is flush, so the banner keeps its own distance from the edges.
+   ErrorNote declares no margin of its own, which is what makes this safe. */
+.card-error {
   margin: 1rem;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.875rem;
-  color: var(--color-danger);
-  background: var(--color-danger-soft);
-  border-radius: var(--radius-md);
 }
 
 .empty {
@@ -272,34 +265,10 @@ async function remove(): Promise<void> {
   text-decoration: underline;
 }
 
-.link:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-}
-
 /* The slug is how you open the event — give it a real tap target on touch. */
 @media (pointer: coarse) {
   .link {
     min-height: var(--tap-min);
   }
-}
-
-.confirm {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.confirm__text {
-  font-size: 0.875rem;
-  line-height: 1.5;
-  color: var(--color-text-muted);
-}
-
-.confirm__actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 0.5rem;
 }
 </style>

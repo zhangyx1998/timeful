@@ -32,6 +32,7 @@ import ModePills from "./ModePills.vue";
 import RespondentsPanel from "./RespondentsPanel.vue";
 import TimezoneField from "./TimezoneField.vue";
 import Button from "../ui/Button.vue";
+import ConfirmDialog from "../ui/ConfirmDialog.vue";
 import Dialog from "../ui/Dialog.vue";
 import Segmented from "../ui/Segmented.vue";
 import IconPeople from "../../assets/icons/people.svg";
@@ -724,23 +725,17 @@ function onSolo(person: { key: string; displayName: string } | null) {
       @close="identityOpen = false"
     />
 
-    <Dialog
+    <ConfirmDialog
       :open="clearOpen"
       title="Remove all your marked times?"
+      confirm-label="Clear my times"
+      @confirm="clearEverything"
       @close="clearOpen = false"
     >
-      <div class="confirm">
-        <p class="confirm__text">
-          This wipes everything <strong>{{ guestName }}</strong> marked on this
-          event and takes you off the respondents list. You can always fill it in
-          again.
-        </p>
-        <div class="confirm__actions">
-          <Button variant="ghost" @click="clearOpen = false">Cancel</Button>
-          <Button variant="danger" @click="clearEverything">Clear my times</Button>
-        </div>
-      </div>
-    </Dialog>
+      This wipes everything <strong>{{ guestName }}</strong> marked on this
+      event and takes you off the respondents list. You can always fill it in
+      again.
+    </ConfirmDialog>
   </section>
 </template>
 
@@ -851,25 +846,6 @@ function onSolo(person: { key: string; displayName: string } | null) {
   }
 }
 
-.confirm {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.confirm__text {
-  font-size: 0.875rem;
-  line-height: 1.5;
-  color: var(--color-text-muted);
-}
-
-.confirm__actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 0.5rem;
-}
-
 .layout {
   display: flex;
   align-items: flex-start;
@@ -970,6 +946,10 @@ function onSolo(person: { key: string; displayName: string } | null) {
   /* Icon-sized targets at the tap floor, the way the header's own controls
      are — these are the same kind of thing, one row down. */
   .handle {
+    /* The global focus ring, drawn inside this box: an outside ring would be
+       clipped against the bar's edge. */
+    --focus-ring-inset: calc(var(--focus-ring-offset) * -1);
+
     position: relative;
     display: inline-grid;
     place-items: center;
@@ -986,11 +966,6 @@ function onSolo(person: { key: string; displayName: string } | null) {
   .handle:hover {
     color: var(--color-text);
     background: var(--color-subtle);
-  }
-
-  .handle:focus-visible {
-    outline: var(--focus-ring);
-    outline-offset: calc(var(--focus-ring-offset) * -1);
   }
 
   .handle svg {

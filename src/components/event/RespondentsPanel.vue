@@ -63,8 +63,7 @@
  * row where it already sits, and closing their tab takes it away again.
  */
 import { computed, ref, watch } from "vue";
-import Button from "../ui/Button.vue";
-import Dialog from "../ui/Dialog.vue";
+import ConfirmDialog from "../ui/ConfirmDialog.vue";
 import Spinner from "../ui/Spinner.vue";
 import IconCheck from "../../assets/icons/check.svg";
 import IconHourglass from "../../assets/icons/hourglass.svg";
@@ -460,41 +459,30 @@ function confirmSwitch() {
 
     <p v-if="deleteError" class="error" role="alert">{{ deleteError }}</p>
 
-    <Dialog
+    <ConfirmDialog
       :open="confirming !== null"
       title="Remove this response?"
+      confirm-label="Remove"
+      @confirm="confirmDelete"
       @close="confirming = null"
     >
-      <div class="confirm">
-        <p class="confirm__text">
-          This deletes everything <strong>{{ confirmingName }}</strong> marked on this
-          event and takes them off the respondents list. They can answer again
-          from the same link.
-        </p>
-        <div class="confirm__actions">
-          <Button variant="ghost" @click="confirming = null">Cancel</Button>
-          <Button variant="danger" @click="confirmDelete">Remove</Button>
-        </div>
-      </div>
-    </Dialog>
+      This deletes everything <strong>{{ confirmingName }}</strong> marked on this
+      event and takes them off the respondents list. They can answer again
+      from the same link.
+    </ConfirmDialog>
 
-    <Dialog
+    <ConfirmDialog
       :open="switching !== null"
       :title="`Switch to ${switchingName}?`"
+      confirm-label="Switch"
+      tone="primary"
+      @confirm="confirmSwitch"
       @close="switching = null"
     >
-      <div class="confirm">
-        <p class="confirm__text">
-          You’ll be editing their availability: the grid loads what
-          <strong>{{ switchingName }}</strong> marked, and anything you change is
-          saved as them.
-        </p>
-        <div class="confirm__actions">
-          <Button variant="ghost" @click="switching = null">Cancel</Button>
-          <Button variant="primary" @click="confirmSwitch">Switch</Button>
-        </div>
-      </div>
-    </Dialog>
+      You’ll be editing their availability: the grid loads what
+      <strong>{{ switchingName }}</strong> marked, and anything you change is
+      saved as them.
+    </ConfirmDialog>
   </aside>
 </template>
 
@@ -609,11 +597,6 @@ function confirmSwitch() {
 .unpin svg {
   width: 0.7rem;
   height: 0.7rem;
-}
-
-.unpin:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
 }
 
 @media (pointer: coarse) {
@@ -750,9 +733,8 @@ function confirmSwitch() {
   }
 }
 
+/* The ring itself is global; the radius rounds it to match the row's shape. */
 .text--switch:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
   border-radius: var(--radius-sm);
 }
 
@@ -863,6 +845,10 @@ function confirmSwitch() {
 }
 
 .remove {
+  /* The global focus ring, drawn inside the button: it sits flush against the
+     row's right edge, and an outside ring would be clipped there. */
+  --focus-ring-inset: calc(var(--focus-ring-offset) * -1);
+
   cursor: pointer;
   /* Hidden until the row is hovered or the button is tabbed to, so the list
      stays a list. Kept in the layout so nothing shifts on hover. */
@@ -889,11 +875,6 @@ function confirmSwitch() {
   }
 }
 
-.remove:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: calc(var(--focus-ring-offset) * -1);
-}
-
 .remove:disabled {
   cursor: not-allowed;
 }
@@ -905,6 +886,9 @@ function confirmSwitch() {
    only thing at that end. Always visible: there is no hover to reveal it on
    where it is offered at all. */
 .reveal {
+  /* Inside for the same reason as .remove: the button reaches the row's edge. */
+  --focus-ring-inset: calc(var(--focus-ring-offset) * -1);
+
   cursor: pointer;
   transition: color var(--transition-fast), background var(--transition-fast),
     opacity var(--transition-fast);
@@ -947,11 +931,6 @@ function confirmSwitch() {
   }
 }
 
-.reveal:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: calc(var(--focus-ring-offset) * -1);
-}
-
 /* --- add someone ---------------------------------------------------------- */
 
 .add {
@@ -984,11 +963,6 @@ function confirmSwitch() {
   }
 }
 
-.add__button:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-}
-
 /* Touch has no hover to reveal on, and no cursor to aim with. */
 @media (pointer: coarse) {
   .names {
@@ -1000,36 +974,9 @@ function confirmSwitch() {
   }
 }
 
-.confirm {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.confirm__text {
-  font-size: 0.875rem;
-  line-height: 1.5;
-  color: var(--color-text-muted);
-}
-
-.confirm__actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 0.5rem;
-}
-
 .error {
   margin-top: 0.5rem;
   font-size: 0.75rem;
   color: var(--color-danger);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .remove,
-  .reveal,
-  .add__button {
-    transition: none;
-  }
 }
 </style>
