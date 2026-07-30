@@ -1000,9 +1000,12 @@ export const DESKTOP_PER_VIEW = 7;
  * compact heading size is 38 pixels, so this is that plus room to breathe. The
  * heading is what sets the floor rather than an arbitrary count — a column
  * narrow enough to fold its own date in half is not one worth showing, and the
- * header's height is fixed, so folding it hides the weekday above it.
+ * header's height is fixed, so folding it hides the weekday above it. The
+ * breathing room is generous rather than snug: at 44 the division landed
+ * columns at ~43px on common phone widths, and a heading with 2px of air on
+ * each side read as cramped in practice.
  */
-export const TARGET_COL_WIDTH = 44;
+export const TARGET_COL_WIDTH = 48;
 
 /**
  * What the chart never gets: the pinned time gutter, and the page's padding

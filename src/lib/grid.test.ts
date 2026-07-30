@@ -1356,10 +1356,10 @@ describe("scrolling", () => {
     it("fills a phone's width with columns a heading still fits in", () => {
       // The old brackets gave 3 here, and spent 90px on a column whose heading
       // needs 38.
-      expect(perViewFor(360, true)).toBe(6);
-      expect(perViewFor(390, true)).toBe(7);
-      expect(perViewFor(430, true)).toBe(8);
-      expect(perViewFor(768, true)).toBe(15);
+      expect(perViewFor(360, true)).toBe(5);
+      expect(perViewFor(390, true)).toBe(6);
+      expect(perViewFor(430, true)).toBe(7);
+      expect(perViewFor(768, true)).toBe(14);
     });
 
     it("grows with the screen rather than in steps", () => {
