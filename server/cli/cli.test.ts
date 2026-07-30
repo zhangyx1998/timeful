@@ -259,12 +259,27 @@ function sandbox(): { env: NodeJS.ProcessEnv; unsetEnv: string[] } {
   };
 }
 
-/** Writes a unit for `webroot` where this platform keeps them, as if installed. */
-async function plantUnit(webroot: string): Promise<string> {
+/**
+ * Writes a unit for `webroot` where this platform keeps them, as if installed.
+ *
+ * `cliPath` pins an ExecStart (or its plist/launcher equivalent), which is what
+ * `timeful upgrade` reads back and rewrites; the service verbs never look at it
+ * and pass nothing.
+ */
+async function plantUnit(webroot: string, cliPath?: string): Promise<string> {
   const hash = webrootHash(webroot);
   if (process.platform === "darwin") {
     const file = path.join(home, "Library", "LaunchAgents", `app.timeful.${hash}.plist`);
     await fs.mkdir(path.dirname(file), { recursive: true });
+    const programArguments = cliPath
+      ? `    <key>ProgramArguments</key>
+    <array>
+      <string>/usr/bin/node</string>
+      <string>${cliPath}</string>
+      <string>serve</string>
+    </array>
+`
+      : "";
     await fs.writeFile(
       file,
       `<?xml version="1.0" encoding="UTF-8"?>
@@ -272,7 +287,7 @@ async function plantUnit(webroot: string): Promise<string> {
   <dict>
     <key>Label</key>
     <string>app.timeful.${hash}</string>
-    <key>WorkingDirectory</key>
+${programArguments}    <key>WorkingDirectory</key>
     <string>${webroot}</string>
   </dict>
 </plist>
@@ -284,12 +299,14 @@ async function plantUnit(webroot: string): Promise<string> {
   if (process.platform === "win32") {
     const file = path.join(home, "AppData", "Local", "Timeful", `Timeful-${hash}.cmd`);
     await fs.mkdir(path.dirname(file), { recursive: true });
-    await fs.writeFile(file, `@echo off\r\ncd /d "${webroot}"\r\n`, "utf8");
+    const exec = cliPath ? `"/usr/bin/node" "${cliPath}" serve\r\n` : "";
+    await fs.writeFile(file, `@echo off\r\ncd /d "${webroot}"\r\n${exec}`, "utf8");
     return file;
   }
   const file = path.join(home, ".config", "systemd", "user", `timeful-${hash}.service`);
   await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(file, `[Service]\nWorkingDirectory=${webroot}\n`, "utf8");
+  const exec = cliPath ? `ExecStart=/usr/bin/node ${cliPath} serve\n` : "";
+  await fs.writeFile(file, `[Service]\nWorkingDirectory=${webroot}\n${exec}`, "utf8");
   return file;
 }
 
@@ -451,6 +468,109 @@ describe("timeful service", () => {
     expect(result.stderr).toContain(cwd);
     expect(result.stderr).toContain(second);
     expect(result.stderr).toContain("timeful service restart <path-to-webroot>");
+
+    await fs.rm(second, { recursive: true, force: true });
+    await fs.rm(elsewhere, { recursive: true, force: true });
+  }, 30000);
+});
+
+// ---------------------------------------------------------------------------
+// upgrade
+//
+// Same rules as above: a temporary HOME, and --dry-run everywhere, so no
+// service is ever activated and — because a dry run touches nothing at all —
+// the npm registry is never contacted from a test run either.
+// ---------------------------------------------------------------------------
+
+describe("timeful upgrade", () => {
+  const OLD_CLI = "/home/ada/.npm/_npx/0123456789abcdef/node_modules/timeful/cli.js";
+
+  beforeEach(async () => {
+    home = await tempDir("timeful-home-");
+    await fs.writeFile(path.join(cwd, CONFIG_FILE), JSON.stringify({ port: 4500 }), "utf8");
+  });
+
+  afterEach(async () => {
+    await fs.rm(home, { recursive: true, force: true });
+  });
+
+  it("re-points the unit at the running CLI and restarts it", async () => {
+    const file = await plantUnit(cwd, OLD_CLI);
+    const result = await runCli(["upgrade", "--dry-run"], { cwd, ...sandbox() });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain(`was ${OLD_CLI}`);
+    expect(result.stdout).toContain(`now ${CLI}`);
+    // The new unit is printed in full before anything would happen to it.
+    expect(result.stdout).toContain(CLI);
+    expect(result.stdout).toContain("would write ");
+    expect(result.stdout).toContain("would run: ");
+    // A dry run leaves the installed unit exactly as it found it.
+    expect(await fs.readFile(file, "utf8")).toContain(OLD_CLI);
+  }, 30000);
+
+  it("never contacts the registry in a dry run", async () => {
+    await plantUnit(cwd, OLD_CLI);
+    const result = await runCli(["upgrade", "--dry-run"], { cwd, ...sandbox() });
+    expect(result.stdout).toContain("the npm registry was not contacted");
+  }, 30000);
+
+  it("explains how a serve-only webroot upgrades, and writes nothing", async () => {
+    const result = await runCli(["upgrade", "--dry-run"], { cwd, ...sandbox() });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("No Timeful service is installed");
+    expect(result.stdout).toContain(`cd ${cwd} && npx timeful@latest`);
+    expect(result.stdout).not.toContain("would write ");
+    expect((await entries()).sort()).toEqual([CONFIG_FILE]);
+    expect(await fs.readdir(home)).toEqual([]);
+  }, 30000);
+
+  it("applies -A to every webroot the scan found", async () => {
+    const second = await tempDir("timeful-second-");
+    await fs.writeFile(path.join(second, CONFIG_FILE), JSON.stringify({ port: 4600 }), "utf8");
+    await plantUnit(cwd, OLD_CLI);
+    await plantUnit(second, OLD_CLI);
+
+    const result = await runCli(["upgrade", "-A", "--dry-run"], { cwd, ...sandbox() });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain(cwd);
+    expect(result.stdout).toContain(second);
+    // Swept up rather than named: one line each, not the serve-only lecture.
+    expect(result.stdout).not.toContain("npx timeful@latest");
+
+    await fs.rm(second, { recursive: true, force: true });
+  }, 30000);
+
+  it("takes a webroot as an argument, and checks it is one", async () => {
+    await plantUnit(cwd, OLD_CLI);
+    const elsewhere = await tempDir("timeful-other-");
+
+    const named = await runCli(["upgrade", cwd, "--dry-run"], {
+      cwd: elsewhere,
+      ...sandbox(),
+    });
+    expect(named.code).toBe(0);
+    expect(named.stdout).toContain(`was ${OLD_CLI}`);
+
+    const wrong = await runCli(["upgrade", elsewhere, "--dry-run"], { cwd, ...sandbox() });
+    expect(wrong.code).toBe(1);
+    expect(wrong.stderr).toContain("is not a Timeful webroot");
+
+    await fs.rm(elsewhere, { recursive: true, force: true });
+  }, 30000);
+
+  it("names the candidates instead of guessing, with no terminal to ask at", async () => {
+    const second = await tempDir("timeful-second-");
+    await fs.writeFile(path.join(second, CONFIG_FILE), "{}", "utf8");
+    await plantUnit(cwd, OLD_CLI);
+    await plantUnit(second, OLD_CLI);
+    const elsewhere = await tempDir("timeful-other-");
+
+    const result = await runCli(["upgrade"], { cwd: elsewhere, ...sandbox() });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("several are installed");
+    expect(result.stderr).toContain("timeful upgrade <path-to-webroot>");
 
     await fs.rm(second, { recursive: true, force: true });
     await fs.rm(elsewhere, { recursive: true, force: true });

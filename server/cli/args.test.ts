@@ -120,6 +120,23 @@ describe("parseArgs: actions", () => {
     );
   });
 
+  it("takes upgrade with an optional webroot, and with -A", () => {
+    expect(parseArgs(["upgrade"])).toMatchObject({ command: "upgrade", all: false });
+    expect(parseArgs(["upgrade", "/srv/timeful"])).toMatchObject({
+      command: "upgrade",
+      target: "/srv/timeful",
+    });
+    expect(parseArgs(["upgrade", "-A"])).toMatchObject({ command: "upgrade", all: true });
+    expect(parseArgs(["upgrade", "--dry-run"]).dryRun).toBe(true);
+  });
+
+  it("gives upgrade one webroot at most, and never both spellings of every", () => {
+    expect(() => parseArgs(["upgrade", "/srv/a", "/srv/b"])).toThrow(/Unexpected argument/);
+    expect(() => parseArgs(["upgrade", "/srv/a", "-A"])).toThrow(
+      /webroot or -A\/--all, not both/,
+    );
+  });
+
   it("takes --dry-run anywhere", () => {
     expect(parseArgs(["--dry-run"]).dryRun).toBe(true);
     expect(parseArgs(["init", "--dry-run"])).toMatchObject({ command: "init", dryRun: true });
@@ -147,9 +164,18 @@ describe("usage", () => {
 
   it("documents every action and service verb", () => {
     const text = usage("1.2.3");
-    for (const action of ["timeful init", "timeful serve", "timeful service"])
+    for (const action of [
+      "timeful init",
+      "timeful serve",
+      "timeful service",
+      "timeful upgrade",
+    ])
       expect(text).toContain(action);
     for (const verb of ["install", "uninstall", "start", "stop", "restart", "status"])
       expect(text).toContain(verb);
+  });
+
+  it("spells out the upgrade ritual, since that is the whole of it", () => {
+    expect(usage("1.2.3")).toContain("npx timeful@latest upgrade");
   });
 });

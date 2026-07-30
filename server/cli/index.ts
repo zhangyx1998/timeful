@@ -12,6 +12,7 @@
  *   timeful init      make this directory a webroot (the wizard)
  *   timeful serve     serve a webroot, and never anything else
  *   timeful service   install / control the background service for a webroot
+ *   timeful upgrade   point an installed service at the build running this
  */
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -56,8 +57,15 @@ import {
   type ServiceUnit,
 } from "./service.ts";
 import { confirm, isInteractive, say, select, stdio, type Tty } from "./tui.ts";
+import {
+  installKind,
+  reportStableInstall,
+  upgradeWebroot,
+  type UpgradeContext,
+} from "./upgrade.ts";
 import { VERSION } from "./version.ts";
 import { runWizard } from "./wizard.ts";
+import { fetchLatestVersion } from "../registry.ts";
 
 /** This file, as an absolute path: what a service unit has to exec. */
 const CLI_PATH = fileURLToPath(import.meta.url);
@@ -76,6 +84,7 @@ async function main(argv: readonly string[]): Promise<void> {
 
   const cwd = process.cwd();
   if (args.command === "service") return runService(args, cwd);
+  if (args.command === "upgrade") return runUpgrade(args, cwd);
   if (args.command === "init") return runInit(args, cwd);
   if (args.command === "serve") return runServe(args, cwd);
   return runAuto(args, cwd);
@@ -241,7 +250,7 @@ async function runService(args: CliArgs, cwd: string): Promise<void> {
   // No verb at all is a question, not a command: what is installed here?
   if (!args.action) return listServices(installed, host);
 
-  const targets = await resolveTargets(args, cwd, installed);
+  const targets = await resolveTargets(args, cwd, installed, `service ${args.action}`);
   if (args.action === "install") return installFor(targets[0], args, host);
 
   for (const [index, webroot] of targets.entries()) {
@@ -260,11 +269,16 @@ async function discover(): Promise<DiscoveredService[]> {
 /**
  * Which webroots the verb applies to: `-A/--all`, an explicit path, this
  * directory, or — when none of those settle it — a question.
+ *
+ * `label` is the command as the operator typed it ("service restart",
+ * "upgrade"), so every message can hand back a command they can run rather
+ * than a description of one.
  */
 async function resolveTargets(
   args: CliArgs,
   cwd: string,
   installed: DiscoveredService[],
+  label: string,
 ): Promise<string[]> {
   if (args.all) {
     const webroots = webrootsOf(installed);
@@ -291,7 +305,7 @@ async function resolveTargets(
         `${cwd} is not a Timeful webroot, and no Timeful services are installed.`,
         "",
         `Run 'timeful init' here first, or name a webroot:`,
-        `  timeful service ${args.action} <path-to-webroot>`,
+        `  timeful ${label} <path-to-webroot>`,
       ].join("\n"),
     );
   if (candidates.length === 1) {
@@ -307,15 +321,60 @@ async function resolveTargets(
         ...candidates.map((webroot) => `  ${webroot}`),
         "",
         "Name the one you mean, or use -A/--all:",
-        `  timeful service ${args.action} <path-to-webroot>`,
+        `  timeful ${label} <path-to-webroot>`,
       ].join("\n"),
     );
   return [
     await select(io, {
-      message: `Which webroot should 'timeful service ${args.action}' act on?`,
+      message: `Which webroot should 'timeful ${label}' act on?`,
       options: candidates.map((webroot) => ({ value: webroot, label: webroot })),
     }),
   ];
+}
+
+// ---------------------------------------------------------------------------
+// upgrade
+// ---------------------------------------------------------------------------
+
+/**
+ * `timeful upgrade`: point installed services at the build running this
+ * command, and restart them.
+ *
+ * The process running these lines is already the new version — npx fetched it
+ * before our code existed — so there is nothing to download. See upgrade.ts for
+ * why re-pinning the unit is the whole of an upgrade.
+ */
+async function runUpgrade(args: CliArgs, cwd: string): Promise<void> {
+  const host = nodeHost({ dryRun: args.dryRun });
+  if (host.dryRun) console.log("Dry run: nothing below is written or executed.");
+
+  const installed = await discover();
+  const targets = await resolveTargets(args, cwd, installed, "upgrade");
+
+  const context: UpgradeContext = {
+    host,
+    cliPath: CLI_PATH,
+    version: VERSION,
+    confirmPrivileged: () => confirmOnTty("Run these commands with sudo now?"),
+  };
+
+  // Only a stable path prompts a registry lookup, and only because the rewrite
+  // below cannot help it. A dry run asks nothing of the network either: the
+  // contract is that it touches nothing at all.
+  if (installKind(CLI_PATH) === "stable")
+    await reportStableInstall(context, host.dryRun ? undefined : () => fetchLatestVersion());
+
+  for (const [index, webroot] of targets.entries()) {
+    if (index > 0) console.log();
+    await upgradeWebroot(
+      webroot,
+      await installedUnits(webroot, args, host),
+      context,
+      // A directory the operator named deserves the long explanation when it
+      // has no service; one that -A swept past deserves a line.
+      { explicit: !args.all },
+    );
+  }
 }
 
 /** `timeful service` with no verb: everything installed, on one screen. */

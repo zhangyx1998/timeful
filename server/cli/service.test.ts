@@ -62,6 +62,10 @@ function fakeHost(
       files.set(file, contents);
       existing.add(file);
     },
+    async readFile(file) {
+      // Reads are honoured in a dry run too, exactly as the real host does.
+      return files.get(file) ?? null;
+    },
     async removeFile(file) {
       if (options.dryRun) return;
       files.delete(file);

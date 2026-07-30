@@ -12,7 +12,14 @@ import { CliError } from "./errors.ts";
  * `auto` is bare `timeful`: serve a webroot, or offer to make one. The other
  * two say which of those halves was meant, and never do the other.
  */
-export type Command = "auto" | "init" | "serve" | "service" | "help" | "version";
+export type Command =
+  | "auto"
+  | "init"
+  | "serve"
+  | "service"
+  | "upgrade"
+  | "help"
+  | "version";
 
 export type ServiceAction =
   | "install"
@@ -41,7 +48,10 @@ export interface CliArgs {
   command: Command;
   /** Only set when `command` is "service"; absent means "list what is installed". */
   action?: ServiceAction;
-  /** A webroot given as a positional to `timeful service <verb> <path>`. */
+  /**
+   * A webroot given as a positional — to `timeful service <verb> <path>`, or
+   * to `timeful upgrade <path>`. Both resolve it the same way.
+   */
   target?: string;
   /** `-A` / `--all`: every installed webroot, not just one. */
   all: boolean;
@@ -54,7 +64,7 @@ export interface CliArgs {
   overrides: Overrides;
 }
 
-const COMMANDS: readonly string[] = ["init", "serve", "service"];
+const COMMANDS: readonly string[] = ["init", "serve", "service", "upgrade"];
 
 export const SERVICE_ACTIONS: readonly ServiceAction[] = [
   "install",
@@ -173,6 +183,16 @@ function readPositionals(args: CliArgs, positionals: string[]): void {
     );
   args.command = command as Command;
 
+  // `upgrade` takes the same positional the service verbs do — a webroot — and
+  // no verb of its own: it does exactly one thing.
+  if (args.command === "upgrade") {
+    const [target, ...extra] = rest;
+    if (target !== undefined) args.target = target;
+    if (extra.length > 0)
+      throw new CliError(`Unexpected argument '${extra[0]}'. Try 'timeful --help'.`);
+    return;
+  }
+
   if (args.command !== "service") {
     if (rest.length > 0)
       throw new CliError(
@@ -196,10 +216,11 @@ function readPositionals(args: CliArgs, positionals: string[]): void {
 
 function checkAll(args: CliArgs): void {
   if (!args.all) return;
-  if (args.command !== "service")
-    throw new CliError("-A/--all only means something for 'timeful service'.");
+  if (args.command !== "service" && args.command !== "upgrade")
+    throw new CliError("-A/--all only means something for 'timeful service' and 'timeful upgrade'.");
   if (args.target)
     throw new CliError(`Pass a webroot or -A/--all, not both ('${args.target}').`);
+  if (args.command === "upgrade") return;
   if (args.action && !ALL_ACTIONS.includes(args.action))
     throw new CliError(
       `'timeful service ${args.action}' works on one webroot; -A/--all is not allowed.` +
@@ -217,7 +238,16 @@ Usage:
   timeful init [options]            set this directory up as a webroot
   timeful serve [options]           serve this directory (it must be a webroot)
   timeful service [verb] [webroot]  manage background services
+  timeful upgrade [webroot | -A]    point an installed service at this build
   timeful --help | --version
+
+Upgrading is one command, run from the webroot:
+
+  npx timeful@latest upgrade
+
+npx has already fetched the new version by the time that runs, so 'upgrade'
+does not download anything. It rewrites the service unit to exec the build
+that is running it and restarts the service. Your data is never touched.
 
 Service verbs (the webroot defaults to this directory, and -A/--all means
 every installed one; with no verb at all, installed services are listed):
@@ -239,7 +269,8 @@ Options:
   --var-dir <path>        data directory (default ./var)
   --trusted-proxy <list>  peers allowed to send X-Forwarded-For:
                           'loopback' (default), 'none', or IPs/CIDRs
-  -A, --all               act on every installed webroot (service verbs)
+  -A, --all               act on every installed webroot (service verbs,
+                          and upgrade)
   -y, --yes               accept every default, do not prompt
       --dry-run           print every file write and command instead of
                           performing it, then exit 0

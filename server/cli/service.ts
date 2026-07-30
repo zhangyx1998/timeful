@@ -320,6 +320,14 @@ export interface ServiceHost {
   /** True when nothing is actually done; the reporting says so. */
   readonly dryRun?: boolean;
   writeFile(file: string, contents: string): Promise<void>;
+  /**
+   * The file's contents, or null when it cannot be read.
+   *
+   * Reading changes nothing, so unlike the writes this one is honoured in a
+   * dry run too — `timeful upgrade --dry-run` has to be able to say which CLI
+   * the installed unit currently execs.
+   */
+  readFile(file: string): Promise<string | null>;
   removeFile(file: string): Promise<void>;
   exists(file: string): Promise<boolean>;
   run(cmd: ServiceCommand): Promise<RunResult>;
@@ -365,6 +373,14 @@ export function nodeHost(options: NodeHostOptions = {}): ServiceHost {
       if (dryRun) return; // the caller reports it
       await fs.mkdir(path.dirname(file), { recursive: true });
       await fs.writeFile(file, contents, "utf8");
+    },
+    async readFile(file) {
+      // Not gated on `dryRun`: a read is not a change.
+      try {
+        return await fs.readFile(file, "utf8");
+      } catch {
+        return null;
+      }
     },
     async removeFile(file) {
       if (dryRun) return;

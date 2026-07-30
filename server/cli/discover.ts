@@ -105,6 +105,42 @@ function fromLauncher(contents: string): string | null {
   return /^cd \/d "(.+)"\s*$/m.exec(contents)?.[1] ?? null;
 }
 
+/**
+ * The CLI entry an installed unit execs, read back out of the unit.
+ *
+ * A fourth parser mirroring the same three generators — `timeful upgrade` has
+ * to be able to say what the unit runs *now* before it re-points it at what is
+ * running the upgrade. Best effort by design: the generators do not quote the
+ * two POSIX paths, so a node binary with a space in its path is unreadable
+ * here. That is what the null is for, and re-pinning a unit whose old value
+ * could not be read is still the right thing to do.
+ */
+export function pinnedCliPath(
+  platform: NodeJS.Platform,
+  contents: string,
+): string | null {
+  if (platform === "darwin") {
+    const array = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(contents);
+    if (!array) return null;
+    const strings = [...array[1].matchAll(/<string>([\s\S]*?)<\/string>/g)].map((m) =>
+      m[1].replace(/&(amp|lt|gt|quot|apos);/g, (entity) => XML_UNESCAPES[entity] ?? entity),
+    );
+    // [node, cli, "serve"] — units written before `serve` existed have two.
+    return strings[1] ?? null;
+  }
+
+  if (platform === "win32") {
+    // The launcher quotes both paths, so this one is unambiguous.
+    return /^"[^"]*"\s+"([^"]+)"/m.exec(contents)?.[1] ?? null;
+  }
+
+  const exec = /^ExecStart=(.+)$/m.exec(contents)?.[1].trim();
+  if (!exec) return null;
+  const words = exec.split(/\s+/);
+  if (words[words.length - 1] === "serve") words.pop();
+  return words[1] ?? null;
+}
+
 function sourcesFor(platform: NodeJS.Platform, paths: ScanPaths): Source[] {
   const sources: Source[] = [];
   // A systemd unit is addressed by its file name, extension and all.
