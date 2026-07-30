@@ -1079,6 +1079,30 @@ text.
   which leaves the phone's foot holding the best-times filter in the group view
   and **nothing at all** in the edit view — so there is no foot then, rather
   than an empty row.
+- **The keyboard covers the page; it does not resize it.** The viewport meta
+  says `interactive-widget=overlays-content`, so raising a keyboard leaves
+  `dvh`, the layout and the chart's column geometry exactly where they were.
+  Under `resizes-content` — what it used to say — every tap on a field re-laid
+  the whole phone layout out and dropped it back again on dismiss.
+  What must stay visible above the keyboard instead pads itself off
+  `--overlay-bottom` (`tokens.css`), which is
+  `max(env(keyboard-inset-height), var(--keyboard-inset), var(--safe-bottom))`
+  — the larger and never the sum, because an open keyboard covers the home
+  indicator and the two keyboard signals describe one keyboard. Chromium fills
+  the first, but only after `navigator.virtualKeyboard.overlaysContent = true`;
+  iOS Safari fills neither, so `src/lib/keyboard.ts` measures
+  `innerHeight - visualViewport.height - visualViewport.offsetTop` on the
+  visual viewport's own resize and scroll, one write per animation frame, and
+  publishes `--keyboard-inset` on `<html>`. Subtracting `offsetTop` is what
+  handles iOS panning the page to a focused field: a fixed element is still
+  placed against the layout viewport, so the pan is not room the sheet gained.
+  A pinch shrinks the visual viewport identically and is read as **no**
+  keyboard — pinch-to-zoom is not taken away here. `Dialog` is the only
+  consumer, because it is the only fixed overlay that holds a field: the
+  backdrop's bottom padding lifts a centred prompt, a sheet takes the inset as
+  its own bottom padding so its surface still reaches the screen edge, and both
+  cap `max-height` by it so a long form scrolls inside the panel. A field
+  focused inside one is scrolled into view with `block: "nearest"`.
 - **A region of the group's answers, read as one.** The column beside the chart
   answers for one cell, and on a phone it is behind a drawer besides. A drag
   (mouse) or a tap (touch, with the same handles editing gets) selects a region

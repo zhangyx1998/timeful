@@ -119,6 +119,26 @@
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
 
+  /* What the on-screen keyboard takes, when there is one. The page is no longer
+     resized to make room for it (`interactive-widget=overlays-content` in
+     index.html), so anything that must stay visible above it says so here.
+
+     Two sources because no browser has both: `env(keyboard-inset-height)` is
+     Chromium's, populated by the VirtualKeyboard opt-in, and `--keyboard-inset`
+     is the visualViewport measurement src/lib/keyboard.ts publishes, which is
+     all iOS Safari gives. Zero in both places until a keyboard is actually up.
+
+     `max()` and never a sum — of these three and the home indicator alike. An
+     open keyboard covers the home indicator, so adding the two would push a
+     sheet a thumb's width above the keyboard; and where both keyboard signals
+     report, they are reporting the same keyboard. */
+  --keyboard-inset: 0px;
+  --overlay-bottom: max(
+    env(keyboard-inset-height, 0px),
+    var(--keyboard-inset),
+    var(--safe-bottom)
+  );
+
   /* --- metrics ------------------------------------------------------------ */
   /* `--tap-min` is the ≥44px touch target floor from ARCHITECTURE.md § UX bar;
      primitives apply it under coarse pointers. */

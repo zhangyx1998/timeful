@@ -6,12 +6,20 @@
          with a notch or a home indicator; everything fixed to an edge pads
          itself back off it with the `--safe-*` tokens. No `maximum-scale` and
          no `user-scalable`: pinch to zoom is not ours to take away. -->
-    <!-- `interactive-widget=resizes-content` puts the on-screen keyboard inside
-         the layout viewport, so `dvh` shrinks with it and a fixed layout lands
-         above the keyboard instead of behind it. -->
+    <!-- `interactive-widget=overlays-content` keeps the on-screen keyboard
+         *out* of the layout viewport. `resizes-content` was the other way
+         round, and it meant every keystroke-summoning tap relaid the whole app
+         out: the phone layout is `height: 100dvh` with a chart sized off what
+         is left, so raising the keyboard shrank the chart, moved every column,
+         and dropped it all again on dismiss. The keyboard is a thing that
+         covers the page, not a thing that resizes it — so the page holds still
+         and whatever has to stay visible above it pads itself off
+         `env(keyboard-inset-height)` / `--keyboard-inset` instead, the way
+         everything fixed to an edge already pads off `--safe-*`.
+         See src/lib/keyboard.ts. -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=overlays-content"
     />
     <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="/favicon.ico" />

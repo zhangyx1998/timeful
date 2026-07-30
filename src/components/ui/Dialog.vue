@@ -106,6 +106,24 @@ function onKeydown(event: KeyboardEvent) {
   if (event.key === "Escape") dismiss();
 }
 
+/**
+ * Keeps the field you just tapped where you can see it.
+ *
+ * The panel is capped so that its body scrolls rather than sliding under the
+ * keyboard, which means the field being typed into can be below the fold of a
+ * box that has just shrunk. `block: "nearest"` is the whole of the ask: scroll
+ * the least that makes it visible, and do nothing at all when it already is.
+ *
+ * A frame late, because the cap only bites once `--keyboard-inset` lands — and
+ * the platforms that raise a keyboard do it after the focus, not before.
+ */
+function onFocusIn(event: FocusEvent) {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  if (!target.matches("input, textarea, select, [contenteditable]")) return;
+  requestAnimationFrame(() => target.scrollIntoView({ block: "nearest" }));
+}
+
 watch(
   () => props.open,
   (open) => {
@@ -156,6 +174,7 @@ onBeforeUnmount(() => {
           aria-modal="true"
           :aria-label="title"
           tabindex="-1"
+          @focusin="onFocusIn"
         >
           <span v-if="variant === 'sheet'" class="panel__grip" aria-hidden="true" />
           <header class="panel__head">
@@ -199,9 +218,12 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   /* The dim covers the whole display; the panel it holds stays clear of
-     whatever the display takes out of it. */
+     whatever the display takes out of it — and, at the bottom, of the keyboard
+     too. `--overlay-bottom` is the larger of the home indicator and whatever
+     the keyboard is covering (tokens.css); because the panel is centred in what
+     is left, growing this is what lifts a prompt off an open keyboard. */
   padding: calc(1rem + var(--safe-top)) calc(1rem + var(--safe-right))
-    calc(1rem + var(--safe-bottom)) calc(1rem + var(--safe-left));
+    calc(1rem + var(--overlay-bottom)) calc(1rem + var(--safe-left));
   background: var(--color-backdrop);
   transition: background var(--transition-med);
 }
@@ -216,7 +238,9 @@ onBeforeUnmount(() => {
   flex-direction: column;
   width: 100%;
   max-width: 26rem;
-  max-height: calc(100dvh - 2rem - var(--safe-top) - var(--safe-bottom));
+  /* Capped by the same inset, so a form taller than the room left above the
+     keyboard scrolls inside its own body rather than sliding under it. */
+  max-height: calc(100dvh - 2rem - var(--safe-top) - var(--overlay-bottom));
   background: var(--color-raised);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
@@ -245,7 +269,12 @@ onBeforeUnmount(() => {
      stop short of — and in landscape, the cutout beside it. */
   max-height: calc(88dvh - var(--safe-top));
   padding-right: var(--safe-right);
-  padding-bottom: var(--safe-bottom);
+  /* The keyboard's height as the sheet's own bottom padding, rather than a gap
+     under it: the surface still reaches the bottom edge — a sheet floating a
+     keyboard's height above the screen would read as a card, not a drawer —
+     while everything in it sits above the keys. The cap above then bites on the
+     body, which scrolls. */
+  padding-bottom: var(--overlay-bottom);
   padding-left: var(--safe-left);
   border-width: 1px 0 0;
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;

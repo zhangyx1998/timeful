@@ -1,9 +1,15 @@
 import { createApp } from "./app";
+import { installKeyboardInset } from "./lib/keyboard";
 import { initTheme } from "./lib/theme";
 
 // Sync the reactive theme state with whatever the inline head script applied,
 // before anything renders.
 initTheme();
+
+// The keyboard no longer resizes the page (index.html), so something has to say
+// how much of it is covered. One installation for the document, before anything
+// can raise a keyboard.
+installKeyboardInset();
 
 const container = document.getElementById("app");
 
