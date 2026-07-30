@@ -117,6 +117,20 @@ describe("discoverServices: Linux", () => {
     expect(found[0].id).toBe("timeful-aaaaaaaaaa.service");
   });
 
+  it("finds a unit with a shorter hash than today's generator writes", async () => {
+    // The scanner is deliberately looser than webrootHash's 10 characters: a
+    // unit an older version wrote must stay findable, or it can never be
+    // uninstalled from here. Guards the parser against tightening onto the
+    // generator now that both read the shared naming table.
+    await plant("user", "timeful-abc123.service", unit("/srv/short"));
+    const [found] = await discoverServices({
+      platform: "linux",
+      paths: paths({ systemdUser: "user" }),
+    });
+    expect(found.webroot).toBe("/srv/short");
+    expect(found.id).toBe("timeful-abc123.service");
+  });
+
   it("finds units written before the CLI passed 'serve'", async () => {
     await plant(
       "user",
@@ -144,6 +158,22 @@ describe("discoverServices: Windows", () => {
     });
     expect(found.webroot).toBe("C:\\srv\\timeful");
     expect(found.id).toBe("Timeful-aaaaaaaaaa");
+  });
+
+  it("keeps matching a launcher whose extension was re-cased", async () => {
+    // Windows file names compare case-insensitively, so `.CMD` is the same
+    // launcher; the scanner has to stay case-insensitive too.
+    await plant(
+      "Timeful",
+      "Timeful-bbbbbbbbbb.CMD",
+      `@echo off\r\ncd /d "C:\\srv\\other"\r\n"node.exe" "cli.js" serve\r\n`,
+    );
+    const [found] = await discoverServices({
+      platform: "win32",
+      paths: paths({ windowsLaunchers: "Timeful" }),
+    });
+    expect(found.webroot).toBe("C:\\srv\\other");
+    expect(found.id).toBe("Timeful-bbbbbbbbbb");
   });
 });
 

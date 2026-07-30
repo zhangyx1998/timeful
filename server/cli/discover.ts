@@ -7,13 +7,18 @@
  * it finds. Nothing to keep in sync, nothing to corrupt, and a unit written by
  * an older version — or edited by hand — is still found.
  *
- * The three parsers here mirror the three generators in service.ts. Change a
- * generator and change its parser, or an installed service becomes invisible to
- * the CLI that installed it.
+ * The parsers, and the naming and directories both this scanner and the
+ * generators in service.ts follow, live in the shared table in platforms.ts —
+ * with the leniency rules that keep old units findable spelled out there.
  */
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { ServiceTier } from "./service.ts";
+import {
+  PLATFORMS,
+  platformNaming,
+  type PlatformNaming,
+  type ServiceTier,
+} from "./platforms.ts";
 
 /** Where each platform keeps the units this CLI writes. Injectable for tests. */
 export interface ScanPaths {
@@ -51,21 +56,13 @@ export interface ScanOptions {
 
 /** The real directories for `platform`, from the same inputs `specFor` uses. */
 export function scanPathsFor({ platform, home, env = process.env }: ScanOptions): ScanPaths {
-  if (platform === "darwin")
-    return { launchAgents: path.join(home, "Library", "LaunchAgents") };
-  if (platform === "linux")
-    return {
-      systemdUser: path.join(env.XDG_CONFIG_HOME || path.join(home, ".config"), "systemd", "user"),
-      systemdSystem: "/etc/systemd/system",
-    };
-  if (platform === "win32")
-    return {
-      windowsLaunchers: path.join(
-        env.LOCALAPPDATA || path.join(home, "AppData", "Local"),
-        "Timeful",
-      ),
-    };
-  return {};
+  const naming = platformNaming(platform);
+  if (!naming) return {};
+  const inputs = { home, configHome: env.XDG_CONFIG_HOME, localAppData: env.LOCALAPPDATA };
+  const paths: ScanPaths = {};
+  for (const place of Object.values(naming.places))
+    if (place) paths[place.scanKey] = place.dir(inputs);
+  return paths;
 }
 
 interface Source {
@@ -77,109 +74,57 @@ interface Source {
   webrootOf: (contents: string) => string | null;
 }
 
+/**
+ * Looser than today's 10-character `webrootHash` on purpose: a unit an older
+ * version wrote with a shorter hash is still an installed service, and this
+ * scanner is how it ever gets uninstalled.
+ */
 const HASH = "[0-9a-f]{6,}";
 
-const PLIST = new RegExp(`^app\\.timeful\\.${HASH}\\.plist$`);
-const UNIT = new RegExp(`^timeful-${HASH}\\.service$`);
-const LAUNCHER = new RegExp(`^Timeful-${HASH}\\.cmd$`, "i");
+const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-const XML_UNESCAPES: Record<string, string> = {
-  "&amp;": "&",
-  "&lt;": "<",
-  "&gt;": ">",
-  "&quot;": '"',
-  "&apos;": "'",
-};
-
-function fromPlist(contents: string): string | null {
-  const match = /<key>WorkingDirectory<\/key>\s*<string>([\s\S]*?)<\/string>/.exec(contents);
-  if (!match) return null;
-  return match[1].replace(/&(amp|lt|gt|quot|apos);/g, (entity) => XML_UNESCAPES[entity] ?? entity);
-}
-
-function fromUnit(contents: string): string | null {
-  return /^WorkingDirectory=(.+)$/m.exec(contents)?.[1].trim() ?? null;
-}
-
-function fromLauncher(contents: string): string | null {
-  return /^cd \/d "(.+)"\s*$/m.exec(contents)?.[1] ?? null;
-}
+/**
+ * Recognises the file names `platform`'s generator writes. The prefix and
+ * extension come from the shared table, regex-escaped: `app.timeful.`'s dots
+ * must match dots, not any character, or other vendors' plists start matching.
+ */
+const fileNameOf = (naming: PlatformNaming): RegExp =>
+  new RegExp(
+    `^${escapeRe(naming.idPrefix)}${HASH}${escapeRe(naming.ext)}$`,
+    naming.ignoreCase ? "i" : "",
+  );
 
 /**
  * The CLI entry an installed unit execs, read back out of the unit.
  *
- * A fourth parser mirroring the same three generators — `timeful upgrade` has
- * to be able to say what the unit runs *now* before it re-points it at what is
- * running the upgrade. Best effort by design: the generators do not quote the
- * two POSIX paths, so a node binary with a space in its path is unreadable
- * here. That is what the null is for, and re-pinning a unit whose old value
+ * A parser mirroring each generator — `timeful upgrade` has to be able to say
+ * what the unit runs *now* before it re-points it at what is running the
+ * upgrade. Best effort by design: see the caveats on the table's `cliPathOf`
+ * entries. That is what the null is for, and re-pinning a unit whose old value
  * could not be read is still the right thing to do.
  */
-export function pinnedCliPath(
-  platform: NodeJS.Platform,
-  contents: string,
-): string | null {
-  if (platform === "darwin") {
-    const array = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(contents);
-    if (!array) return null;
-    const strings = [...array[1].matchAll(/<string>([\s\S]*?)<\/string>/g)].map((m) =>
-      m[1].replace(/&(amp|lt|gt|quot|apos);/g, (entity) => XML_UNESCAPES[entity] ?? entity),
-    );
-    // [node, cli, "serve"] — units written before `serve` existed have two.
-    return strings[1] ?? null;
-  }
-
-  if (platform === "win32") {
-    // The launcher quotes both paths, so this one is unambiguous.
-    return /^"[^"]*"\s+"([^"]+)"/m.exec(contents)?.[1] ?? null;
-  }
-
-  const exec = /^ExecStart=(.+)$/m.exec(contents)?.[1].trim();
-  if (!exec) return null;
-  const words = exec.split(/\s+/);
-  if (words[words.length - 1] === "serve") words.pop();
-  return words[1] ?? null;
+export function pinnedCliPath(platform: NodeJS.Platform, contents: string): string | null {
+  // Unknown platforms read as systemd units, as they always have.
+  return (platformNaming(platform) ?? PLATFORMS.linux).cliPathOf(contents);
 }
 
 function sourcesFor(platform: NodeJS.Platform, paths: ScanPaths): Source[] {
+  const naming = platformNaming(platform);
+  if (!naming) return [];
+
+  const pattern = fileNameOf(naming);
+  const ext = new RegExp(`${escapeRe(naming.ext)}$`, naming.ignoreCase ? "i" : "");
+  // A systemd unit is addressed by its file name, extension and all; the
+  // launchd label and the schtasks task name drop it.
+  const idOf = (file: string): string | null =>
+    pattern.test(file) ? (naming.idIncludesExt ? file : file.replace(ext, "")) : null;
+
   const sources: Source[] = [];
-  // A systemd unit is addressed by its file name, extension and all.
-  const unitId = (file: string): string | null => (UNIT.test(file) ? file : null);
-
-  if (platform === "darwin" && paths.launchAgents)
-    sources.push({
-      dir: paths.launchAgents,
-      tier: "user",
-      // The launchd label is the file name without the extension.
-      idOf: (file) => (PLIST.test(file) ? file.replace(/\.plist$/, "") : null),
-      webrootOf: fromPlist,
-    });
-
-  if (platform === "linux") {
-    if (paths.systemdUser)
-      sources.push({
-        dir: paths.systemdUser,
-        tier: "user",
-        idOf: unitId,
-        webrootOf: fromUnit,
-      });
-    if (paths.systemdSystem)
-      sources.push({
-        dir: paths.systemdSystem,
-        tier: "system",
-        idOf: unitId,
-        webrootOf: fromUnit,
-      });
+  for (const [tier, place] of Object.entries(naming.places)) {
+    const dir = place && paths[place.scanKey];
+    if (dir)
+      sources.push({ dir, tier: tier as ServiceTier, idOf, webrootOf: naming.webrootOf });
   }
-
-  if (platform === "win32" && paths.windowsLaunchers)
-    sources.push({
-      dir: paths.windowsLaunchers,
-      tier: "user",
-      idOf: (file) => (LAUNCHER.test(file) ? file.replace(/\.cmd$/i, "") : null),
-      webrootOf: fromLauncher,
-    });
-
   return sources;
 }
 

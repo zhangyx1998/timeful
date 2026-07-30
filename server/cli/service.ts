@@ -24,8 +24,18 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { CliError } from "./errors.ts";
+import {
+  escapeXml,
+  launchAgentsDir,
+  PLATFORMS,
+  platformNaming,
+  SYSTEMD_SYSTEM_DIR,
+  systemdUserDir,
+  windowsLaunchersDir,
+  type ServiceTier,
+} from "./platforms.ts";
 
-export type ServiceTier = "user" | "system";
+export type { ServiceTier };
 
 export interface ServiceSpec {
   platform: NodeJS.Platform;
@@ -97,9 +107,9 @@ export function webrootHash(webroot: string): string {
 
 export function serviceId(spec: ServiceSpec): string {
   const hash = webrootHash(spec.webroot);
-  if (spec.platform === "darwin") return `app.timeful.${hash}`;
-  if (spec.platform === "win32") return `Timeful-${hash}`;
-  return `timeful-${hash}`;
+  // Unknown platforms read as linux, as they always have; unitFor refuses
+  // them before an id could ever name a real unit.
+  return `${(platformNaming(spec.platform) ?? PLATFORMS.linux).idPrefix}${hash}`;
 }
 
 /** Renders a command the way an operator would type it. */
@@ -115,18 +125,6 @@ function quoteArg(arg: string): string {
 // unit generation
 // ---------------------------------------------------------------------------
 
-const XML_ESCAPES: Record<string, string> = {
-  "&": "&amp;",
-  "<": "&lt;",
-  ">": "&gt;",
-  '"': "&quot;",
-  "'": "&apos;",
-};
-
-function escapeXml(value: string): string {
-  return value.replace(/[&<>"']/g, (c) => XML_ESCAPES[c] ?? c);
-}
-
 /** The generated artifact and commands for `spec`. */
 export function unitFor(spec: ServiceSpec): ServiceUnit {
   if (spec.platform === "darwin") return launchdUnit(spec);
@@ -140,7 +138,8 @@ export function unitFor(spec: ServiceSpec): ServiceUnit {
 
 /** The tiers `platform` can offer. */
 export function availableTiers(platform: NodeJS.Platform): ServiceTier[] {
-  return platform === "linux" ? ["user", "system"] : ["user"];
+  const places = platformNaming(platform)?.places;
+  return places ? (Object.keys(places) as ServiceTier[]) : ["user"];
 }
 
 function logFile(spec: ServiceSpec, stream: "out" | "err"): string {
@@ -149,7 +148,7 @@ function logFile(spec: ServiceSpec, stream: "out" | "err"): string {
 
 function launchdUnit(spec: ServiceSpec): ServiceUnit {
   const id = serviceId(spec);
-  const file = path.join(spec.home, "Library", "LaunchAgents", `${id}.plist`);
+  const file = path.join(launchAgentsDir(spec), `${id}${PLATFORMS.darwin.ext}`);
   const domain = `gui/${spec.uid ?? 0}`;
   const programArguments = [spec.nodePath, spec.cliPath, SERVE_ARG]
     .map((arg) => `      <string>${escapeXml(arg)}</string>`)
@@ -193,13 +192,8 @@ ${programArguments}
   };
 }
 
-function systemdUserDir(spec: ServiceSpec): string {
-  const configHome = spec.configHome || path.join(spec.home, ".config");
-  return path.join(configHome, "systemd", "user");
-}
-
 function systemdUserUnit(spec: ServiceSpec): ServiceUnit {
-  const id = `${serviceId(spec)}.service`;
+  const id = `${serviceId(spec)}${PLATFORMS.linux.ext}`;
   const file = path.join(systemdUserDir(spec), id);
   const contents = `[Unit]
 Description=Timeful (${spec.webroot})
@@ -325,8 +319,10 @@ function underHome(spec: ServiceSpec, target: string): boolean {
  * :::
  */
 function systemdSystemUnit(spec: ServiceSpec): ServiceUnit {
-  const id = `${serviceId(spec)}.service`;
-  const file = path.posix.join("/etc/systemd/system", id);
+  const id = `${serviceId(spec)}${PLATFORMS.linux.ext}`;
+  // posix on purpose: the path names a location on the unit's own machine, so
+  // generating it from a Windows host must not hand it backslashes.
+  const file = path.posix.join(SYSTEMD_SYSTEM_DIR, id);
   const staging = path.join(os.tmpdir(), id);
 
   // The package directory — cli.js beside the client/ and server/ asset trees.
@@ -477,8 +473,7 @@ export function systemTierProblem(
 
 function schtasksUnit(spec: ServiceSpec): ServiceUnit {
   const id = serviceId(spec);
-  const base = spec.localAppData || path.join(spec.home, "AppData", "Local");
-  const file = path.join(base, "Timeful", `${id}.cmd`);
+  const file = path.join(windowsLaunchersDir(spec), `${id}${PLATFORMS.win32.ext}`);
   // schtasks has no working-directory option, so the task runs a launcher that
   // changes into the webroot first.
   const contents = `@echo off\r\ncd /d "${spec.webroot}"\r\n"${spec.nodePath}" "${spec.cliPath}" ${SERVE_ARG}\r\n`;
