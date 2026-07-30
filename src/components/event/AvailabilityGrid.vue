@@ -1463,7 +1463,7 @@ interface PaintedCell {
   row: number;
   slot: number | null;
   color: string | null;
-  kind: "disabled" | "empty" | "available" | "if-needed" | "erasing";
+  kind: "disabled" | "empty" | "available" | "if_needed" | "erasing";
 }
 
 /** Heatmap base for the current theme; flipping the theme repaints the grid. */
@@ -1512,7 +1512,7 @@ const cells = computed<PaintedCell[][]>(() => {
           return { row: rowIndex, slot, color: null, kind: "available" };
         }
         if (ifNeeded.has(slot)) {
-          return { row: rowIndex, slot, color: null, kind: "if-needed" };
+          return { row: rowIndex, slot, color: null, kind: "if_needed" };
         }
         return { row: rowIndex, slot, color: null, kind: "empty" };
       }
@@ -1525,7 +1525,7 @@ const cells = computed<PaintedCell[][]>(() => {
           return { row: rowIndex, slot, color: null, kind: "empty" };
         }
         const kind = responseIndex.ifNeeded.get(slot)?.has(highlightRespondent)
-          ? "if-needed"
+          ? "if_needed"
           : "available";
         return { row: rowIndex, slot, color: null, kind };
       }
@@ -1544,7 +1544,7 @@ const cells = computed<PaintedCell[][]>(() => {
       // With a single respondent there is no gradient to show, so their
       // if-needed slots are tinted instead of counted.
       if (totalRespondents === 1 && (responseIndex.ifNeeded.get(slot)?.size ?? 0) > 0) {
-        return { row: rowIndex, slot, color: null, kind: "if-needed" };
+        return { row: rowIndex, slot, color: null, kind: "if_needed" };
       }
 
       return {
@@ -2190,7 +2190,7 @@ defineExpose({ measure, clearSelection });
   background-color: var(--color-slot-available);
 }
 
-.cell.is-if-needed {
+.cell.is-if_needed {
   background-color: var(--color-slot-if-needed);
 }
 
