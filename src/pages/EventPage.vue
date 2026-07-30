@@ -12,13 +12,11 @@ import CopyLinkButton from "../components/ui/CopyLinkButton.vue";
 import EventScheduler from "../components/event/EventScheduler.vue";
 import EventFormDialog from "../components/shared/EventFormDialog.vue";
 import AppHeader from "../components/ui/AppHeader.vue";
-import IconButton from "../components/ui/IconButton.vue";
 import ThemeToggle from "../components/ui/ThemeToggle.vue";
-import IconPencil from "../assets/icons/pencil.svg";
-import IconHome from "../assets/icons/home.svg";
 import Button from "../components/ui/Button.vue";
 import Dialog from "../components/ui/Dialog.vue";
-import { api, eventDataPath, fetchIsAdmin } from "../lib/api";
+import { isAdmin, refreshAdmin } from "../lib/admin";
+import { api, eventDataPath } from "../lib/api";
 import {
   formatEventDateRange,
   getLocalTimezone,
@@ -38,15 +36,14 @@ defineProps<{ slug?: string }>();
 const injected = inject<EventDoc | null>("initialEvent", null);
 const event = ref<EventDoc | null>(injected);
 const mounted = ref(false);
-/**
- * Whether the visitor is the signed-in owner, which decides whether the header
- * offers a way back to the panel and a way to edit this event. `fetchIsAdmin`
- * fails closed, so a guest — or anyone whose status call did not come back
- * cleanly — sees nothing extra (ARCHITECTURE.md § Guest UX). Nothing rests on
- * the flag being right: `PATCH /<slug>/settings` is admin-gated regardless.
- */
-const isAdmin = ref(false);
 
+/**
+ * Whether the visitor is the signed-in owner. The flag itself lives in
+ * `lib/admin.ts`, because the scheduler's sidebar renders off it too and
+ * signing in or out from there has to move it for the whole page at once. It
+ * fails closed, and nothing rests on it: every route behind it is gated by the
+ * session cookie regardless (ARCHITECTURE.md § Guest UX).
+ */
 const editOpen = ref(false);
 
 /** Set when the event is deleted out from under an open page. */
@@ -222,9 +219,7 @@ onMounted(() => {
     subtitleOffset.value = getScheduleTimezoneOffset(event.value, getLocalTimezone());
   }
   mounted.value = true;
-  void fetchIsAdmin().then((admin) => {
-    isAdmin.value = admin;
-  });
+  void refreshAdmin();
 
   // A silent enhancement: no indicator, nothing to configure, and a page whose
   // socket never opens behaves exactly like one from before this existed.
@@ -257,29 +252,20 @@ onBeforeUnmount(() => {
        about <html> and <body> and so cannot live in a scoped block. -->
   <div class="page event-page">
     <AppHeader>
+      <!-- What every visitor gets, and nothing else. The owner's controls used
+           to sit here as two unlabelled glyphs among them; they are a labelled
+           group in the sidebar now, where they read as belonging to somebody
+           rather than to the page. -->
       <template #lead>
         <h1 v-if="event" class="name" :title="event.name">{{ event.name }}</h1>
         <!-- Client-only: before hydration the button could not copy anything. -->
         <CopyLinkButton v-if="mounted && event" />
-
-        <!-- The owner's controls sit with the name they act on. -->
-        <IconButton v-if="isAdmin && event" label="Edit event" @click="editOpen = true">
-          <IconPencil aria-hidden="true" />
-        </IconButton>
       </template>
 
       <!-- The dates belong with the name they qualify, so they lead the
            right-hand group rather than sitting in the body. -->
       <p v-if="event" class="when" :title="subtitle">{{ subtitle }}</p>
 
-      <!--
-        Only the owner gets a way back to the panel; a guest has no panel to go
-        to, and the flag fails closed, so an unresolved status call shows them
-        nothing (ARCHITECTURE.md § Guest UX).
-      -->
-      <IconButton v-if="isAdmin" href="/" label="Back to your events">
-        <IconHome aria-hidden="true" />
-      </IconButton>
       <ThemeToggle />
     </AppHeader>
 
@@ -294,6 +280,7 @@ onBeforeUnmount(() => {
           @refresh="refresh"
           @identity="onIdentity"
           @claim="onClaim"
+          @edit="editOpen = true"
         />
         <p v-else class="loading">Loading availability…</p>
       </template>

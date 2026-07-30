@@ -26,16 +26,32 @@ import Button from "../ui/Button.vue";
 import IconPersonFilled from "../../assets/icons/person-filled.svg";
 import IconPerson from "../../assets/icons/person.svg";
 import IconSwitchUser from "../../assets/icons/switch-user.svg";
+import IconTrash from "../../assets/icons/trash.svg";
 import type { SyncStatus } from "../../lib/sync";
 
-defineProps<{
-  /** The adopted name, or null when the visitor is only browsing. */
-  name: string | null;
-  status: SyncStatus;
-  error: string | null;
-}>();
+withDefaults(
+  defineProps<{
+    /** The adopted name, or null when the visitor is only browsing. */
+    name: string | null;
+    status: SyncStatus;
+    error: string | null;
+    /**
+     * Offer to wipe this answer, here.
+     *
+     * The phone only. On a desktop the chart's foot has room to say "Clear my
+     * response" in words and that is where it belongs; on a phone the foot is
+     * a row of a fixed pane, and a bin glyph with no label in it was a control
+     * you had to already know. Beside the name it wipes, it needs no label —
+     * the row says whose answer it is, and the confirm dialog says the rest.
+     */
+    canClear?: boolean;
+    /** The confirm is open: the button stays armed under it. */
+    clearing?: boolean;
+  }>(),
+  { canClear: false, clearing: false },
+);
 
-const emit = defineEmits<{ change: []; pick: []; retry: [] }>();
+const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
 </script>
 
 <template>
@@ -58,6 +74,21 @@ const emit = defineEmits<{ change: []; pick: []; retry: [] }>();
             :error="error"
             @retry="emit('retry')"
           />
+
+          <!-- Before the switch, because it is about the person the row
+               already names and the switch is about leaving them: destructive
+               first, then the way out. -->
+          <button
+            v-if="canClear"
+            type="button"
+            class="swap clear"
+            :class="{ 'clear--armed': clearing }"
+            aria-label="Clear my response"
+            title="Clear my response"
+            @click="emit('clear')"
+          >
+            <IconTrash aria-hidden="true" />
+          </button>
 
           <!-- A glyph rather than the words it replaces: on a phone this rides
                the end of a row the name is already competing for, and two
@@ -214,6 +245,20 @@ const emit = defineEmits<{ change: []; pick: []; retry: [] }>();
 .swap svg {
   width: 1.05rem;
   height: 1.05rem;
+}
+
+/* The bin takes the swap's box — same row, same target — and the colour of the
+   thing it does. Armed while its confirm is open, so the dialog and the button
+   that raised it are visibly the same act. */
+.clear:hover,
+.clear--armed {
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+}
+
+.clear svg {
+  width: 1rem;
+  height: 1rem;
 }
 
 /* What a finger can hit grows to the floor; what it draws does not. */

@@ -6,6 +6,8 @@
  * timezone without risking an SSR hydration mismatch.
  */
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import AdminLoginLink from "./AdminLoginLink.vue";
+import AdminTools from "./AdminTools.vue";
 import AvailabilityGrid from "./AvailabilityGrid.vue";
 import ColorLegend from "./ColorLegend.vue";
 import GuestIdentityDialog from "./GuestIdentityDialog.vue";
@@ -19,6 +21,7 @@ import IconPeople from "../../assets/icons/people.svg";
 import IconPerson from "../../assets/icons/person.svg";
 import IconGear from "../../assets/icons/gear.svg";
 import IconTrash from "../../assets/icons/trash.svg";
+import { isAdmin } from "../../lib/admin";
 import { api, apiError } from "../../lib/api";
 import {
   formatSlotRange,
@@ -85,6 +88,12 @@ const emit = defineEmits<{
    * the socket and is the only thing that can try.
    */
   claim: [];
+  /**
+   * The owner asked to edit this event. The form dialog belongs to the page
+   * above — it is the page's own copy of the document that a save replaces —
+   * so the button that opens it says so upwards rather than owning it.
+   */
+  edit: [];
 }>();
 
 const STORAGE = {
@@ -586,6 +595,12 @@ function addRespondent() {
   identityOpen.value = true;
 }
 
+/** Same reason as `addRespondent`: the drawer would sit over the dialog. */
+function onDrawerEdit() {
+  settingsOpen.value = false;
+  emit("edit");
+}
+
 /**
  * The view switch is a segmented control over the same two entry points. On a
  * phone the two labels have to share a row with the drawer handles, so they
@@ -823,17 +838,21 @@ function onPin(slot: number | null) {
              answer it is the best-times filter, and writing your own it is the
              thing that wipes it.
 
-             On a phone the foot is a row of the fixed pane rather than
-             something the page scrolls past, so every pixel it spends comes
-             off the chart. The two controls stay, on one row that never wraps;
-             the legend goes. It was the one thing in the row that only
-             described the chart rather than changing it, and at a phone's cell
-             size the chart says it well enough on its own. -->
-        <template #foot>
+             On a phone almost none of that survives. The foot is a row of a
+             fixed pane rather than something the page scrolls past, so every
+             pixel it spends comes off the grid — and the two things in it that
+             only describe the chart (the clock, the legend) are settings, not
+             gestures, so they move into the settings drawer. Clearing your
+             answer moves the other way, onto the identity bar, beside the name
+             it wipes. What is left is the best-times filter, and in edit mode
+             nothing at all — so there is no foot then, rather than an empty
+             row holding a line of space open. -->
+        <template v-if="!compact || !editing" #foot>
           <div class="chart-foot">
             <!-- Which clock the gutter is printed on, at the gutter's own
                  edge: the control sits where what it changes begins. -->
             <Segmented
+              v-if="!compact"
               v-model="clock"
               class="chart-foot__clock"
               label="Clock format"
@@ -859,20 +878,18 @@ function onPin(slot: number | null) {
 
             <!-- The one control on the page that destroys something, so it
                  says what it destroys rather than leaving a bin glyph to be
-                 guessed at — except on a phone, where the foot row cannot
-                 spare the words and the confirm dialog still says them. -->
+                 guessed at. On a phone it is not here at all — it rides the
+                 identity bar, next to the name whose answer it wipes. -->
             <Button
               v-else-if="guestName && hasMarks"
               class="clear chart-foot__end"
               :class="{ 'clear--armed': clearOpen }"
               variant="ghost"
               size="sm"
-              :aria-label="compact ? 'Clear my response' : undefined"
-              :title="compact ? 'Clear my response' : undefined"
               @click="clearOpen = true"
             >
               <IconTrash aria-hidden="true" />
-              <template v-if="!compact">Clear my response</template>
+              Clear my response
             </Button>
           </div>
         </template>
@@ -882,6 +899,16 @@ function onPin(slot: number | null) {
            phone, where the respondents have moved into a drawer and only the
            identity is left. -->
       <div class="side">
+        <!-- Above everything the event is about, because it is not about the
+             event: it is about who is looking at it. A guest renders none of
+             it (`isAdmin` fails closed) and gets the quiet way in at the
+             bottom of the column instead. -->
+        <AdminTools
+          v-if="isAdmin && !compact"
+          :event-id="event.id"
+          @edit="emit('edit')"
+        />
+
         <!-- Ahead of the name, because it is ahead of it in what it decides:
              every hour in the chart, every time in the list below, and the
              answer being written under that name are all read against this
@@ -900,9 +927,12 @@ function onPin(slot: number | null) {
           :name="guestName"
           :status="syncStatus"
           :error="syncError"
+          :can-clear="compact && editing && hasMarks"
+          :clearing="clearOpen"
           @change="changeName"
           @pick="startEditing"
           @retry="engine.retry()"
+          @clear="clearOpen = true"
         />
 
         <RespondentsPanel
@@ -925,6 +955,11 @@ function onPin(slot: number | null) {
           @add="addRespondent"
           @switch="confirmIdentity"
         />
+
+        <!-- Last, and quiet. The column is about the event; this is the one
+             thing on it that is about leaving the event, and only the person
+             who already knows it is here needs to find it. -->
+        <AdminLoginLink v-if="!isAdmin && !compact" />
       </div>
     </div>
 
@@ -971,11 +1006,15 @@ function onPin(slot: number | null) {
       title="View settings"
       @close="settingsOpen = false"
     >
-      <!-- The phone has no column to put it at the head of, so it stays where
-           the settings handle has always been: the gear is now exactly one
-           setting, and it is the one that decides what every hour on the
-           screen says. The respondents drawer is left to the people in it. -->
+      <!-- The phone's version of the column the desktop keeps beside the
+           chart: everything that says how the chart is *read* rather than what
+           it says. The clock and the legend moved in here from the foot,
+           because the foot is a row of a fixed pane and every pixel it spends
+           comes off the grid — and neither of them is something you change
+           while you are painting. -->
       <div class="sheet-stack">
+        <AdminTools v-if="isAdmin" :event-id="event.id" @edit="onDrawerEdit" />
+
         <TimezoneField
           v-model="timezone"
           :timezones="timezones"
@@ -983,6 +1022,30 @@ function onPin(slot: number | null) {
           :auto-timezone="autoTimezone"
           @reset="resetTimezone"
         />
+
+        <div class="setting">
+          <span class="setting__label">Clock</span>
+          <Segmented
+            v-model="clock"
+            class="setting__control"
+            label="Clock format"
+            :options="CLOCK_OPTIONS"
+            size="sm"
+          />
+        </div>
+
+        <!-- Room to say what the colours mean, which is exactly what the foot
+             did not have. -->
+        <div class="setting setting--stacked">
+          <span class="setting__label">Colours</span>
+          <ColorLegend
+            :mode="editing ? 'edit' : 'group'"
+            :max="maxCount"
+            :total="responseIndex.keys.length"
+          />
+        </div>
+
+        <AdminLoginLink v-if="!isAdmin" />
       </div>
     </Dialog>
 
@@ -1165,6 +1228,32 @@ function onPin(slot: number | null) {
   flex-direction: column;
   gap: 1rem;
   padding-top: 0.35rem;
+}
+
+/* One setting per row: the name of it at the left, the control at the right,
+   the way the timezone field above them already reads. */
+.setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+/* Except where the control is a paragraph of swatches rather than a widget. */
+.setting--stacked {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
+}
+
+.setting__label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.setting__control {
+  flex: none;
 }
 
 /* --- the phone layout ---------------------------------------------------- */
