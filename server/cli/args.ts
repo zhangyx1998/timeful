@@ -261,7 +261,8 @@ every installed one; with no verb at all, installed services are listed):
 Service tiers (--user is the default; --system is Linux + systemd only):
   --user      no sudo, starts at login, runs as you
   --system    hardened unit, needs sudo, starts at boot, runs as an
-              isolated ephemeral user confined to this webroot
+              isolated ephemeral user that can read this webroot and
+              write only its data directory
 
 Options:
   --port <n>              port to listen on (default 3000)

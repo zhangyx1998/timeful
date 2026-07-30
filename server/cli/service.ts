@@ -7,8 +7,10 @@
  *    user, starts when that user logs in.
  *  - **system** (Linux + systemd only): a unit in /etc/systemd/system with
  *    `DynamicUser=yes` and the usual sandboxing, so the service runs as an
- *    ephemeral user that owns nothing but the webroot. Needs sudo, starts at
- *    boot.
+ *    ephemeral user that owns no account and reaches nothing it was not given.
+ *    Needs sudo, starts at boot. See `systemdSystemUnit` for how a webroot
+ *    inside a home directory is reached, and `systemTierProblem` for the one
+ *    case that cannot be.
  *
  * Everything here is generated from a `ServiceSpec` by pure functions —
  * `unitFor` returns the file to write and the exact commands that would
@@ -38,6 +40,11 @@ export interface ServiceSpec {
   cliPath: string;
   /** The invoking user's home directory. */
   home: string;
+  /**
+   * The invoking user's login name. Only used to print a command they can run
+   * (`loginctl enable-linger <user>`), never to decide anything.
+   */
+  user?: string;
   /** `XDG_CONFIG_HOME`, when set. */
   configHome?: string;
   /** `LOCALAPPDATA`, when set (Windows). */
@@ -227,17 +234,113 @@ WantedBy=default.target
 }
 
 /**
- * The hardened tier. `DynamicUser=yes` means systemd allocates a throwaway
- * UID for each start, so the service owns no account and no files outside the
- * paths it is granted: `ProtectSystem=strict` makes the entire filesystem
- * read-only except `ReadWritePaths`, which is exactly the webroot. Files the
- * service writes there therefore belong to that ephemeral user, not to the
- * operator — that is the trade for the isolation.
+ * The static group the hardened tier's data directory belongs to.
+ *
+ * A *group*, deliberately, and not a user: the service runs under
+ * `DynamicUser=yes`, whose UID systemd allocates per start (by hashing the unit
+ * name, so stable in practice but never promised). A file owned by last boot's
+ * UID would be unreadable to this boot's. Group ownership is the part that
+ * survives, so `var/` is chowned to this group, the group is handed to the
+ * service with `SupplementaryGroups=`, and `UMask=0002` keeps everything the
+ * service creates group-writable.
+ *
+ * One group per machine. Several webroots share it happily — each one's data
+ * directory is still only reachable through that unit's own bind mount.
+ */
+export const SERVICE_GROUP = "timeful";
+
+/**
+ * The directories `ProtectHome=` covers, and therefore the ones a path has to
+ * be reached through a bind mount to be usable at all.
+ */
+const PROTECTED_HOMES = ["/home", "/root", "/run/user"];
+
+/** True when `child` is `parent` or sits underneath it. Posix paths only. */
+function isUnder(child: string, parent: string): boolean {
+  const rel = path.posix.relative(parent, child);
+  return rel === "" || (!rel.startsWith("..") && !path.posix.isAbsolute(rel));
+}
+
+/**
+ * The home-ish roots for one spec: what `ProtectHome=` hides, plus the invoking
+ * user's own home when it lives somewhere else entirely. The second is not a
+ * systemd concern but a permissions one — a home directory anywhere is
+ * typically 0700 or 0750, which no other account may traverse.
+ */
+function homeRoots(spec: ServiceSpec): string[] {
+  const roots = [...PROTECTED_HOMES];
+  const home = spec.home?.trim();
+  if (home && home !== "/" && !roots.some((root) => isUnder(home, root))) roots.push(home);
+  return roots;
+}
+
+/** True when `target` sits inside a home directory this unit would have to mount past. */
+function underHome(spec: ServiceSpec, target: string): boolean {
+  return Boolean(target) && homeRoots(spec).some((root) => isUnder(target, root));
+}
+
+/**
+ * The hardened tier.
+ *
+ * `DynamicUser=yes` means systemd allocates a throwaway UID for each start, so
+ * the service owns no account and no files outside the paths it is granted.
+ * `ProtectSystem=strict` makes the entire filesystem read-only, and the two
+ * bind mounts below are the only holes in it.
+ *
+ * ::: The home directory, and why `tmpfs` rather than `yes`
+ * This unit used to say `ProtectHome=yes`, which covers /home, /root and
+ * /run/user with an *inaccessible* mount. Nothing can be bound back through
+ * one, so a webroot under /home could never be entered: systemd answered every
+ * start with `status=200/CHDIR` and the unit crash-looped. The tier could not
+ * have worked for any webroot in a home directory, which is where most of them
+ * are.
+ *
+ * `ProtectHome=tmpfs` is the combination systemd documents for exactly this:
+ * the three directories become empty tmpfs instances, and a path listed in
+ * `BindPaths=` / `BindReadOnlyPaths=` is made visible through one, with systemd
+ * creating the intermediate directories inside the tmpfs as root:755. So the
+ * operator's real 0700 home is *shadowed* rather than traversed, and the
+ * ephemeral UID walks a synthetic parent it is allowed to walk. No chmod on
+ * anybody's home directory, and every other home stays as hidden as before.
+ *
+ * What the tmpfs does **not** bypass is the webroot's own permissions: the
+ * bound directory keeps its real inode, so the webroot needs `o+x` and
+ * `timeful.config.json` needs `o+r` (the 0755/0644 both are born with).
+ * :::
+ *
+ * ::: The two mounts, and why not `ReadWritePaths=`
+ * `BindReadOnlyPaths=<webroot>` and `BindPaths=<varDir>`, in that shape,
+ * because a bind is the only directive that can make a path *appear* through
+ * the tmpfs — `ReadWritePaths=` only changes whether an already-visible path is
+ * writable, and naming a path the tmpfs has hidden is a start failure rather
+ * than a mount. `BindPaths=` is read-write by default, which is what the data
+ * directory wants, and systemd applies mount entries deepest-path-last, so the
+ * writable data directory nested inside the read-only webroot survives both the
+ * webroot's bind and `ProtectSystem=strict`. Order in the file is irrelevant.
+ *
+ * Read-write is therefore `varDir` alone, not the whole webroot as before:
+ * tighter, and sufficient — `timeful.config.json` is only ever read, and the
+ * unit logs to the journal rather than to the `timeful.*.log` files the
+ * LaunchAgent writes, so nothing else in the webroot is written at runtime.
+ * :::
  */
 function systemdSystemUnit(spec: ServiceSpec): ServiceUnit {
   const id = `${serviceId(spec)}.service`;
   const file = path.posix.join("/etc/systemd/system", id);
   const staging = path.join(os.tmpdir(), id);
+
+  // The package directory — cli.js beside the client/ and server/ asset trees.
+  // Only load-bearing when the CLI lives under a home directory (an npx cache
+  // does): everything else is left visible by ProtectSystem=strict, which makes
+  // the filesystem read-only rather than invisible. Emitted only when it is
+  // needed, so the unit says why every mount in it is there. An npx path moves
+  // with each version, and `timeful upgrade` rewrites the unit each time, so a
+  // bind can never outlive the package it points at.
+  const cliDir = path.posix.dirname(spec.cliPath);
+  const cliMount = underHome(spec, spec.cliPath)
+    ? `BindReadOnlyPaths=${cliDir}\n`
+    : "";
+
   const contents = `[Unit]
 Description=Timeful (${spec.webroot})
 After=network.target
@@ -245,11 +348,14 @@ After=network.target
 [Service]
 Type=simple
 DynamicUser=yes
+SupplementaryGroups=${SERVICE_GROUP}
+UMask=0002
 WorkingDirectory=${spec.webroot}
 ExecStart=${spec.nodePath} ${spec.cliPath} ${SERVE_ARG}
-ReadWritePaths=${spec.webroot}
 ProtectSystem=strict
-ProtectHome=yes
+ProtectHome=tmpfs
+BindReadOnlyPaths=${spec.webroot}
+${cliMount}BindPaths=${spec.varDir}
 NoNewPrivileges=yes
 PrivateTmp=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
@@ -270,9 +376,33 @@ WantedBy=multi-user.target
     contents,
     privileged: true,
     activate: [
+      // Idempotent: an existing group is the normal case on the second webroot.
+      sudo(
+        "sh",
+        "-c",
+        `getent group ${SERVICE_GROUP} >/dev/null || groupadd --system ${SERVICE_GROUP}`,
+      ),
+      // BindPaths= fails to mount a source that is not there, and a webroot
+      // initialized with --dry-run may not have one yet.
+      sudo("mkdir", "-p", spec.varDir),
+      // Group ownership is what outlives a dynamic UID; setgid on the
+      // directories keeps it true for everything written from here on, and
+      // UMask=0002 in the unit makes those files group-writable.
+      sudo("chown", "-R", `:${SERVICE_GROUP}`, spec.varDir),
+      sudo("chmod", "-R", "g+rwX", spec.varDir),
+      sudo("find", spec.varDir, "-type", "d", "-exec", "chmod", "g+s", "{}", "+"),
       sudo("install", "-m", "0644", staging, file),
       sudo("systemctl", "daemon-reload"),
-      sudo("systemctl", "enable", "--now", id),
+      // Installing over a unit that crash-looped itself into `failed` — the
+      // shape this tier shipped with — would otherwise leave the failure
+      // latched. Tolerant: a unit that never failed makes this a no-op, and
+      // systemd versions differ on what they exit with for one it never saw.
+      { ...sudo("systemctl", "reset-failed", id), tolerant: true },
+      // `enable --now` does not bounce a unit that is already running, so it
+      // would leave an old unit's process alive under the old settings. Enable
+      // and restart say both halves out loud, and restart starts a stopped one.
+      sudo("systemctl", "enable", id),
+      sudo("systemctl", "restart", id),
     ],
     deactivate: [
       sudo("systemctl", "disable", "--now", id),
@@ -281,6 +411,68 @@ WantedBy=multi-user.target
     ],
     status: [{ command: "systemctl", args: ["status", id] }],
   };
+}
+
+/**
+ * Why this spec cannot be a system unit, or null when it can.
+ *
+ * Almost everything a home directory used to break is now reachable through
+ * the tmpfs and the binds above. The one thing left is the **node binary**:
+ * making an arbitrary Node installation visible means knowing where that
+ * installation ends, and nvm, fnm, asdf and volta each answer differently. The
+ * bundled CLI is one self-contained directory and can be bound; a version
+ * manager's tree cannot be delimited without guessing, and a wrong guess is
+ * another crash loop rather than an error message.
+ *
+ * So this refuses, with the cure attached, rather than generating a unit that
+ * would fail at the first start.
+ */
+export function systemTierProblem(
+  spec: ServiceSpec,
+  options: { installed?: boolean } = {},
+): string | null {
+  if (spec.platform !== "linux" || spec.tier !== "system") return null;
+  if (!underHome(spec, spec.nodePath)) return null;
+
+  const who = spec.user || (spec.home ? path.posix.basename(spec.home) : "") || "<user>";
+  // Two commands, one comment column: the second line is the longer one only
+  // for a very short login name, so pad whichever needs it.
+  const install = "  timeful service install";
+  const linger = `  sudo loginctl enable-linger ${who}`;
+  const column = Math.max(install.length, linger.length) + 2;
+  const lines = [
+    "The hardened system tier cannot use this Node installation.",
+    "",
+    `  node   ${spec.nodePath}`,
+    "",
+    "A system service runs as an ephemeral user with ProtectHome=tmpfs, which",
+    "replaces /home, /root and /run/user with empty directories. Timeful's own",
+    "webroot and package are mounted back through that, but a Node installation",
+    "in a home directory cannot be: where a version manager's tree begins and",
+    "ends is its own business, and mounting the wrong part of it would replace",
+    "this message with a crash loop.",
+    "",
+    "Run it as yourself instead. The user tier needs no sudo, and lingering is",
+    "what makes it start at boot rather than at login:",
+    "",
+    `${install.padEnd(column)}# user tier, runs as you`,
+    `${linger.padEnd(column)}# start at boot, survive logout`,
+    "",
+    "Or install Timeful under a system-wide Node — one outside a home",
+    "directory — and run 'timeful service install --system' from that.",
+  ];
+
+  if (options.installed) {
+    lines.push(
+      "",
+      "A system unit is already installed for this webroot, and it cannot be",
+      "working. Take it away before it fights the user service for the port:",
+      "",
+      "  timeful service uninstall --system",
+    );
+  }
+
+  return lines.join("\n");
 }
 
 function schtasksUnit(spec: ServiceSpec): ServiceUnit {
@@ -428,6 +620,19 @@ export async function detectSystemd(
   return { systemctl, userManager: systemctl && Boolean(env.XDG_RUNTIME_DIR) };
 }
 
+/**
+ * The invoking user's login name, for printing a command they can paste.
+ * `os.userInfo()` throws when the uid has no passwd entry — a container, some
+ * CI images — so the environment is the fallback and nothing depends on it.
+ */
+function loginName(env: NodeJS.ProcessEnv): string | undefined {
+  try {
+    return os.userInfo().username || undefined;
+  } catch {
+    return env.USER || env.LOGNAME || undefined;
+  }
+}
+
 /** A spec for the current process, in `webroot`. */
 export function specFor(options: {
   webroot: string;
@@ -446,6 +651,7 @@ export function specFor(options: {
     nodePath: process.execPath,
     cliPath: options.cliPath,
     home: os.homedir(),
+    user: loginName(env),
     configHome: env.XDG_CONFIG_HOME,
     localAppData: env.LOCALAPPDATA,
     uid: process.getuid?.(),
@@ -487,11 +693,25 @@ export async function installService(
   host: ServiceHost,
   options: InstallOptions = {},
 ): Promise<boolean> {
+  // Before anything is printed: a unit that could never start is not something
+  // to describe and then fail at, it is something to refuse with the cure.
+  const problem = systemTierProblem(unit.spec, { installed: await host.exists(unit.file) });
+  if (problem) throw new CliError(problem);
+
   describeUnit(unit, host);
 
   if (unit.privileged) {
-    host.log("This tier runs the server as an ephemeral system user (DynamicUser=yes).");
-    host.log(`Files under ${unit.spec.webroot} will be written by that user, not by you.`);
+    host.log("This tier runs the server as an ephemeral system user (DynamicUser=yes),");
+    host.log(`with ${unit.spec.varDir} owned by the '${SERVICE_GROUP}' group.`);
+    host.log(
+      `The group is created if it is missing, and files under ${unit.spec.varDir} become`,
+    );
+    host.log(
+      "group-owned and group-writable — that, rather than a per-boot UID, is what",
+    );
+    host.log("keeps the data readable across restarts. The rest of the webroot stays");
+    host.log("yours, and read-only to the service; timeful.config.json has to stay");
+    host.log("readable by others (mode 0644, which is what it is written as).");
     host.log();
     const hasSudo = await host.which("sudo");
     const consent = hasSudo && (await (options.confirmPrivileged?.() ?? Promise.resolve(true)));
@@ -515,10 +735,10 @@ export async function installService(
 
   for (const cmd of unit.activate) {
     const result = await host.run(cmd);
-    if (result.code !== 0)
-      throw new CliError(
-        `Command failed (exit ${result.code}): ${formatCommand(cmd)}\n${result.stderr.trim()}`,
-      );
+    if (result.code === 0 || cmd.tolerant) continue;
+    throw new CliError(
+      `Command failed (exit ${result.code}): ${formatCommand(cmd)}\n${result.stderr.trim()}`,
+    );
   }
 
   host.log(
@@ -537,6 +757,14 @@ function printUndo(unit: ServiceUnit, host: ServiceHost): void {
   host.log("which runs:");
   for (const cmd of unit.deactivate) host.log(`  ${formatCommand(cmd)}`);
   if (!unit.privileged) host.log(`  rm ${unit.file}`);
+  if (unit.spec.tier === "system") {
+    // Another webroot's unit may be using both, and neither is expensive to
+    // leave behind: an empty group owns nothing, and the data is the point.
+    host.log();
+    host.log(
+      `The '${SERVICE_GROUP}' group and the contents of ${unit.spec.varDir} are left alone.`,
+    );
+  }
   host.log();
 }
 

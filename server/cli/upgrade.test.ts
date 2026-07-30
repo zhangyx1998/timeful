@@ -260,6 +260,80 @@ describe("upgradeWebroot", () => {
     // The hardened tier keeps the escalation the other verbs already use.
     expect(commands.some((cmd) => cmd.startsWith("sudo systemctl restart"))).toBe(true);
   });
+
+  /**
+   * The migration path for the boxes the old hardened tier is crash-looping
+   * on. Re-pinning goes through `unitFor`, so the unit comes back in the
+   * current shape whatever shape it was in — nobody has to hand-edit
+   * /etc/systemd/system to get the fix.
+   */
+  it("regenerates a legacy hardened unit into the shape that works", async () => {
+    const next = installedUnit(NEW_CLI, { tier: "system" });
+    // Exactly what this CLI used to write: an inaccessible /home, the whole
+    // webroot writable, and no group to own anything.
+    const legacy = `[Unit]
+Description=Timeful (${WEBROOT})
+After=network.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+WorkingDirectory=${WEBROOT}
+ExecStart=/usr/bin/node ${OLD_CLI} serve
+ReadWritePaths=${WEBROOT}
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+`;
+    const { host, files, ran, text } = fakeHost({ [next.file]: legacy });
+
+    expect(await upgradeWebroot(WEBROOT, [next], context(host))).toBe("upgraded");
+    expect(text()).toContain(`was ${OLD_CLI}`);
+
+    const written = files.get(next.staging ?? next.file) ?? "";
+    expect(written).toContain("ProtectHome=tmpfs");
+    expect(written).not.toContain("ProtectHome=yes");
+    expect(written).toContain("SupplementaryGroups=timeful");
+    expect(written).toContain("UMask=0002");
+    expect(written).toContain(`BindReadOnlyPaths=${WEBROOT}`);
+    expect(written).toContain(`BindPaths=${WEBROOT}/var`);
+    // The whole-webroot write grant is gone.
+    expect(written).not.toMatch(/^ReadWritePaths=/m);
+
+    const commands = ran.map(formatCommand);
+    expect(commands).toContain(
+      "sudo sh -c 'getent group timeful >/dev/null || groupadd --system timeful'",
+    );
+    expect(commands).toContain(`sudo chown -R :timeful ${WEBROOT}/var`);
+    // A unit that crash-looped itself into `failed` has to be unlatched, and
+    // the running process has to be replaced rather than left alone.
+    expect(commands).toContain(`sudo systemctl reset-failed ${next.id}`);
+    expect(commands).toContain(`sudo systemctl restart ${next.id}`);
+  });
+
+  it("refuses to re-pin a hardened unit onto a Node it could never exec", async () => {
+    const next = installedUnit(NEW_CLI, {
+      tier: "system",
+      nodePath: "/home/ada/.nvm/versions/node/v22.18.0/bin/node",
+    });
+    const { host, files } = fakeHost({ [next.file]: next.contents });
+
+    await expect(upgradeWebroot(WEBROOT, [next], context(host))).rejects.toThrow(
+      /cannot use this Node installation/,
+    );
+    // The cure, not just the refusal — including how to stop the broken one.
+    await expect(upgradeWebroot(WEBROOT, [next], context(host))).rejects.toThrow(
+      /timeful service uninstall --system/,
+    );
+    expect(files.get(next.file)).toBe(next.contents);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ import {
   refFor,
   serviceId,
   serviceStatus,
+  systemTierProblem,
   uninstallService,
   unitFor,
   webrootHash,
@@ -242,11 +243,14 @@ After=network.target
 [Service]
 Type=simple
 DynamicUser=yes
+SupplementaryGroups=timeful
+UMask=0002
 WorkingDirectory=/srv/timeful
 ExecStart=/usr/bin/node /usr/lib/node_modules/timeful/cli.js serve
-ReadWritePaths=/srv/timeful
 ProtectSystem=strict
-ProtectHome=yes
+ProtectHome=tmpfs
+BindReadOnlyPaths=/srv/timeful
+BindPaths=/srv/timeful/var
 NoNewPrivileges=yes
 PrivateTmp=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
@@ -258,22 +262,74 @@ WantedBy=multi-user.target
 `);
   });
 
-  it("grants write access to the webroot and nowhere else", () => {
-    // ProtectSystem=strict makes everything read-only, so the webroot has to
-    // be named explicitly or the server cannot write var/.
-    expect(unit.contents).toContain(`ReadWritePaths=${WEBROOT}`);
-    expect(unit.contents.match(/^ReadWritePaths=.*$/gm)).toHaveLength(1);
+  it("never covers a home directory with something nothing can be bound through", () => {
+    // ProtectHome=yes is the bug this tier shipped with: an inaccessible mount
+    // over /home that no BindPaths can reach past, so a webroot in a home
+    // directory answered every start with 200/CHDIR.
+    expect(unit.contents).toContain("ProtectHome=tmpfs");
+    expect(unit.contents).not.toContain("ProtectHome=yes");
+  });
+
+  it("grants write access to the data directory and nowhere else", () => {
+    // ProtectSystem=strict makes everything read-only and the tmpfs makes a
+    // home directory empty, so both paths are named as mounts: the webroot
+    // read-only, and the one directory the server writes read-write.
+    expect(unit.contents).toContain(`BindReadOnlyPaths=${WEBROOT}`);
+    expect(unit.contents).toContain(`BindPaths=${WEBROOT}/var`);
+    expect(unit.contents.match(/^BindPaths=.*$/gm)).toHaveLength(1);
+    // The whole webroot is no longer writable; only var/ is.
+    expect(unit.contents).not.toContain(`BindPaths=${WEBROOT}\n`);
+    expect(unit.contents).not.toMatch(/^ReadWritePaths=/m);
+  });
+
+  it("keeps the data durable across a UID it does not choose", () => {
+    // DynamicUser reallocates the UID, so group ownership is the part that
+    // lasts: the group is handed to the service and the umask keeps what it
+    // writes group-writable.
+    expect(unit.contents).toContain("DynamicUser=yes");
+    expect(unit.contents).toContain("SupplementaryGroups=timeful");
+    expect(unit.contents).toContain("UMask=0002");
+  });
+
+  it("mounts an npx-cache CLI back through the tmpfs", () => {
+    const npx = unitFor(
+      spec({
+        tier: "system",
+        webroot: "/home/ada/timeful",
+        varDir: "/home/ada/timeful/var",
+        cliPath: "/home/ada/.npm/_npx/abc123/node_modules/timeful/cli.js",
+      }),
+    );
+    // The package directory, not the file: cli.js is served beside client/.
+    expect(npx.contents).toContain(
+      "BindReadOnlyPaths=/home/ada/.npm/_npx/abc123/node_modules/timeful",
+    );
+    expect(npx.contents).toContain("BindReadOnlyPaths=/home/ada/timeful");
+    expect(npx.contents).toContain("BindPaths=/home/ada/timeful/var");
+  });
+
+  it("leaves a CLI outside a home directory to ProtectSystem, which only hides nothing", () => {
+    // Read-only is not invisible, so there is no mount to add and the unit
+    // says so by not carrying one.
+    expect(unit.contents.match(/^BindReadOnlyPaths=.*$/gm)).toHaveLength(1);
   });
 
   it("starts at boot rather than at login", () => {
     expect(unit.contents).toContain("WantedBy=multi-user.target");
   });
 
-  it("drives systemctl with sudo", () => {
+  it("drives systemctl with sudo, after making the data directory the group's", () => {
     expect(commands(unit.activate)).toEqual([
+      "sudo sh -c 'getent group timeful >/dev/null || groupadd --system timeful'",
+      `sudo mkdir -p ${WEBROOT}/var`,
+      `sudo chown -R :timeful ${WEBROOT}/var`,
+      `sudo chmod -R g+rwX ${WEBROOT}/var`,
+      `sudo find ${WEBROOT}/var -type d -exec chmod g+s '{}' +`,
       `sudo install -m 0644 ${unit.staging} /etc/systemd/system/timeful-${HASH}.service`,
       "sudo systemctl daemon-reload",
-      `sudo systemctl enable --now timeful-${HASH}.service`,
+      `sudo systemctl reset-failed timeful-${HASH}.service`,
+      `sudo systemctl enable timeful-${HASH}.service`,
+      `sudo systemctl restart timeful-${HASH}.service`,
     ]);
     expect(commands(unit.deactivate)).toEqual([
       `sudo systemctl disable --now timeful-${HASH}.service`,
@@ -282,6 +338,92 @@ WantedBy=multi-user.target
     ]);
     // Reading status needs no privileges.
     expect(commands(unit.status)).toEqual([`systemctl status timeful-${HASH}.service`]);
+  });
+
+  it("replaces a running unit rather than leaving the old process up", () => {
+    // `enable --now` is a no-op against a unit that is already running, which
+    // is exactly the migration case: the User=/DynamicUser= change would never
+    // reach the live process. reset-failed unlatches one that crash-looped.
+    const activate = commands(unit.activate);
+    expect(activate).not.toContain(`sudo systemctl enable --now timeful-${HASH}.service`);
+    expect(activate.indexOf("sudo systemctl daemon-reload")).toBeLessThan(
+      activate.indexOf(`sudo systemctl restart timeful-${HASH}.service`),
+    );
+    // A unit systemd has never seen is not a failed install.
+    expect(unit.activate.find((cmd) => cmd.args.includes("reset-failed"))?.tolerant).toBe(true);
+  });
+
+  it("creates the group before it chowns anything to it", () => {
+    const activate = commands(unit.activate);
+    expect(activate[0]).toContain("groupadd --system timeful");
+    expect(activate.findIndex((cmd) => cmd.includes("chown"))).toBeGreaterThan(0);
+    // mkdir first: BindPaths= cannot mount a source that is not there.
+    expect(activate.findIndex((cmd) => cmd.includes("mkdir -p"))).toBeLessThan(
+      activate.findIndex((cmd) => cmd.includes("chown")),
+    );
+  });
+});
+
+describe("systemTierProblem", () => {
+  it("has nothing to say about a webroot in a home directory any more", () => {
+    // The whole point of ProtectHome=tmpfs plus the binds: this used to be the
+    // crash-loop case, and it is now the ordinary one.
+    expect(
+      systemTierProblem(
+        spec({
+          tier: "system",
+          webroot: "/home/ada/timeful",
+          varDir: "/home/ada/timeful/var",
+          cliPath: "/home/ada/.npm/_npx/abc/node_modules/timeful/cli.js",
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("refuses a Node installation inside a home directory, with the cure", () => {
+    const problem = systemTierProblem(
+      spec({
+        tier: "system",
+        nodePath: "/home/ada/.nvm/versions/node/v22.18.0/bin/node",
+        user: "ada",
+      }),
+    );
+    expect(problem).toContain("cannot use this Node installation");
+    expect(problem).toContain("/home/ada/.nvm/versions/node/v22.18.0/bin/node");
+    // A refusal without the alternative is just a refusal.
+    expect(problem).toContain("timeful service install");
+    expect(problem).toContain("sudo loginctl enable-linger ada");
+  });
+
+  it("adds the uninstall when a broken unit is already sitting there", () => {
+    const broken = spec({ tier: "system", nodePath: "/home/ada/.nvm/bin/node", user: "ada" });
+    expect(systemTierProblem(broken, { installed: true })).toContain(
+      "timeful service uninstall --system",
+    );
+    expect(systemTierProblem(broken, { installed: false })).not.toContain(
+      "timeful service uninstall --system",
+    );
+  });
+
+  it("says nothing about the tiers and platforms it does not govern", () => {
+    const home = { nodePath: "/home/ada/.nvm/bin/node" };
+    expect(systemTierProblem(spec({ tier: "user", ...home }))).toBeNull();
+    expect(systemTierProblem(spec({ platform: "darwin", tier: "system", ...home }))).toBeNull();
+    // /root and /run/user are covered by ProtectHome just as /home is.
+    expect(systemTierProblem(spec({ tier: "system", nodePath: "/root/node/bin/node" }))).not.toBeNull();
+    // A directory that merely starts with the same letters is not a home.
+    expect(systemTierProblem(spec({ tier: "system", nodePath: "/homebrew/bin/node" }))).toBeNull();
+  });
+
+  it("follows the invoking user's home when it is somewhere unusual", () => {
+    // ProtectHome does not cover /export/home, but a 0700 home is untraversable
+    // by another account wherever it lives.
+    const odd = spec({
+      tier: "system",
+      home: "/export/home/ada",
+      nodePath: "/export/home/ada/.local/bin/node",
+    });
+    expect(systemTierProblem(odd)).not.toBeNull();
   });
 });
 
@@ -331,9 +473,44 @@ describe("installService", () => {
     const { host, text } = fakeHost();
     await installService(unit, host, { confirmPrivileged: async () => true });
     expect(text()).toContain("DynamicUser=yes");
-    expect(text()).toContain("sudo systemctl enable --now");
+    expect(text()).toContain("ProtectHome=tmpfs");
+    expect(text()).toContain("sudo systemctl restart");
+    expect(text()).toContain("groupadd --system timeful");
     expect(text()).toContain("ephemeral system user");
-    expect(text()).toContain("will be written by that user, not by you");
+    // The warning explains the group and the chown, which is what an operator
+    // actually has to live with.
+    expect(text()).toContain("owned by the 'timeful' group");
+    expect(text()).toContain("group-owned and group-writable");
+    expect(text()).toContain("timeful.config.json has to stay");
+  });
+
+  it("says the group and the data outlive an uninstall", async () => {
+    const unit = unitFor(spec({ tier: "system" }));
+    const { host, text } = fakeHost();
+    await installService(unit, host, { confirmPrivileged: async () => true });
+    expect(text()).toContain("The 'timeful' group and the contents of");
+  });
+
+  it("refuses a hardened install that could only crash-loop", async () => {
+    const unit = unitFor(spec({ tier: "system", nodePath: "/home/ada/.nvm/bin/node" }));
+    const { host, files, ran, text } = fakeHost();
+
+    await expect(
+      installService(unit, host, { confirmPrivileged: async () => true }),
+    ).rejects.toThrow(/cannot use this Node installation/);
+    // Refused before anything is printed, written or run: a unit that can
+    // never start is not worth describing.
+    expect(text()).toBe("");
+    expect(files.size).toBe(0);
+    expect(ran).toEqual([]);
+  });
+
+  it("forgives an activation command that is allowed to fail", async () => {
+    const unit = unitFor(spec({ tier: "system" }));
+    const { host, ran } = fakeHost({ fail: "reset-failed" });
+    // A unit systemd has never seen has no failure to reset.
+    expect(await installService(unit, host, { confirmPrivileged: async () => true })).toBe(true);
+    expect(commands(ran)).toEqual(commands(unit.activate));
   });
 
   it("suggests '--system' in the undo line for the hardened tier", async () => {

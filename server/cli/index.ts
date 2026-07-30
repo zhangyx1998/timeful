@@ -527,7 +527,7 @@ async function chooseTier(args: CliArgs, host: ServiceHost): Promise<ServiceTier
       {
         value: "system",
         label: "hardened system service",
-        hint: "needs sudo, starts at boot, runs as an isolated ephemeral user",
+        hint: "needs sudo, starts at boot, runs as an isolated ephemeral user with the data directory group-owned",
       },
     ],
   });
