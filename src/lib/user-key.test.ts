@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  adoptDisplayName,
   guestNameProblem,
   legacyUserKey,
   MAX_GUEST_NAME_LENGTH,
@@ -98,5 +99,28 @@ describe("userKeyFromParam", () => {
     expect(userKeyFromParam("")).toBeNull();
     expect(userKeyFromParam("   ")).toBeNull();
     expect(userKeyFromParam("a".repeat(MAX_GUEST_NAME_LENGTH + 1))).toBeNull();
+  });
+});
+
+describe("adoptDisplayName", () => {
+  it("keeps the spelling the event already carries", () => {
+    // Two people who type the same name differently are one person, and the
+    // group should keep seeing the name it knows rather than having it
+    // rewritten by whoever answered most recently.
+    expect(adoptDisplayName("ada  LOVELACE", "Ada Lovelace")).toBe("Ada Lovelace");
+    expect(adoptDisplayName("  ADA LOVELACE  ", "Ada Lovelace")).toBe("Ada Lovelace");
+  });
+
+  it("takes the typed one when the event has nobody under that key", () => {
+    expect(adoptDisplayName("  Ada   Lovelace ", undefined)).toBe("Ada   Lovelace");
+    expect(adoptDisplayName("Ada Lovelace", "")).toBe("Ada Lovelace");
+  });
+
+  it("replaces a legacy spelling that could not be written back", () => {
+    // A grandfathered name with a dash in it is readable but no longer legal,
+    // so saving under that key needs the new spelling. The key is the same
+    // either way, which is what makes the swap the same person's answer.
+    expect(adoptDisplayName("Ada Lovelace", "Ada-Lovelace")).toBe("Ada Lovelace");
+    expect(userKey("Ada-Lovelace")).toBe(userKey("Ada Lovelace"));
   });
 });

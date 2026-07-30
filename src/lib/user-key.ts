@@ -70,6 +70,25 @@ export function guestNameProblem(raw: string): string | null {
 }
 
 /**
+ * Which spelling to adopt: the one the event already carries, or the one just
+ * typed.
+ *
+ * Two people who type the same name differently are one person — that is what
+ * the key decides — and the group should keep seeing the spelling it already
+ * knows rather than having it rewritten by whoever answered most recently. So
+ * the stored one wins.
+ *
+ * The exception is a stored spelling that is no longer legal: a legacy name
+ * with a dash in it is readable but cannot be written back, so the new one
+ * replaces it. The key is the same either way, which is what makes the swap
+ * safe — it is the same person's answer before and after.
+ */
+export function adoptDisplayName(typed: string, known: string | undefined): string {
+  if (known && guestNameProblem(known) === null) return known;
+  return typed.trim();
+}
+
+/**
  * The key for a path segment, or null when it is not one.
  *
  * A key arriving from a URL is not trusted to be the output of `userKey`: it

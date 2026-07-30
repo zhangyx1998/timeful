@@ -43,7 +43,7 @@ const mounted = ref(false);
  * offers a way back to the panel and a way to edit this event. `fetchIsAdmin`
  * fails closed, so a guest — or anyone whose status call did not come back
  * cleanly — sees nothing extra (ARCHITECTURE.md § Guest UX). Nothing rests on
- * the flag being right: `PATCH /api/events/:id` is admin-gated regardless.
+ * the flag being right: `PATCH /<slug>/settings` is admin-gated regardless.
  */
 const isAdmin = ref(false);
 
@@ -321,7 +321,12 @@ onBeforeUnmount(() => {
          already editing under is a question rather than a fight. Cancelling
          leaves the page in the group view with the name still remembered: "My
          availability" asks again. -->
+    <!-- Client-only, like the scheduler: `Dialog` teleports to <body>, and a
+         teleport rendered into the SSR output is a hydration mismatch that
+         costs the whole page. There is no socket during SSR either, so neither
+         of these can have anything to say before mount. -->
     <Dialog
+      v-if="mounted"
       :open="occupiedBy !== null"
       title="Already being edited"
       @close="occupiedBy = null"
@@ -342,6 +347,7 @@ onBeforeUnmount(() => {
          looks like the page simply stopped saving — and it is not reclaimed
          automatically, or the two windows would take turns forever. -->
     <Dialog
+      v-if="mounted"
       :open="replacedFor !== null"
       title="Editing session taken over"
       @close="replacedFor = null"

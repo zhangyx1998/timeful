@@ -22,7 +22,12 @@ import { computed, ref, watch } from "vue";
 import Button from "../ui/Button.vue";
 import Dialog from "../ui/Dialog.vue";
 import TextInput from "../ui/TextInput.vue";
-import { guestNameProblem, MAX_GUEST_NAME_LENGTH, userKey } from "../../lib/user-key";
+import {
+  adoptDisplayName,
+  guestNameProblem,
+  MAX_GUEST_NAME_LENGTH,
+  userKey,
+} from "../../lib/user-key";
 
 /** One person already on the event: the key to match, the name to show. */
 export interface KnownPerson {
@@ -76,12 +81,19 @@ const typedKey = computed(() => userKey(name.value));
 /**
  * What is wrong with the name as it stands, from the server's own rules.
  *
- * Only once the field has been touched: telling somebody their empty field is
- * empty before they have typed in it is noise, not help.
+ * Answered **as they type**, with one exception: "a name is required" waits
+ * until the field has been touched, because telling somebody their empty field
+ * is empty before they have typed in it is noise rather than help. Anything
+ * they actually typed is worth answering immediately — finding out about the
+ * dash rule by being refused would be the same answer several seconds later and
+ * in a worse place for it.
  */
-const problem = computed(() =>
-  touched.value ? guestNameProblem(name.value) : null,
-);
+const problem = computed(() => {
+  const found = guestNameProblem(name.value);
+  if (!found) return null;
+  if (name.value.trim() === "") return touched.value ? found : null;
+  return found;
+});
 
 /** Whether the name could be confirmed at all, touched or not. */
 const usable = computed(() => guestNameProblem(name.value) === null);
@@ -94,14 +106,9 @@ const matched = computed(() => {
 });
 
 /** The name confirming would adopt: the event's spelling where there is one. */
-const adopted = computed(() => {
-  const known = matched.value?.displayName;
-  // A grandfathered legacy spelling can contain a dash and so cannot be
-  // written back. What was typed replaces it, and the key is the same either
-  // way, so the answer behind it is the same answer.
-  if (known && guestNameProblem(known) === null) return known;
-  return trimmed.value;
-});
+const adopted = computed(() =>
+  adoptDisplayName(name.value, matched.value?.displayName),
+);
 
 const suggestions = computed(() => {
   const needle = typedKey.value;

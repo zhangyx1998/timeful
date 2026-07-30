@@ -32,7 +32,7 @@ import { buildGrid, buildResponseIndex, maxRespondents } from "../../lib/grid";
 import { toAvailabilitySets, toIsoArray, type AvailabilityType, type EventDoc } from "../../lib/event";
 import type { PresenceEntry, RealtimeSession, SavePayload } from "../../lib/realtime";
 import { createSaveTransport } from "../../lib/save-transport";
-import { guestNameProblem, userKey } from "../../lib/user-key";
+import { adoptDisplayName, guestNameProblem, userKey } from "../../lib/user-key";
 import { userPath } from "../../lib/api";
 import { createSyncEngine, type SyncBaseline } from "../../lib/sync";
 
@@ -177,6 +177,15 @@ const ifNeeded = reactive(new Set<number>());
  * a spelling without its key cannot match one.
  */
 const identity = ref<RealtimeSession | null>(null);
+/**
+ * True while somebody *else* holds this identity's write session.
+ *
+ * The page still knows who it is — the name is remembered, and "My
+ * availability" can ask for the session back — but it is not the one writing as
+ * that person, so nothing it is holding locally has any authority. It shows the
+ * document instead.
+ */
+const surrendered = ref(false);
 const guestKey = computed(() => identity.value?.key ?? null);
 const guestName = computed(() => identity.value?.displayName ?? null);
 const editing = ref(false);
@@ -215,8 +224,17 @@ const model = computed(() =>
   buildGrid(props.event, { timezoneOffset: timezoneOffset.value, hour12: hour12.value }),
 );
 
+/**
+ * The visitor's own unsaved edits, layered over the group's answers so a drag
+ * shows up in the heatmap before it has been saved.
+ *
+ * Null once the session has been surrendered, which is the whole of what makes
+ * a replaced page honest: it has no unsaved edits to show, and the marks under
+ * that key belong to whoever holds the session now. Without this the page would
+ * keep painting its own last state over the top of theirs.
+ */
 const override = computed(() =>
-  identity.value
+  identity.value && !surrendered.value
     ? {
         key: identity.value.key,
         displayName: identity.value.displayName,
@@ -388,6 +406,8 @@ function confirmIdentity(person: RealtimeSession) {
   // the queue, and an unsaved edit is not this new person's to carry.
   engine.flush();
   identity.value = person;
+  // A fresh claim, whatever the last one ended as.
+  surrendered.value = false;
   writeStorage(STORAGE.guestName, person.displayName);
   identityOpen.value = false;
   dirtySinceConfirm.value = false;
@@ -419,6 +439,7 @@ function browseOnly() {
   identityOpen.value = false;
   awaitingIdentityRefresh = null;
   identity.value = null;
+  surrendered.value = false;
   availability.clear();
   ifNeeded.clear();
   engine.reset("empty");
@@ -509,6 +530,12 @@ async function removeRespondent(key: string) {
 
 function startEditing() {
   if (identity.value) {
+    // Coming back after a takeover: the grid has been showing the document, so
+    // re-seed from it before letting anyone paint on it again.
+    if (surrendered.value) {
+      surrendered.value = false;
+      loadResponseFor(identity.value.key);
+    }
     editing.value = true;
     pinnedSlot.value = null;
     // The session may have been refused, or taken away, since this identity was
@@ -530,6 +557,7 @@ function leaveEditing() {
   engine.flush();
   editing.value = false;
   pinnedSlot.value = null;
+  surrendered.value = true;
 }
 
 defineExpose({ leaveEditing, resumeEditing: startEditing });
@@ -627,10 +655,9 @@ onMounted(() => {
  */
 function adopt(displayName: string): RealtimeSession {
   const key = userKey(displayName);
-  const known = props.event.responses?.[key]?.displayName;
   return {
     key,
-    displayName: known && guestNameProblem(known) === null ? known : displayName.trim(),
+    displayName: adoptDisplayName(displayName, props.event.responses?.[key]?.displayName),
   };
 }
 
