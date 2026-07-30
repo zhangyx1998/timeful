@@ -238,6 +238,33 @@ describe("respondents list", () => {
     expect(on).toContain("Show everyone again");
   });
 
+  it("draws each eye as the state of that answer rather than as the tap", async () => {
+    // The open eye is the one with a pupil in it; the struck-through one is the
+    // one with a slash across it. Counting them is how this asserts on the
+    // glyph rather than on the class beside it.
+    const open = (html: string) => html.split('r="2.9"').length - 1;
+    const shut = (html: string) => html.split("M4.4 4.4").length - 1;
+
+    // Nobody isolated: every answer is on the chart, so every eye is open and
+    // nothing is drawn as hidden.
+    const off = await render({ names: ["Ada", "Bo", "Cy"] });
+    expect(open(off)).toBe(3);
+    expect(shut(off)).toBe(0);
+    expect(off).not.toContain("reveal--hidden");
+
+    // One isolated: that row is what the chart shows, so it keeps the open eye
+    // — the others are the ones that have been taken off it.
+    const on = await render({ names: ["Ada", "Bo", "Cy"], solo: "Bo" });
+    expect(open(on)).toBe(1);
+    expect(shut(on)).toBe(2);
+    expect(on.split("reveal--hidden").length - 1).toBe(2);
+    // And the open one is the isolated row, not a neighbour.
+    const start = on.indexOf("reveal--on");
+    const soloEye = on.slice(start, on.indexOf("</button>", start));
+    expect(soloEye).toContain('r="2.9"');
+    expect(soloEye).not.toContain("M4.4 4.4");
+  });
+
   it("marks a presence-only row as the isolated one too", async () => {
     const html = await render({ names: ["Ada", "Bo"], present: ["Cy"], solo: "Cy" });
     expect(rows(html)).toEqual(["Ada", "Bo", "Cy"]);

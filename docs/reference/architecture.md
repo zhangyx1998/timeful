@@ -1104,6 +1104,11 @@ text.
   Somebody who is only *present* has an eye too; isolating them shows an empty
   chart with a viewport-fixed caption saying they have marked nothing yet, which
   is a real answer to a real question.
+  **The glyph is the state and the label is the gesture** (`isOnChart`): an
+  answer that is on the chart wears the open eye, one that has been taken off it
+  wears the struck-through one, and with nobody isolated everybody is on the
+  chart and so every eye is open. Isolating is therefore one row keeping its eye
+  while the rest close theirs, and the accent fill says which row asked.
 - The heatmap tints each cell with the `--color-slot-available` green at an
   alpha scaled by respondent-count over the maximum, and a separate tone for
   if-needed. Because the token is declared with `light-dark()`, the actual

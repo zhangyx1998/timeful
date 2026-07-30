@@ -29,12 +29,17 @@
  *
  * Every row also carries an eye, which puts that one person's answer on the
  * chart alone. A sum cannot say who is behind it, and that is the one question
- * about the chart the colours can never answer. It changes nothing here — the
- * list does not collapse, rearrange or dim, because the view it asked for
- * outlives this panel being open and a list that folded itself up would be
+ * about the chart the colours can never answer. It changes nothing about the
+ * shape of the list — no collapsing, no rearranging — because the view it asked
+ * for outlives this panel being open and a list that folded itself up would be
  * describing a state it no longer owns. What says the state is a pill over the
  * chart (`IsolationPill`); see `lib/isolation.ts` for the two rules about the
  * edit tab.
+ *
+ * The eyes themselves report the state rather than the gesture: an answer that
+ * is on the chart wears the open eye, one that has been taken off it wears the
+ * struck-through one, and with nobody isolated everybody is on the chart and
+ * every eye is open (`isOnChart`). The label is where the gesture is said.
  *
  * Somebody who is here without having answered gets an eye too, and isolating
  * them shows an empty chart with an overlay saying so. That is a real answer to
@@ -63,6 +68,7 @@ import IconTrash from "../../assets/icons/trash.svg";
 import IconPlus from "../../assets/icons/plus.svg";
 import IconEye from "../../assets/icons/eye.svg";
 import IconEyeOff from "../../assets/icons/eye-off.svg";
+import { isOnChart } from "../../lib/isolation";
 import type { PresenceEntry } from "../../lib/realtime";
 
 const props = defineProps<{
@@ -250,6 +256,9 @@ const rows = computed(() =>
       ifNeeded: state === "if-needed",
       isCurrent: key === props.currentKey,
       isSolo: key === props.solo,
+      // What the eye draws: whether this answer is on the chart right now, not
+      // what pressing it would do. See `isOnChart`.
+      onChart: isOnChart(props.solo, key),
     };
   }),
 );
@@ -383,18 +392,23 @@ function confirmSwitch() {
              question the list is asked that the colours cannot answer. Every
              row has one, including somebody who is only here — "have they
              marked anything yet?" is answered by an empty chart that says so,
-             and a row missing its eye only reads as broken. -->
+             and a row missing its eye only reads as broken.
+
+             The glyph is the state and the label is the gesture (`isOnChart`):
+             an answer that is on the chart wears the open eye, one that has
+             been taken off it wears the struck-through one, and with nobody
+             isolated every row is on the chart and so every eye is open. -->
         <button
           type="button"
           class="reveal"
-          :class="{ 'reveal--on': row.isSolo }"
+          :class="{ 'reveal--on': row.isSolo, 'reveal--hidden': !row.onChart }"
           :aria-pressed="row.isSolo"
           :aria-label="row.isSolo ? 'Show everyone again' : `Show only ${row.name}`"
           :title="row.isSolo ? 'Show everyone again' : `Show only ${row.name}`"
           @click="emit('solo', row.isSolo ? null : { key: row.key, displayName: row.name })"
         >
-          <IconEyeOff v-if="row.isSolo" aria-hidden="true" />
-          <IconEye v-else aria-hidden="true" />
+          <IconEye v-if="row.onChart" aria-hidden="true" />
+          <IconEyeOff v-else aria-hidden="true" />
         </button>
 
         <!-- Nothing is stored for somebody who is only here, so there is
@@ -861,7 +875,8 @@ function confirmSwitch() {
    where it is offered at all. */
 .reveal {
   cursor: pointer;
-  transition: color var(--transition-fast), background var(--transition-fast);
+  transition: color var(--transition-fast), background var(--transition-fast),
+    opacity var(--transition-fast);
 }
 
 .reveal svg {
@@ -885,6 +900,20 @@ function confirmSwitch() {
 .reveal--on:hover {
   color: var(--color-accent-contrast);
   background: var(--color-accent);
+}
+
+/* Off the chart, and saying so twice: the struck-through eye, and a glyph that
+   has stepped back the way the answer it stands for has. Still a full-strength
+   tap target — it is the way back to this person, and the commonest thing to
+   press next. */
+.reveal--hidden {
+  opacity: 0.55;
+}
+
+@media (hover: hover) {
+  .reveal--hidden:hover {
+    opacity: 1;
+  }
 }
 
 .reveal:focus-visible {

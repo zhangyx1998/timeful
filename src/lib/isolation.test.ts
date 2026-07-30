@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { nextTick, ref } from "vue";
-import { useIsolation } from "./isolation";
+import { isOnChart, useIsolation } from "./isolation";
 
 /**
  * The isolated view and the edit tab, which are the only two things that can
@@ -72,6 +72,21 @@ describe("useIsolation", () => {
     // And the view it asked for survives the mode change it caused, which is
     // the whole trick: the watcher only fires on the way *in* to editing.
     expect(isolation.key.value).toBe("ada-lovelace");
+  });
+
+  it("keeps the eyes agreeing with the chart", () => {
+    // What each row's eye draws. Nobody isolated is nobody hidden, so every
+    // answer is on the chart and every eye is open; isolating is one row
+    // keeping its eye while the rest close theirs. Getting this backwards put
+    // the struck-through eye on the one row you could actually see.
+    expect(isOnChart(null, "ada-lovelace")).toBe(true);
+    expect(isOnChart(null, "grace-hopper")).toBe(true);
+
+    expect(isOnChart("ada-lovelace", "ada-lovelace")).toBe(true);
+    expect(isOnChart("ada-lovelace", "grace-hopper")).toBe(false);
+
+    // The panel's prop is optional, and an absent one means the same as null.
+    expect(isOnChart(undefined, "ada-lovelace")).toBe(true);
   });
 
   it("does not resurrect a view when the edit tab is left by hand", async () => {

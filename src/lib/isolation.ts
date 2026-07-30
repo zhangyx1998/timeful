@@ -39,6 +39,28 @@ export interface Isolation {
   toggle(key: string): void;
 }
 
+/**
+ * Whether this person's answer is on the chart as things stand.
+ *
+ * With no isolation on, everybody's is: the heatmap is the sum of all of them.
+ * With one on, exactly one is, and everybody else has been taken off it.
+ *
+ * This is what the eye on a respondent's row draws itself from. The glyph
+ * reports the **state** — an open eye for an answer that is on the chart, a
+ * struck-through one for an answer that is not — and the label reports the
+ * gesture ("Show only Ada", "Show everyone again"), because those are two
+ * different facts and a control that conflated them was reading backwards: the
+ * isolated row, the one row you *can* see, wore the hidden glyph.
+ *
+ * The resting state falls straight out of it. Nobody isolated means nobody
+ * hidden, so every row rests on the open eye — the list agrees with the chart,
+ * which is showing everyone. Isolation is then one row keeping its eye while
+ * the rest close theirs, which is a picture of what actually happened.
+ */
+export function isOnChart(isolated: string | null | undefined, key: string): boolean {
+  return isolated == null || isolated === key;
+}
+
 export function useIsolation(options: {
   /** Whether the page is on the "My availability" tab. */
   editing: Ref<boolean>;
