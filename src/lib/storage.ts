@@ -15,6 +15,7 @@ export const STORAGE_KEYS = {
   guestName: "timeful.guestName",
   hour12: "timeful.hour12",
   bestTimes: "timeful.bestTimes",
+  theme: "timeful.theme",
 } as const;
 
 export function readStorage(key: string): string | null {

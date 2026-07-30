@@ -17,11 +17,10 @@
  */
 import { computed, ref } from "vue";
 import type { ComputedRef, Ref } from "vue";
+import { clearStorage, readStorage, STORAGE_KEYS, writeStorage } from "./storage";
 
 export type ThemePreference = "light" | "dark" | null;
 export type Theme = "light" | "dark";
-
-export const THEME_STORAGE_KEY = "timeful.theme";
 
 /** The user's explicit choice, or null when following the system. */
 const preference = ref<ThemePreference>(null);
@@ -35,22 +34,14 @@ let initialized = false;
 let media: MediaQueryList | null = null;
 
 function readStoredPreference(): ThemePreference {
-  try {
-    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
-    return stored === "light" || stored === "dark" ? stored : null;
-  } catch {
-    // Private browsing / blocked storage: fall back to following the system.
-    return null;
-  }
+  // A blocked localStorage reads as null, i.e. "follow the system".
+  const stored = readStorage(STORAGE_KEYS.theme);
+  return stored === "light" || stored === "dark" ? stored : null;
 }
 
 function writeStoredPreference(value: ThemePreference): void {
-  try {
-    if (value === null) window.localStorage.removeItem(THEME_STORAGE_KEY);
-    else window.localStorage.setItem(THEME_STORAGE_KEY, value);
-  } catch {
-    // The choice still applies for this page view, it just will not persist.
-  }
+  if (value === null) clearStorage(STORAGE_KEYS.theme);
+  else writeStorage(STORAGE_KEYS.theme, value);
 }
 
 /** Mirrors the preference onto <html>; absent attribute means "follow system". */
