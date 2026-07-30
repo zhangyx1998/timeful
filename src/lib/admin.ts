@@ -47,8 +47,3 @@ export async function adminLogout(): Promise<void> {
   }
   await refreshAdmin();
 }
-
-/** Tests only: put the module back to how it starts. */
-export function resetAdminState(): void {
-  authed.value = false;
-}

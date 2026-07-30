@@ -35,7 +35,8 @@
  * peeks simply are not there — the same track, with nothing spare to spend.
  */
 import { computed, ref } from "vue";
-import { dayKey, WEEKDAY_SHORT } from "../../lib/event-form";
+import { dayKey } from "../../lib/event-form";
+import { WEEKDAY_LABELS } from "../../lib/dates";
 
 interface Cell {
   day: number;
@@ -217,7 +218,7 @@ function toggle(key: string): void {
     </div>
 
     <div class="calendar__weekdays">
-      <div v-for="label in WEEKDAY_SHORT" :key="label" :title="label">
+      <div v-for="label in WEEKDAY_LABELS" :key="label" :title="label">
         {{ label.slice(0, 1) }}
       </div>
     </div>

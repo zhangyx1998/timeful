@@ -48,6 +48,7 @@ import TextInput from "../ui/TextInput.vue";
 import IconRotateCw from "../../assets/icons/rotate-cw.svg";
 import { slugProblem } from "../../lib/slug-rules";
 import { realtimeAllowed } from "../../lib/event";
+import { WEEKDAY_LABELS } from "../../lib/dates";
 import type { EventPayload } from "../../lib/api";
 import type { EventDoc, EventType } from "../../lib/event";
 import {
@@ -60,7 +61,6 @@ import {
   startTimeFromEvent,
   TIME_INCREMENTS,
   TIME_OPTIONS,
-  WEEKDAY_LABELS,
 } from "../../lib/event-form";
 
 const props = withDefaults(defineProps<{ event?: EventDoc | null }>(), {
@@ -328,7 +328,7 @@ async function submit(): Promise<void> {
           :aria-pressed="dayIndexes.includes(index)"
           @click="toggleWeekday(index)"
         >
-          {{ label.slice(0, 3) }}
+          {{ label }}
         </button>
       </div>
       <label class="checkbox">

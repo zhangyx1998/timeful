@@ -12,8 +12,8 @@
  * - Days-of-week events store their dates in the hardcoded reference week
  *   2018-06-17 … 2018-06-24 and are mapped onto the viewed week for display.
  *
- * Deliberate deviation from legacy: `getDateHoursOffset` is pure epoch
- * arithmetic. The legacy version used `setHours`/`setMinutes`, which are
+ * Deliberate deviation from legacy: instant arithmetic here is pure epoch
+ * math. The legacy helpers used `setHours`/`setMinutes`, which are
  * browser-local and DST-aware, so slot keys silently drifted by an hour across
  * the viewer's own DST boundary. Storage here is new, so there is no legacy
  * data to stay bug-compatible with.
@@ -32,19 +32,6 @@ export const MS_PER_HOUR = 3_600_000;
 export const MS_PER_DAY = 86_400_000;
 
 export type DateLike = Date | string | number;
-
-/** The reference week days-of-week events are stored in. Index 7 is the
- *  following Sunday, used when a week starts on Monday. */
-export const DOW_REFERENCE_DATES = [
-  "2018-06-17", // Sunday
-  "2018-06-18", // Monday
-  "2018-06-19", // Tuesday
-  "2018-06-20", // Wednesday
-  "2018-06-21", // Thursday
-  "2018-06-22", // Friday
-  "2018-06-23", // Saturday
-  "2018-06-24", // Sunday
-] as const;
 
 export const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 
@@ -99,19 +86,6 @@ export function utcTimeToLocalTime(timeNum: number, timezoneOffset: number): num
 // ---------------------------------------------------------------------------
 // instant arithmetic
 // ---------------------------------------------------------------------------
-
-export function getDateHoursOffset(date: DateLike, hoursOffset: number): Date {
-  return new Date(new Date(date).getTime() + hoursOffset * MS_PER_HOUR);
-}
-
-export function getDateDayOffset(date: DateLike, offset: number): Date {
-  return new Date(new Date(date).getTime() + offset * MS_PER_DAY);
-}
-
-/** Negative when date1 is earlier than date2. */
-export function dateCompare(date1: DateLike, date2: DateLike): number {
-  return new Date(date1).getTime() - new Date(date2).getTime();
-}
 
 /**
  * The local calendar day an instant falls on, as a day number since the epoch.
@@ -219,19 +193,6 @@ export function timezoneGmtString(timezone: string, referenceDate: DateLike): st
   const hours = String(Math.floor(absolute / 60)).padStart(2, "0");
   const minutes = String(absolute % 60).padStart(2, "0");
   return `(GMT${sign}${hours}:${minutes})`;
-}
-
-/** The short zone name the browser would print, e.g. "PDT". */
-export function timezoneAbbreviation(timezone: string | null, referenceDate: DateLike): string {
-  try {
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: timezone ?? undefined,
-      timeZoneName: "short",
-    }).formatToParts(new Date(referenceDate));
-    return parts.find((part) => part.type === "timeZoneName")?.value ?? "";
-  } catch {
-    return "";
-  }
 }
 
 /** Whether the viewer's locale prefers a 12-hour clock. */

@@ -11,6 +11,7 @@
  * minted by the server, never derived from the event name.
  */
 import type { EventDoc, EventType } from "./event";
+import { MS_PER_MINUTE, splitTimeNum } from "./dates";
 
 // ---------------------------------------------------------------------------
 // times
@@ -18,8 +19,7 @@ import type { EventDoc, EventType } from "./event";
 
 /** Formats an hour float (e.g. 13.5) as "1:30 PM". */
 export function timeLabel(value: number): string {
-  const hours = Math.floor(value);
-  const minutes = Math.round((value - hours) * 60);
+  const { hours, minutes } = splitTimeNum(value);
   const suffix = hours < 12 ? "AM" : "PM";
   const hour12 = hours % 12 === 0 ? 12 : hours % 12;
   return `${hour12}:${String(minutes).padStart(2, "0")} ${suffix}`;
@@ -52,42 +52,6 @@ export function durationFromTimes(startTime: number, endTime: number): number {
 export function endTimeFromDuration(startTime: number, duration: number): number {
   return (((startTime + duration) % 24) + 24) % 24;
 }
-
-// ---------------------------------------------------------------------------
-// days of week (legacy reference week: 2018-06-17 Sun .. 2018-06-24 Sun)
-// ---------------------------------------------------------------------------
-
-/** Legacy reference week; index 7 is the Sunday used when weeks start Monday. */
-export const DOW_REFERENCE_DATES: readonly string[] = [
-  "2018-06-17", // Sunday
-  "2018-06-18", // Monday
-  "2018-06-19", // Tuesday
-  "2018-06-20", // Wednesday
-  "2018-06-21", // Thursday
-  "2018-06-22", // Friday
-  "2018-06-23", // Saturday
-  "2018-06-24", // Sunday
-];
-
-export const WEEKDAY_LABELS: readonly string[] = [
-  "Sunday",
-  "Monday",
-  "Tuesday",
-  "Wednesday",
-  "Thursday",
-  "Friday",
-  "Saturday",
-];
-
-export const WEEKDAY_SHORT: readonly string[] = [
-  "Sun",
-  "Mon",
-  "Tue",
-  "Wed",
-  "Thu",
-  "Fri",
-  "Sat",
-];
 
 /** Minutes east of UTC for the admin's current local offset. */
 function currentOffsetMinutes(): number {
@@ -129,8 +93,7 @@ function localDateToIso(
   day: number,
   startTime: number,
 ): string {
-  const hours = Math.floor(startTime);
-  const minutes = Math.round((startTime - hours) * 60);
+  const { hours, minutes } = splitTimeNum(startTime);
   return new Date(year, month, day, hours, minutes, 0, 0).toISOString();
 }
 
@@ -155,9 +118,8 @@ export function dowDates(
   startTime: number,
   startOnMonday = false,
 ): string[] {
-  const offsetMs = currentOffsetMinutes() * 60000;
-  const hours = Math.floor(startTime);
-  const minutes = Math.round((startTime - hours) * 60);
+  const offsetMs = currentOffsetMinutes() * MS_PER_MINUTE;
+  const { hours, minutes } = splitTimeNum(startTime);
   return [...dayIndexes]
     .map((index) => {
       if (startOnMonday && index === 0) return 7;
@@ -197,7 +159,7 @@ export function startTimeFromEvent(event: EventDoc | null): number {
   const first = event?.dates?.[0];
   if (!first) return 9;
   if (event?.type === "dow") {
-    const shifted = new Date(Date.parse(first) + currentOffsetMinutes() * 60000);
+    const shifted = new Date(Date.parse(first) + currentOffsetMinutes() * MS_PER_MINUTE);
     return shifted.getUTCHours() + shifted.getUTCMinutes() / 60;
   }
   const local = new Date(first);
@@ -217,7 +179,7 @@ export function dayKeysFromEvent(event: EventDoc | null): string[] {
 
 export function dayIndexesFromEvent(event: EventDoc | null): number[] {
   if (!event?.dates || event.type !== "dow") return [];
-  const offsetMs = currentOffsetMinutes() * 60000;
+  const offsetMs = currentOffsetMinutes() * MS_PER_MINUTE;
   return event.dates
     .map((iso) => {
       const shifted = new Date(Date.parse(iso) + offsetMs);

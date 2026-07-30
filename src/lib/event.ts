@@ -211,10 +211,6 @@ export type AvailabilityType = "available" | "if_needed";
 /** How the grid colours itself. */
 export type GridMode = "group" | "edit";
 
-export function isEventType(value: unknown): value is EventType {
-  return value === "specific_dates" || value === "dow";
-}
-
 /** Parses a stored response into epoch-ms sets. Unknown names yield empty sets. */
 export function toAvailabilitySets(response?: EventResponse | null): AvailabilitySets {
   const availability = new Set<number>();
