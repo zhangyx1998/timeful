@@ -10,7 +10,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { RealtimeSaveError, type SavePayload } from "./realtime";
 import { createSaveTransport } from "./save-transport";
-import { createSyncEngine } from "./sync";
+import { createSyncEngine, type SyncBaseline } from "./sync";
 
 const PAYLOAD: SavePayload = {
   availability: ["2026-08-03T09:00:00.000Z"],
@@ -31,11 +31,29 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
+type OverSocket = (payload: SavePayload) => Promise<void> | null;
+
+/** A transport over the given socket probe, with a REST leg to assert on. */
+function transport(
+  overSocket: OverSocket,
+  overRest: (payload: SavePayload) => Promise<void> = () => Promise.resolve(),
+) {
+  const rest = vi.fn(overRest);
+  return { save: createSaveTransport({ overSocket, overRest: rest }), overRest: rest };
+}
+
+/** The same transport under the real sync engine, with no debounce so the
+ *  tests drive the clock themselves. */
+function engineOver(overSocket: OverSocket, options: { baseline?: SyncBaseline } = {}) {
+  const { save, overRest } = transport(overSocket);
+  const engine = createSyncEngine({ debounceMs: 0, save, baseline: options.baseline });
+  return { engine, overRest };
+}
+
 describe("createSaveTransport", () => {
   it("uses the socket when there is one", async () => {
-    const overRest = vi.fn(() => Promise.resolve());
     const overSocket = vi.fn(() => Promise.resolve());
-    const save = createSaveTransport({ overSocket, overRest });
+    const { save, overRest } = transport(overSocket);
 
     await save(PAYLOAD);
 
@@ -46,8 +64,7 @@ describe("createSaveTransport", () => {
   it("uses REST when there is no session to send over", async () => {
     // Null is the connector's way of saying so: realtime off at either level,
     // a browse socket, a session refused, or one that has dropped.
-    const overRest = vi.fn(() => Promise.resolve());
-    const save = createSaveTransport({ overSocket: () => null, overRest });
+    const { save, overRest } = transport(() => null);
 
     await save(PAYLOAD);
 
@@ -55,11 +72,9 @@ describe("createSaveTransport", () => {
   });
 
   it("falls back to REST when the socket loses the save", async () => {
-    const overRest = vi.fn(() => Promise.resolve());
-    const overSocket = vi.fn(() =>
+    const { save, overRest } = transport(() =>
       Promise.reject(new RealtimeSaveError("connection dropped", true)),
     );
-    const save = createSaveTransport({ overSocket, overRest });
 
     await expect(save(PAYLOAD)).resolves.toBeUndefined();
 
@@ -71,11 +86,7 @@ describe("createSaveTransport", () => {
   it("falls back on any error that is not a refusal", async () => {
     // A test double, a bug, an exception from somewhere unexpected — none of
     // them are the server saying no, so none of them cost the guest their edit.
-    const overRest = vi.fn(() => Promise.resolve());
-    const save = createSaveTransport({
-      overSocket: () => Promise.reject(new Error("kaboom")),
-      overRest,
-    });
+    const { save, overRest } = transport(() => Promise.reject(new Error("kaboom")));
 
     await save(PAYLOAD);
 
@@ -85,21 +96,19 @@ describe("createSaveTransport", () => {
   it("does not ask REST a question the server already refused", async () => {
     // REST runs the identical validator and would answer identically, so
     // retrying there would only turn one refusal into two round trips.
-    const overRest = vi.fn(() => Promise.resolve());
-    const save = createSaveTransport({
-      overSocket: () => Promise.reject(new RealtimeSaveError("A name is required", false)),
-      overRest,
-    });
+    const { save, overRest } = transport(() =>
+      Promise.reject(new RealtimeSaveError("A name is required", false)),
+    );
 
     await expect(save(PAYLOAD)).rejects.toThrow("A name is required");
     expect(overRest).not.toHaveBeenCalled();
   });
 
   it("surfaces a REST failure, whichever way it was reached", async () => {
-    const save = createSaveTransport({
-      overSocket: () => Promise.reject(new RealtimeSaveError("dropped", true)),
-      overRest: () => Promise.reject(new Error("Network down")),
-    });
+    const { save } = transport(
+      () => Promise.reject(new RealtimeSaveError("dropped", true)),
+      () => Promise.reject(new Error("Network down")),
+    );
 
     await expect(save(PAYLOAD)).rejects.toThrow("Network down");
   });
@@ -112,11 +121,7 @@ describe("createSaveTransport", () => {
 describe("the sync engine over a write session", () => {
   it("saves over the socket and rests at 'saved'", async () => {
     const overSocket = vi.fn(() => Promise.resolve());
-    const overRest = vi.fn(() => Promise.resolve());
-    const engine = createSyncEngine({
-      debounceMs: 0,
-      save: createSaveTransport({ overSocket, overRest }),
-    });
+    const { engine, overRest } = engineOver(overSocket);
 
     engine.schedule(PAYLOAD);
     engine.flush();
@@ -136,10 +141,7 @@ describe("the sync engine over a write session", () => {
       sent.push(payload);
       return sent.length > 1 ? Promise.resolve() : held.promise;
     });
-    const engine = createSyncEngine({
-      debounceMs: 0,
-      save: createSaveTransport({ overSocket, overRest: () => Promise.resolve() }),
-    });
+    const { engine } = engineOver(overSocket);
 
     engine.schedule(PAYLOAD);
     engine.flush();
@@ -163,10 +165,7 @@ describe("the sync engine over a write session", () => {
     // drag the indicator off the baseline the grid was just re-seeded to.
     const held = deferred();
     const overSocket = vi.fn(() => held.promise);
-    const engine = createSyncEngine({
-      debounceMs: 0,
-      save: createSaveTransport({ overSocket, overRest: () => Promise.resolve() }),
-    });
+    const { engine } = engineOver(overSocket);
 
     engine.schedule(PAYLOAD);
     engine.flush();
@@ -186,12 +185,8 @@ describe("the sync engine over a write session", () => {
     // the edit was made and gone by the time it was sent, and the answer still
     // lands — with the indicator never showing a failure.
     let sessionOpen = true;
-    const overRest = vi.fn(() => Promise.resolve());
     const overSocket = vi.fn(() => (sessionOpen ? Promise.resolve() : null));
-    const engine = createSyncEngine({
-      debounceMs: 0,
-      save: createSaveTransport({ overSocket, overRest }),
-    });
+    const { engine, overRest } = engineOver(overSocket);
 
     engine.schedule(PAYLOAD);
     sessionOpen = false;
@@ -207,16 +202,11 @@ describe("the sync engine over a write session", () => {
     // The narrower window: the frame went out and the connection died before
     // the ack came back. The transport calls that retryable, so REST finishes
     // the job without the guest being told anything happened.
-    const overRest = vi.fn(() => Promise.resolve());
-    const overSocket = vi.fn(() =>
+    const { engine, overRest } = engineOver(() =>
       Promise.reject(
         new RealtimeSaveError("The connection dropped before the save landed", true),
       ),
     );
-    const engine = createSyncEngine({
-      debounceMs: 0,
-      save: createSaveTransport({ overSocket, overRest }),
-    });
 
     engine.schedule(PAYLOAD);
     engine.flush();
@@ -228,16 +218,12 @@ describe("the sync engine over a write session", () => {
 
   it("shows a refused save, and retries it over whatever is open then", async () => {
     let sessionOpen = true;
-    const overRest = vi.fn(() => Promise.resolve());
     const overSocket = vi.fn(() =>
       sessionOpen
         ? Promise.reject(new RealtimeSaveError("A name may not contain a dash", false))
         : null,
     );
-    const engine = createSyncEngine({
-      debounceMs: 0,
-      save: createSaveTransport({ overSocket, overRest }),
-    });
+    const { engine, overRest } = engineOver(overSocket);
 
     engine.schedule(PAYLOAD);
     engine.flush();
@@ -261,12 +247,7 @@ describe("the sync engine over a write session", () => {
   it("still saves with no realtime at all", async () => {
     // Live updates off at either level: there is never a session, and this is
     // exactly the app as it was before write sessions existed.
-    const overRest = vi.fn(() => Promise.resolve());
-    const engine = createSyncEngine({
-      debounceMs: 0,
-      save: createSaveTransport({ overSocket: () => null, overRest }),
-      baseline: "current",
-    });
+    const { engine, overRest } = engineOver(() => null, { baseline: "current" });
 
     expect(engine.status.value).toBe("current");
     engine.schedule(PAYLOAD);
