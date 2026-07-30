@@ -182,9 +182,12 @@ systemd's sandboxing.
 
 ```ini
 DynamicUser=yes
+SupplementaryGroups=timeful
+UMask=0002
 ProtectSystem=strict
-ReadWritePaths=/srv/scheduling
-ProtectHome=yes
+ProtectHome=tmpfs
+BindReadOnlyPaths=/srv/scheduling
+BindPaths=/srv/scheduling/var
 NoNewPrivileges=yes
 PrivateTmp=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
@@ -195,22 +198,109 @@ What each buys you:
 - **`DynamicUser=yes`** — systemd allocates a throwaway account for each start.
   There is no persistent user for the service, and nothing on the system is
   owned by it.
-- **`ProtectSystem=strict` + `ReadWritePaths=<webroot>`** — the entire
-  filesystem is read-only to the process except the webroot. A bug that wants to
-  write somewhere it should not simply cannot.
-- **`ProtectHome=yes`** — home directories are invisible to it.
+- **`ProtectSystem=strict`** — the entire filesystem is read-only to the
+  process. A bug that wants to write somewhere it should not simply cannot.
+- **`ProtectHome=tmpfs`** — `/home`, `/root` and `/run/user` are replaced with
+  empty directories. Every home on the machine is invisible, including yours,
+  except for whatever is mounted back below.
+- **`BindReadOnlyPaths=<webroot>`** — your webroot, visible and read-only. This
+  is the mount that reaches back through the tmpfs, which is why a webroot in
+  your home directory works.
+- **`BindPaths=<var dir>`** — the data directory, and the only writable path the
+  service has. Not the whole webroot: the config file is only ever read, and the
+  unit logs to the journal rather than to a file.
 - **`NoNewPrivileges=yes`** — the process cannot gain privileges, ever, not even
   through a setuid binary.
 - **`PrivateTmp=yes`** — its own `/tmp`, thrown away on stop.
 - **`RestrictAddressFamilies=…`** — IP and Unix sockets only.
 
+### The `timeful` group
+
+`install` creates one thing on your machine besides the unit: a system group
+called `timeful`. It exists because `DynamicUser` picks a new UID whenever it
+feels like it, so a file that belongs to *this* boot's service user may not
+belong to the next one's. Group ownership is the part that survives, so install
+also does this to your data directory:
+
+```sh
+sudo chown -R :timeful /srv/scheduling/var
+sudo chmod -R g+rwX /srv/scheduling/var
+sudo find /srv/scheduling/var -type d -exec chmod g+s {} +
+```
+
+— group-owned, group-writable, and setgid so everything created later inherits
+the group. The unit picks the group up with `SupplementaryGroups=timeful` and
+`UMask=0002`.
+
+One group serves every webroot on the machine, and `uninstall` does not remove
+it — another unit may be using it, and an empty group owns nothing. It does not
+remove your data either.
+
+To read or edit `var/` yourself afterwards, either use `sudo`, or add yourself
+to the group and log in again:
+
+```sh
+sudo usermod -aG timeful $USER
+```
+
+### Two permissions it does not change
+
+The tmpfs shadows your home directory's permissions, but the **webroot's own**
+still apply, because that directory is bound in with its real inode:
+
+- the webroot needs `o+x` — the 0755 a directory is normally born with;
+- `timeful.config.json` needs `o+r` — the 0644 the CLI writes it as.
+
+If you have tightened either, loosen it again or the service cannot read its own
+configuration. Nothing else in the webroot needs to be readable.
+
 ### What it costs
 
 - It needs `sudo`. The full unit text and the exact privileged commands are
   printed before anything runs.
-- Files under `var/` end up owned by the ephemeral user, not by you. Back the
-  data up with the same `sudo`, and do not expect to edit the JSON by hand
-  afterwards.
+- Files under `var/` are group-owned rather than yours. See above.
+
+### When it refuses
+
+There is one setup the hardened tier cannot serve, and it says so instead of
+installing something that would crash-loop: **a `node` binary inside a home
+directory**, which is what nvm, fnm, asdf and volta all give you. Timeful's own
+webroot and package are mounted back through the tmpfs, but a version manager's
+tree cannot be — where it begins and ends is its own business, and guessing
+wrong would trade an error message for a service that never starts.
+
+Run it as yourself instead. Lingering is what makes a user service start at boot
+rather than at login, which is the part people usually want the system tier for:
+
+```sh
+timeful service install             # user tier, runs as you
+sudo loginctl enable-linger $USER   # start at boot, survive logout
+```
+
+Or install Timeful under a system-wide Node — one outside a home directory — and
+install the hardened service from that.
+
+### If you have an old, broken hardened unit
+
+Versions before this one wrote `ProtectHome=yes`, which covers `/home` with a
+mount nothing can be bound through. A webroot in a home directory could never be
+entered, and the unit crash-looped with `status=200/CHDIR` — while
+`timeful service status` cheerfully reported it as running, because
+`systemctl is-active` calls a restart loop `activating`. Both halves of that are
+fixed; the status command now says `failed (12 automatic restarts)`.
+
+Upgrading regenerates the unit in the new shape, resets the latched failure and
+restarts it:
+
+```sh
+cd /srv/scheduling && npx timeful@latest upgrade
+```
+
+`timeful service install --system` does the same thing from a copy you already
+have. If you patched the unit by hand in the meantime — a drop-in under
+`/etc/systemd/system/timeful-<hash>.service.d/` — delete that directory once the
+new unit is in place and run `sudo systemctl daemon-reload`. The generated unit
+now carries the same fix natively, and a stale override will only fight it.
 
 ### macOS and Windows
 

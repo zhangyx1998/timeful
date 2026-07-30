@@ -41,12 +41,32 @@ It prints the old path and the new one for each webroot it touches, then the
 unit and every command, before running any of them. `--dry-run` stops it just
 short of doing so.
 
-**What it never touches:** `var/`, `timeful.config.json`, and anything else in
-the webroot. There are no migrations and no schema version — an old event
-document is simply read as it stands, and rewritten in the new shape the next
-time somebody saves it — so an upgrade has nothing to convert and no state to
-get wrong. Downgrading is `npx timeful@1.2.3 upgrade`, and it works for the
-same reason.
+**What it never touches:** the *contents* of `var/`, `timeful.config.json`, and
+anything else in the webroot. There are no migrations and no schema version — an
+old event document is simply read as it stands, and rewritten in the new shape
+the next time somebody saves it — so an upgrade has nothing to convert and no
+state to get wrong. Downgrading is `npx timeful@1.2.3 upgrade`, and it works for
+the same reason.
+
+::: tip The unit comes back in the current shape, which is how a broken one gets fixed
+Re-pinning regenerates the whole unit rather than editing the `ExecStart` line,
+so a hardened service installed by an older version is rewritten with whatever
+this version writes — and then restarted. If you are running the hardened tier
+on a box where it never actually started, that is the one command that fixes it.
+See [the hardened system tier](/guide/service#the-hardened-system-tier-linux).
+
+The hardened tier's install also touches the *ownership* of `var/`, chowning it
+to the `timeful` group. It is the one exception to the paragraph above, and it
+is the reason the data survives systemd handing the service a different UID next
+time.
+:::
+
+`upgrade` will refuse the hardened tier for one setup — a `node` binary inside a
+home directory, as every version manager installs one. It prints why and what to
+do instead, including `timeful service uninstall --system` when there is a
+system unit already sitting there. The user tier plus
+`sudo loginctl enable-linger $USER` is the alternative, and it starts at boot
+just the same.
 
 Two variants:
 

@@ -254,8 +254,10 @@ Record<token, {
 Record<slug, eventUuid>
 ```
 
-The CLI also writes `timeful.config.json` in the webroot, and an installed
-service writes `timeful.out.log` / `timeful.err.log` inside `varDir`.
+The CLI also writes `timeful.config.json` in the webroot. A macOS LaunchAgent
+writes `timeful.out.log` / `timeful.err.log` inside `varDir`; the systemd units
+name no log files and go to the journal, which is why the hardened tier needs
+nothing in the webroot writable except `varDir` itself.
 
 ### Zero-record invariant
 
@@ -1316,9 +1318,28 @@ installed service impossible to uninstall from here. **The three parsers mirror
 the three generators — change one and change the other, or an installed service
 becomes invisible to the CLI that installed it.**
 
-Running state comes from the cheapest question each platform answers:
-`systemctl [--user] is-active`, `launchctl list`, `schtasks /query /fo list`.
-A dry run reports `unknown` rather than asking.
+Running state comes from the cheapest question each platform answers *usefully*:
+`launchctl list`, `schtasks /query /fo list`, and on Linux
+`systemctl [--user] show -p ActiveState -p SubState -p NRestarts`. A dry run
+reports `unknown` rather than asking.
+
+::: danger `activating` is not running.
+`is-active` used to be the Linux probe, and its single word calls a crash loop
+`activating` — a unit that fails at exec spends nearly all of its life waiting
+out `RestartSec`, and `is-active` cannot tell that from a service genuinely
+coming up. `timeful service status` printed "installed, running" over units
+that had never started once.
+
+`show` has the second word. `ActiveState=activating` with
+`SubState=auto-restart` is a countdown to another attempt after one went
+wrong, and reads **failed**; a real start caught in the act reads **starting**,
+a fifth state beside running, stopped, failed and unknown. `NRestarts` rides
+along into the status line ("failed (12 automatic restarts)"), so a loop is
+visible even when the probe catches it mid-attempt. Properties are read as
+`Key=value` rather than with `--value`, which would depend on systemctl
+emitting them in the order they were asked for. A bare word is still
+understood, so a probe run by hand reads the same way.
+:::
 
 | Platform / tier | File |
 | --------------- | ---- |
@@ -1331,10 +1352,15 @@ The hardened system unit's directives:
 
 ```ini
 DynamicUser=yes
+SupplementaryGroups=timeful
+UMask=0002
 WorkingDirectory=<webroot>
-ReadWritePaths=<webroot>
+ExecStart=<node> <cli> serve
 ProtectSystem=strict
-ProtectHome=yes
+ProtectHome=tmpfs
+BindReadOnlyPaths=<webroot>
+BindReadOnlyPaths=<cli package dir>   # only when the CLI is under a home dir
+BindPaths=<varDir>
 NoNewPrivileges=yes
 PrivateTmp=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
@@ -1342,13 +1368,97 @@ Restart=on-failure
 RestartSec=5
 ```
 
+#### Why `tmpfs`, and why binds
+
+::: danger `ProtectHome=yes` is a working directory nothing can enter.
+It covers /home, /root and /run/user with an **inaccessible** mount, and no
+`BindPaths=` reaches back through one. A webroot in a home directory —
+which is where most of them are — therefore answered every start with
+`status=200/CHDIR`, and the unit crash-looped for as long as it was installed.
+The tier shipped that way because service tests are dry-run by design and never
+boot a real unit.
+:::
+
+`ProtectHome=tmpfs` is the combination systemd documents for this: the three
+directories become empty tmpfs instances, and a path listed in `BindPaths=` or
+`BindReadOnlyPaths=` is made visible through one, with systemd creating the
+intermediate directories inside the tmpfs as `root:755`. The operator's real
+0700 home is **shadowed rather than traversed**, so an arbitrary UID walks a
+synthetic parent it is allowed to walk. No chmod on anybody's home directory,
+and every other home stays as hidden as it was under `yes`.
+
+What the tmpfs does *not* bypass is the bound directory's own permissions: the
+webroot keeps its real inode, so it needs `o+x` and `timeful.config.json` needs
+`o+r` — the 0755 and 0644 both are born with.
+
+The two mounts are binds rather than `ReadWritePaths=` because only a bind can
+make a path *appear* through the tmpfs; `ReadWritePaths=` merely changes whether
+an already-visible path is writable, and naming one the tmpfs has hidden is a
+start failure. `BindPaths=` is read-write by default, and systemd applies mount
+entries **deepest-path-last**, so a writable `varDir` nested inside a read-only
+webroot survives both the webroot's mount and `ProtectSystem=strict`. Order in
+the file is irrelevant.
+
+Read-write is `varDir` alone, not the whole webroot as before: tighter, and
+sufficient — `timeful.config.json` is only ever read, and a systemd unit logs to
+the journal rather than to the `timeful.*.log` files the LaunchAgent writes.
+
+The CLI's package directory is bound **only when it is under a home directory**,
+which an npx cache is. Everywhere else `ProtectSystem=strict` leaves it visible
+and read-only, so there is nothing to add and the unit carries no mount it does
+not need. An npx path moves with each version and `timeful upgrade` rewrites the
+unit each time, so the bind cannot outlive the package it names.
+
+#### The `timeful` group
+
+`DynamicUser=yes` allocates the UID per start — by hashing the unit name, so
+stable in practice but never promised — which means **user** ownership under
+`varDir` cannot be relied on across restarts. **Group** ownership can. Install
+therefore creates a static `timeful` system group, chowns `varDir` to it, sets
+`g+rwX` and the setgid bit on its directories, and the unit takes the group with
+`SupplementaryGroups=` and keeps what it writes group-writable with
+`UMask=0002`. One group per machine; several webroots share it, and each one's
+data is still reachable only through its own unit's bind mount.
+
+Uninstall removes neither the group nor the data, and the printed undo text says
+so: another webroot's unit may be using both.
+
+#### The one refusal
+
+A **node binary inside a home directory** — nvm, fnm, asdf, volta — is the one
+thing the binds cannot fix. Delimiting a version manager's tree means guessing,
+and a wrong guess is another crash loop rather than an error message. So
+`installService` refuses it **before printing anything**, with the alternative
+attached:
+
+```sh
+timeful service install            # user tier, runs as you
+sudo loginctl enable-linger <user> # start at boot, survive logout
+```
+
+The refusal sits in `installService` rather than in unit generation, which
+covers `service install --system`, the wizard and `timeful upgrade` alike while
+leaving `uninstall`, `status` and the control verbs working — an operator whose
+box is already broken has to be able to take the unit away. When a system unit
+is already installed for that webroot, the message adds
+`timeful service uninstall --system`.
+
 Everything that touches the machine goes through `ServiceHost` in
 `server/cli/service.ts`. Unit generation is **pure** — it returns a string —
 and the host is what writes and executes. Rules:
 
 - The full unit text and every activation command are printed **before** any of
-  them run. A privileged install additionally warns about `DynamicUser`, checks
-  for `sudo`, and asks; declining stages the file and prints the commands.
+  them run. A privileged install additionally explains the `timeful` group and
+  the `varDir` chown, checks for `sudo`, and asks; declining stages the file and
+  prints the commands.
+- The hardened tier's activation is `enable` **plus** `restart`, not
+  `enable --now`: `--now` does not bounce a unit that is already up, so
+  installing over a running unit would leave the old process alive under the old
+  directives. A tolerant `systemctl reset-failed` in front of it unlatches a
+  unit that crash-looped itself into `failed`.
+- A command may be marked `tolerant`, and a non-zero exit from one is reported
+  rather than fatal — `reset-failed` against a unit systemd has never seen, or
+  stopping something that was not running.
 - `--dry-run` (or `TIMEFUL_SERVICE_DRY_RUN=1`) makes the host print
   `would run: <cmd>` instead of executing, and skips all file writes and
   removals.
@@ -1415,6 +1525,15 @@ Rules that fall out of it:
 - **The hardened tier escalates exactly as it already did**, through
   `installService`'s `confirmPrivileged` and the `sudo systemctl` commands
   `controlFor` already generates. There is no second escalation path.
+- **A legacy unit comes back in the current shape.** Re-pinning goes through
+  `specFor`/`unitFor`, so a unit written with `ProtectHome=yes` and
+  `ReadWritePaths=<webroot>` is regenerated with the tmpfs, the binds and the
+  `timeful` group without anybody hand-editing `/etc/systemd/system` — and the
+  activation that follows resets the failure and restarts the process, rather
+  than leaving the old one up. `upgrade` is therefore the migration path for a
+  box the old hardened tier is crash-looping on, and it is subject to the same
+  refusal: a node binary under a home directory stops it with the cure printed,
+  including `timeful service uninstall --system`.
 - **`var/` and `timeful.config.json` are never touched.** There are no
   migrations to run (see [Storage](#storage)), so there is nothing to convert.
 
