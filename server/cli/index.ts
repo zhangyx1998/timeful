@@ -145,7 +145,7 @@ async function runServe(args: CliArgs, cwd: string): Promise<void> {
   if (!file)
     throw new CliError(
       [
-        `${cwd} is not a Timeful webroot: it has no ${CONFIG_FILE}.`,
+        notAWebroot(cwd),
         "",
         "Run 'timeful init' here to set one up, or 'timeful serve' from a",
         "directory that already is one.",
@@ -154,12 +154,16 @@ async function runServe(args: CliArgs, cwd: string): Promise<void> {
   await start(mergeConfig({ cwd, file, env: envOverrides(), flags: args.overrides }), args);
 }
 
+/** The diagnosis every not-a-webroot refusal opens with; the cure varies. */
+const notAWebroot = (dir: string): string =>
+  `${dir} is not a Timeful webroot: it has no ${CONFIG_FILE}.`;
+
 function notAWebrootForSetup(cwd: string): CliError {
   // Nothing to read answers from. Say so and leave the directory alone —
   // hanging on a closed stdin is the one thing a scripted run must never do.
   return new CliError(
     [
-      `${cwd} is not a Timeful webroot: it has no ${CONFIG_FILE}.`,
+      notAWebroot(cwd),
       "",
       "Setting one up needs answers, and stdin is not a terminal.",
       "Run 'timeful' from a terminal to use the setup wizard, or",
@@ -178,7 +182,8 @@ async function wizard(args: CliArgs, cwd: string): Promise<void> {
   });
   if (!result) return;
 
-  if (result.installService) await installFromWizard(result.config, cwd, args);
+  if (result.installService)
+    await installFor(cwd, args, nodeHost({ dryRun: args.dryRun }), result.config);
   if (result.startNow) {
     await start(result.config, args);
     return;
@@ -290,10 +295,7 @@ async function resolveTargets(
 
   if (args.target) {
     const target = path.resolve(cwd, args.target);
-    if (!(await isWebroot(target)))
-      throw new CliError(
-        `${target} is not a Timeful webroot: it has no ${CONFIG_FILE}.`,
-      );
+    if (!(await isWebroot(target))) throw new CliError(notAWebroot(target));
     return [target];
   }
 
@@ -356,7 +358,7 @@ async function runUpgrade(args: CliArgs, cwd: string): Promise<void> {
     host,
     cliPath: CLI_PATH,
     version: VERSION,
-    confirmPrivileged: () => confirmOnTty("Run these commands with sudo now?"),
+    confirmPrivileged: confirmSudo,
   };
 
   // Only a stable path prompts a registry lookup, and only because the rewrite
@@ -417,10 +419,7 @@ async function tryReadConfig(webroot: string): Promise<ResolvedConfig | null> {
 async function loadWebroot(webroot: string, args: CliArgs): Promise<ResolvedConfig> {
   const file = await readConfigFile(webroot);
   if (!file)
-    throw new CliError(
-      `${webroot} is not a Timeful webroot: it has no ${CONFIG_FILE}.\n` +
-        "Run 'timeful init' there first.",
-    );
+    throw new CliError(`${notAWebroot(webroot)}\nRun 'timeful init' there first.`);
   return mergeConfig({ cwd: webroot, file, env: envOverrides(), flags: args.overrides });
 }
 
@@ -446,15 +445,23 @@ async function installedUnits(
   return present;
 }
 
-async function installFor(webroot: string, args: CliArgs, host: ServiceHost): Promise<void> {
-  const config = await loadWebroot(webroot, args);
+/**
+ * Installs the service for one webroot. `preloaded` is the config the wizard
+ * just committed: on `--dry-run` nothing was written, so reading the webroot
+ * back would refuse a directory the dry run only pretended to initialize.
+ */
+async function installFor(
+  webroot: string,
+  args: CliArgs,
+  host: ServiceHost,
+  preloaded?: ResolvedConfig,
+): Promise<void> {
+  const config = preloaded ?? (await loadWebroot(webroot, args));
   const tier = await chooseTier(args, host);
   const unit = unitFor(
     specFor({ webroot, varDir: config.varDir, cliPath: CLI_PATH, tier }),
   );
-  await installService(unit, host, {
-    confirmPrivileged: () => confirmOnTty("Run these commands with sudo now?"),
-  });
+  await installService(unit, host, { confirmPrivileged: confirmSudo });
 }
 
 async function runVerbOn(
@@ -540,19 +547,8 @@ async function confirmOnTty(question: string): Promise<boolean> {
   return confirm(io, { message: question, default: false });
 }
 
-/** Installs the service the wizard was told to install. */
-async function installFromWizard(
-  config: ResolvedConfig,
-  cwd: string,
-  args: CliArgs,
-): Promise<void> {
-  const host = nodeHost({ dryRun: args.dryRun });
-  const tier = await chooseTier({ ...args, tier: args.tier }, host);
-  const unit = unitFor(specFor({ webroot: cwd, varDir: config.varDir, cliPath: CLI_PATH, tier }));
-  await installService(unit, host, {
-    confirmPrivileged: () => confirmOnTty("Run these commands with sudo now?"),
-  });
-}
+const confirmSudo = (): Promise<boolean> =>
+  confirmOnTty("Run these commands with sudo now?");
 
 const divider = (): string => "-".repeat(60);
 
