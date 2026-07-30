@@ -27,12 +27,19 @@
  * there does the same thing for that person — after a confirm, because it means
  * editing somebody else's times and one row looks much like the next.
  *
- * On a phone, where the chart is a heatmap and this list is behind a drawer,
- * each answered row also offers to put its owner's answer on the chart *alone*.
- * A sum cannot say who is behind it, and that is the one question about the
- * chart the colours can never answer. Doing so collapses the list to that
- * person — the sheet would otherwise cover the very chart it just changed — and
- * the way back is where the list's action row always is.
+ * Every row also carries an eye, which puts that one person's answer on the
+ * chart alone. A sum cannot say who is behind it, and that is the one question
+ * about the chart the colours can never answer. It changes nothing here — the
+ * list does not collapse, rearrange or dim, because the view it asked for
+ * outlives this panel being open and a list that folded itself up would be
+ * describing a state it no longer owns. What says the state is a pill over the
+ * chart (`IsolationPill`); see `lib/isolation.ts` for the two rules about the
+ * edit tab.
+ *
+ * Somebody who is here without having answered gets an eye too, and isolating
+ * them shows an empty chart with an overlay saying so. That is a real answer to
+ * a real question — "has Ada marked anything yet?" — and a row whose eye is
+ * missing only reads as broken.
  *
  * Whoever is on the page right now gets three quietly pulsing dots after their
  * name, the visitor included — they are online too, and a rule with no
@@ -56,7 +63,6 @@ import IconTrash from "../../assets/icons/trash.svg";
 import IconPlus from "../../assets/icons/plus.svg";
 import IconEye from "../../assets/icons/eye.svg";
 import IconEyeOff from "../../assets/icons/eye-off.svg";
-import IconPeople from "../../assets/icons/people.svg";
 import type { PresenceEntry } from "../../lib/realtime";
 
 const props = defineProps<{
@@ -91,13 +97,6 @@ const props = defineProps<{
   /** Key whose delete is in flight, if any. */
   deleting: string | null;
   deleteError: string | null;
-  /**
-   * Whether a row may ask the chart to show its owner's answer and nothing
-   * else. The phone's group view only: on a desktop the heatmap and the person
-   * you are pointing at are on screen together already, and while you are
-   * writing your own answer the chart is not showing anybody else's to narrow.
-   */
-  soloable?: boolean;
   /** Whose answer the chart is showing alone, if anyone's. By key. */
   solo?: string | null;
 }>();
@@ -110,8 +109,15 @@ const emit = defineEmits<{
   /** Adopt this person's identity. The display name goes with the key: it is
    *  what the identity dialog and the save both need. */
   switch: [person: { key: string; displayName: string }];
-  /** Show this one person's answer on the chart, or null for the group's. */
-  solo: [key: string | null];
+  /**
+   * Show this one person's answer on the chart, or null for the group's.
+   *
+   * The name rides along with the key, as it does for `switch`: the pill over
+   * the chart has to print something, and the row that asked is the last place
+   * that is certain to know the spelling — an answer deleted while it is being
+   * looked at would otherwise leave the pill naming a bare key.
+   */
+  solo: [person: { key: string; displayName: string } | null];
 }>();
 
 /** The respondent the delete dialog is asking about. At most one. */
@@ -221,25 +227,16 @@ function slotState(key: string): SlotState | null {
  * asked nothing and keep the person icon.
  */
 /**
- * Whether the chart is currently showing one person's answer alone.
+ * The list, unchanged by whatever the chart is doing.
  *
- * A name nobody has an answer for cannot be soloed — there would be nothing on
- * the chart to see — so a stale name simply reads as off.
- */
-const soloing = computed(
-  () => Boolean(props.soloable && props.solo) && answered.value.has(props.solo as string),
-);
-
-/**
- * While one person's answer is on the chart the list collapses to that person.
- *
- * Not for tidiness: the drawer is a bottom sheet and a full list of it covers
- * the chart completely on a phone, so a single-person heatmap nobody can see
- * would be a setting rather than a view. Collapsed, the sheet is two rows tall
- * and the chart it is describing is above it.
+ * It used to collapse to the isolated row, because the isolated view lived
+ * only as long as this drawer did and a full-height sheet covers the chart it
+ * had just changed. The view outlives the drawer now, so the answer is to close
+ * the drawer and look — and a list that rearranged itself on the way would be
+ * a second thing to understand for no gain.
  */
 const rows = computed(() =>
-  (soloing.value ? [props.solo as string] : listed.value).map((key) => {
+  listed.value.map((key) => {
     const answers = answered.value.has(key);
     const state = answers ? slotState(key) : null;
     return {
@@ -252,9 +249,7 @@ const rows = computed(() =>
       unavailable: state === "unavailable",
       ifNeeded: state === "if-needed",
       isCurrent: key === props.currentKey,
-      // Nothing stored means nothing to put on the chart alone.
-      soloable: Boolean(props.soloable) && answers,
-      isSolo: soloing.value && key === props.solo,
+      isSolo: key === props.solo,
     };
   }),
 );
@@ -304,11 +299,8 @@ function confirmSwitch() {
 </script>
 
 <template>
-  <aside class="panel" :class="{ 'panel--embedded': embedded, 'panel--solo': soloing }">
-    <!-- Collapsed to one person, the head goes: the fraction and the slot it is
-         about are a reading of the group's answer, which is exactly what has
-         been set aside. The drawer's own title names whose chart it is. -->
-    <header v-if="!soloing" class="head">
+  <aside class="panel" :class="{ 'panel--embedded': embedded }">
+    <header class="head">
       <h2 class="heading">
         <template v-if="!embedded">Respondents</template>
         <span class="count" :class="`count--${countTone}`">
@@ -330,7 +322,7 @@ function confirmSwitch() {
       </p>
     </header>
 
-    <p v-if="keys.length === 0 && !soloing" class="empty">No answers yet.</p>
+    <p v-if="keys.length === 0" class="empty">No answers yet.</p>
 
     <ul class="names">
       <li
@@ -388,27 +380,26 @@ function confirmSwitch() {
 
         <!-- Puts this person's answer on the chart on its own. A heatmap is a
              sum, and a sum cannot say who is behind it; this is the one
-             question the list is asked that the colours cannot answer. Only
-             where the chart is showing the group's answer to narrow, and only
-             for a row with something stored to show. -->
+             question the list is asked that the colours cannot answer. Every
+             row has one, including somebody who is only here — "have they
+             marked anything yet?" is answered by an empty chart that says so,
+             and a row missing its eye only reads as broken. -->
         <button
-          v-if="row.soloable"
           type="button"
           class="reveal"
           :class="{ 'reveal--on': row.isSolo }"
           :aria-pressed="row.isSolo"
           :aria-label="row.isSolo ? 'Show everyone again' : `Show only ${row.name}`"
           :title="row.isSolo ? 'Show everyone again' : `Show only ${row.name}`"
-          @click="emit('solo', row.isSolo ? null : row.key)"
+          @click="emit('solo', row.isSolo ? null : { key: row.key, displayName: row.name })"
         >
           <IconEyeOff v-if="row.isSolo" aria-hidden="true" />
           <IconEye v-else aria-hidden="true" />
         </button>
 
         <!-- Nothing is stored for somebody who is only here, so there is
-             nothing for a delete to do. And with the list collapsed to a single
-             row, a bin beside it is only something to hit by mistake. -->
-        <template v-if="row.answers && !soloing">
+             nothing for a delete to do. -->
+        <template v-if="row.answers">
           <span v-if="deleting === row.key" class="busy">
             <Spinner :size="15" :label="`Removing ${row.name}`" />
           </span>
@@ -426,18 +417,7 @@ function confirmSwitch() {
         </template>
       </li>
 
-      <!-- The way back to the group's answer, in the place the list's own
-           action row always sits. -->
-      <li v-if="soloing" class="add">
-        <button type="button" class="add__button" @click="emit('solo', null)">
-          <span class="avatar" aria-hidden="true">
-            <IconPeople />
-          </span>
-          <span class="text">Show everyone</span>
-        </button>
-      </li>
-
-      <li v-else class="add">
+      <li class="add">
         <button type="button" class="add__button" @click="emit('add')">
           <span class="avatar" aria-hidden="true">
             <IconPlus stroke-width="2" />
@@ -910,16 +890,6 @@ function confirmSwitch() {
 .reveal:focus-visible {
   outline: var(--focus-ring);
   outline-offset: calc(var(--focus-ring-offset) * -1);
-}
-
-/* Collapsed, the panel is two rows and no more: the chart above it is what the
-   drawer is now for, so it spends nothing on anything else. */
-.panel--solo .names {
-  gap: 0.25rem;
-}
-
-.panel--solo .name {
-  background: var(--color-subtle);
 }
 
 /* --- add someone ---------------------------------------------------------- */

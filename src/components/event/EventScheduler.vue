@@ -10,6 +10,7 @@ import AdminLoginLink from "./AdminLoginLink.vue";
 import AdminTools from "./AdminTools.vue";
 import AvailabilityGrid from "./AvailabilityGrid.vue";
 import ColorLegend from "./ColorLegend.vue";
+import IsolationPill from "./IsolationPill.vue";
 import GuestIdentityDialog from "./GuestIdentityDialog.vue";
 import IdentityCard from "./IdentityCard.vue";
 import RespondentsPanel from "./RespondentsPanel.vue";
@@ -39,6 +40,7 @@ import {
   perViewFor,
 } from "../../lib/grid";
 import { toAvailabilitySets, toIsoArray, type AvailabilityType, type EventDoc } from "../../lib/event";
+import { useIsolation } from "../../lib/isolation";
 import type { PresenceEntry, RealtimeSession, SavePayload } from "../../lib/realtime";
 import { createSaveTransport } from "../../lib/save-transport";
 import { adoptDisplayName, guestNameProblem, userKey } from "../../lib/user-key";
@@ -214,18 +216,6 @@ const settingsOpen = ref(false);
 const hoveredSlot = ref<number | null>(null);
 const pinnedSlot = ref<number | null>(null);
 const highlight = ref<string | null>(null);
-/**
- * Whose answer the chart is showing on its own, asked for from a row of the
- * phone's respondents drawer.
- *
- * It lives as long as the drawer does and no longer. The drawer is a bottom
- * sheet over the chart it changes, so "showing only Ada" is a thing you set up
- * and then look at — and the looking is the drawer's whole purpose being over.
- * Anything that closes the drawer therefore puts the group's heatmap back,
- * which also means there is no state left behind for a later visit to the page
- * to be confused by.
- */
-const soloKey = ref<string | null>(null);
 /** Set when the guest paints; blocks a background refresh from clobbering edits. */
 const dirtySinceConfirm = ref(false);
 let awaitingIdentityRefresh: string | null = null;
@@ -705,33 +695,69 @@ function onHover(slot: number | null) {
  * is no pointer left over the chart to justify an outline.
  */
 /**
- * Closes the respondents drawer, and with it any single-person view it was
- * holding. Every way out of the drawer goes through here — the close button, the
- * backdrop, Escape — so there is one place the rule lives rather than three.
+ * Closes the respondents drawer.
+ *
+ * It used to take the isolated view down with it, back when the two were one
+ * thing. They are not: closing the drawer is now how you *look* at what an eye
+ * asked for (`lib/isolation.ts`).
  */
 function closePeople() {
   peopleOpen.value = false;
-  soloKey.value = null;
   // The rows the pointer was over have just gone; nothing is left to hover.
   highlight.value = null;
 }
 
-/** The chart shows one person, or the group. Never both, and never nobody. */
-function onSolo(key: string | null) {
-  soloKey.value = key;
-}
+// --- showing one person ---------------------------------------------------
 
-/** The name to print on the drawer’s title while it is showing one person. */
-const soloLabel = computed(() =>
-  soloKey.value === null ? "" : responseIndex.value.labels.get(soloKey.value) ?? soloKey.value,
+const {
+  key: isolated,
+  show: showOnly,
+  clear: showEveryone,
+} = useIsolation({ editing, leaveEditing: stopEditing });
+
+/**
+ * The spelling the row used when it asked, kept as a fallback.
+ *
+ * The live label is preferred — a rename between then and now should show —
+ * but somebody who is only present has no stored label at all, and a response
+ * deleted while it is being looked at loses the one it had. Neither is a
+ * reason for the pill to start printing a bare user key.
+ */
+const askedFor = ref("");
+
+/** The name to print on the pill, and in the overlay for a name with no answer. */
+const isolatedLabel = computed(() =>
+  isolated.value === null
+    ? ""
+    : responseIndex.value.labels.get(isolated.value) ??
+      props.present.find((person) => person.key === isolated.value)?.displayName ??
+      askedFor.value ??
+      isolated.value,
 );
 
-// Writing your own answer is not a view of anybody else's, so stepping into it
-// puts the group's chart back. Widening past the phone layout does the same:
-// the drawer this lives in does not exist there.
-watch([editing, compact], () => {
-  if (editing.value || !compact.value) soloKey.value = null;
-});
+/**
+ * Isolating somebody who has not answered leaves an empty chart, which on its
+ * own looks like a chart that failed to load. It is a real question with a real
+ * answer — they are here, they have marked nothing yet — so the chart says so.
+ */
+const isolatedEmpty = computed(
+  () => isolated.value !== null && !responseIndex.value.labels.has(isolated.value),
+);
+
+/**
+ * A row's eye. Null is the "show everyone" an eye already on sends.
+ *
+ * The drawer stays exactly as it is: what changed is behind it, and closing it
+ * is how you look at that.
+ */
+function onSolo(person: { key: string; displayName: string } | null) {
+  if (person === null) {
+    showEveryone();
+    return;
+  }
+  askedFor.value = person.displayName;
+  showOnly(person.key);
+}
 
 function onPin(slot: number | null) {
   if (slot === null) {
@@ -809,7 +835,7 @@ function onPin(slot: number | null) {
            person's answer instead of the sum of everybody's — so they arrive by
            the same prop. The eye is the deliberate one, and wins. -->
       <AvailabilityGrid
-        class="grid-area"
+        class="chart"
         :event="event"
         :model="model"
         :per-view="perView"
@@ -820,7 +846,7 @@ function onPin(slot: number | null) {
         :max-count="maxCount"
         :total-respondents="responseIndex.keys.length"
         :show-best-times="showBestTimes"
-        :highlight-respondent="editing ? null : soloKey ?? highlight"
+        :highlight-respondent="editing ? null : isolated ?? highlight"
         :active-slot="activeSlot"
         :hour12="hour12"
         :compact="compact"
@@ -945,7 +971,8 @@ function onPin(slot: number | null) {
           :if-needed-names="ifNeededNames"
           :slot-label="slotLabel"
           :pinned="pinnedSlot !== null"
-          :highlight="editing ? null : highlight"
+          :highlight="editing || isolated ? null : highlight"
+          :solo="isolated"
           :current-key="guestKey"
           :deleting="deletingName"
           :delete-error="deleteError"
@@ -954,6 +981,7 @@ function onPin(slot: number | null) {
           @delete="removeRespondent"
           @add="addRespondent"
           @switch="confirmIdentity"
+          @solo="onSolo"
         />
 
         <!-- Last, and quiet. The column is about the event; this is the one
@@ -963,21 +991,34 @@ function onPin(slot: number | null) {
       </div>
     </div>
 
-    <!-- Showing one person's answer alone, the drawer stops dimming the chart
-         and shrinks to the two rows it needs: what it is doing is happening up
-         there, and a veil over the thing you just asked to look at is the one
-         thing the sheet must not be. -->
+    <!-- Whose answer is on the chart, and the way back to everybody's. Fixed
+         to the viewport rather than to the chart: the desktop's chart is
+         taller than the screen, and a label at the bottom of it would be below
+         the fold exactly when you are reading the part you scrolled to. -->
+    <IsolationPill v-if="isolated" :name="isolatedLabel" @exit="showEveryone" />
+
+    <!-- An empty chart with no explanation reads as one that failed to load.
+         Fixed too, and inert: it is a caption for the whole view, so it does
+         not travel with the columns under a scroll and does not take the taps
+         that scroll them. -->
+    <div v-if="isolatedEmpty" class="nothing" role="status">
+      <p class="nothing__card">
+        <strong class="nothing__name" :title="isolatedLabel">{{ isolatedLabel }}</strong>
+        has not marked any times yet.
+      </p>
+    </div>
+
+    <!-- An eye in here changes nothing about the sheet: what it changes is
+         behind the sheet, and closing this is how you look at it. -->
     <Dialog
       v-if="compact"
       variant="sheet"
       :open="peopleOpen"
-      :dim="soloKey === null"
-      :title="soloKey ? `Only ${soloLabel}’s times` : 'Respondents'"
+      title="Respondents"
       @close="closePeople"
     >
       <RespondentsPanel
         embedded
-        :soloable="!editing"
         :keys="responseIndex.keys"
         :labels="responseIndex.labels"
         :present="present"
@@ -985,8 +1026,8 @@ function onPin(slot: number | null) {
         :if-needed-names="ifNeededNames"
         :slot-label="slotLabel"
         :pinned="pinnedSlot !== null"
-        :highlight="editing ? null : highlight"
-        :solo="soloKey"
+        :highlight="editing || isolated ? null : highlight"
+        :solo="isolated"
         :current-key="guestKey"
         :deleting="deletingName"
         :delete-error="deleteError"
@@ -1207,9 +1248,46 @@ function onPin(slot: number | null) {
   gap: 1rem;
 }
 
-.grid-area {
+.chart {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* --- one person's answer, alone ------------------------------------------- */
+
+/* Centred on the viewport and inert. Under the pill, so the way out of the
+   view this is explaining is never behind the explanation; under the drawers
+   too, which are at 50. */
+.nothing {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  pointer-events: none;
+}
+
+.nothing__card {
+  max-width: 18rem;
+  padding: 0.7rem 0.9rem;
+  font-size: 0.875rem;
+  line-height: 1.45;
+  text-align: center;
+  color: var(--color-text-muted);
+  background: var(--color-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+}
+
+.nothing__name {
+  display: block;
+  overflow: hidden;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--color-text);
 }
 
 /* Who you are, then who else answered — the column beside the grid, in the
@@ -1352,7 +1430,7 @@ function onPin(slot: number | null) {
   }
 
   /* The chart takes everything that is left and scrolls inside it. */
-  .compact .grid-area {
+  .compact .chart {
     flex: 1 1 auto;
     width: 100%;
     min-height: 0;
