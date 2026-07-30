@@ -82,6 +82,7 @@ import {
   hitTest,
   inRectangle,
   isBestTime,
+  overlayCenterX,
   placeOverlay,
   rectangleSlots,
   regionDigest,
@@ -1471,6 +1472,17 @@ const viewSelection = computed(() => {
 });
 
 /**
+ * The options `formatSlotRange` reads, built once: the tooltip and the region's
+ * label must describe a slot in exactly the same words, and two copies of this
+ * bag is how they would come to differ.
+ */
+const rangeOptions = computed(() => ({
+  withDate: props.model.showDates,
+  dowDates: props.event.type === "dow" ? props.event.dates : undefined,
+  startOnMonday: props.event.startOnMonday,
+}));
+
+/**
  * What a region is called: the cells' own span, in the two readings a rectangle
  * has. A single cell keeps the wording the tooltip and the respondents list use
  * for it, since it is the same slot said the same way.
@@ -1489,11 +1501,7 @@ function regionLabel(start: Cell, end: Cell): string {
       props.model.slotMinutes,
       props.model.timezoneOffset,
       props.hour12,
-      {
-        withDate: props.model.showDates,
-        dowDates: props.event.type === "dow" ? props.event.dates : undefined,
-        startOnMonday: props.event.startOnMonday,
-      },
+      rangeOptions.value,
     );
   }
 
@@ -1704,21 +1712,15 @@ const tooltip = computed(() => {
   // subtract the scroll, since the cell it points at moves with the track.
   const centre =
     chartLeft.value + offsets.value[cell.col] + colWidth.value / 2 - scrollLeft.value;
-  const half = TOOLTIP_MAX_WIDTH / 2;
-  const left =
-    chartWidth.value <= TOOLTIP_MAX_WIDTH
-      ? chartLeft.value + chartWidth.value / 2
-      : Math.min(
-          Math.max(centre, chartLeft.value + half),
-          chartLeft.value + chartWidth.value - half,
-        );
   return {
-    text: formatSlotRange(slot, props.model.slotMinutes, props.model.timezoneOffset, props.hour12, {
-      withDate: props.model.showDates,
-      dowDates: props.event.type === "dow" ? props.event.dates : undefined,
-      startOnMonday: props.event.startOnMonday,
-    }),
-    left,
+    text: formatSlotRange(
+      slot,
+      props.model.slotMinutes,
+      props.model.timezoneOffset,
+      props.hour12,
+      rangeOptions.value,
+    ),
+    left: overlayCenterX(TOOLTIP_MAX_WIDTH, overlayField.value, centre),
     top: HEADER_HEIGHT + rowTop(cell.row) - scrollTop.value,
   };
 });

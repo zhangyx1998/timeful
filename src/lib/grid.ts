@@ -646,11 +646,7 @@ export function placeOverlay(
   field: OverlayField,
   anchor: OverlayAnchor,
 ): { left: number; top: number } {
-  const half = size.width / 2;
-  const left =
-    field.width <= size.width
-      ? field.left + field.width / 2
-      : clamp(anchor.x, field.left + half, field.left + field.width - half);
+  const left = overlayCenterX(size.width, field, anchor.x);
 
   const below = anchor.y + anchor.clearance;
   const above = anchor.y - anchor.clearance - size.height;
@@ -666,6 +662,23 @@ export function placeOverlay(
       : clamp(preferred, floor, ceiling);
 
   return { left, top };
+}
+
+/**
+ * The horizontal half of `placeOverlay`, on its own for boxes whose width is a
+ * known constant rather than a measurement — the tooltip, whose `max-width` is
+ * the number this is called with. One rule for "centred but on the chart",
+ * however the caller learned the width.
+ */
+export function overlayCenterX(
+  width: number,
+  field: Pick<OverlayField, "left" | "width">,
+  x: number,
+): number {
+  const half = width / 2;
+  return field.width <= width
+    ? field.left + field.width / 2
+    : clamp(x, field.left + half, field.left + field.width - half);
 }
 
 // ---------------------------------------------------------------------------
