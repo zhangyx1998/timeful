@@ -8,9 +8,23 @@
  *
  * (The controls are cosmetic either way: the server checks the session itself.
  * This keeps the UI from lying about who someone is.)
+ *
+ * The other half is where a request is sent. There are two namespaces — `/api/*`
+ * for what is global and `/<slug>/…` for what belongs to one event — so paths
+ * are written out in full and reach `fetch` verbatim, and the event-scoped ones
+ * are built by the helpers rather than spelled at each call site.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, apiError, fetchIsAdmin, isAuthedStatus } from "./api";
+import {
+  ApiError,
+  apiError,
+  eventDataPath,
+  eventSettingsPath,
+  fetchIsAdmin,
+  isAuthedStatus,
+  request,
+  userPath,
+} from "./api";
 
 const realFetch = globalThis.fetch;
 
@@ -28,6 +42,62 @@ function respondWith(status: number, body: unknown) {
     ),
   ) as unknown as typeof fetch;
 }
+
+/** The URL the stubbed `fetch` was called with, and its init. */
+function lastCall(): [string, RequestInit] {
+  const calls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls;
+  const call = calls[calls.length - 1];
+  return [call[0] as string, (call[1] ?? {}) as RequestInit];
+}
+
+describe("request", () => {
+  it("asks for the path it was given, exactly", async () => {
+    // Two namespaces now — `/api/*` for what is global and `/<slug>/…` for what
+    // belongs to one event — so a client that guessed a prefix would be
+    // guessing between them. Nothing is prepended to either.
+    respondWith(200, { ok: true });
+    await request("/api/events");
+    expect(lastCall()[0]).toBe("/api/events");
+
+    respondWith(200, { ok: true });
+    await request("/rainy-otter/data");
+    expect(lastCall()[0]).toBe("/rainy-otter/data");
+  });
+
+  it("sends the session cookie whatever the namespace", async () => {
+    respondWith(200, { ok: true });
+    await request("/rainy-otter/data");
+    expect(lastCall()[1].credentials).toBe("include");
+  });
+});
+
+describe("event-scoped paths", () => {
+  it("builds the three endpoints an event has", () => {
+    expect(eventDataPath("rainy-otter")).toBe("/rainy-otter/data");
+    expect(eventSettingsPath("rainy-otter")).toBe("/rainy-otter/settings");
+    expect(userPath("rainy-otter", "ada-lovelace")).toBe(
+      "/rainy-otter/users/ada-lovelace",
+    );
+  });
+
+  it("takes the uuid as readily as the slug", () => {
+    const id = "11111111-1111-1111-1111-111111111111";
+    expect(eventDataPath(id)).toBe(`/${id}/data`);
+    expect(eventSettingsPath(id)).toBe(`/${id}/settings`);
+    expect(userPath(id, "ada-lovelace")).toBe(`/${id}/users/ada-lovelace`);
+  });
+
+  it("escapes both halves, so neither can reach outside its own segment", () => {
+    expect(eventDataPath("a/b")).toBe("/a%2Fb/data");
+    expect(eventSettingsPath("a?b")).toBe("/a%3Fb/settings");
+    expect(userPath("a/b", "../secret")).toBe("/a%2Fb/users/..%2Fsecret");
+    // A key that reached the client un-normalized is still only one segment.
+    expect(userPath("rainy-otter", "ada lovelace")).toBe(
+      "/rainy-otter/users/ada%20lovelace",
+    );
+    expect(userPath("rainy-otter", "zoë")).toBe("/rainy-otter/users/zo%C3%AB");
+  });
+});
 
 describe("isAuthedStatus", () => {
   it("accepts only an explicit authed: true", () => {
@@ -96,9 +166,11 @@ describe("fetchIsAdmin", () => {
   it("asks the status endpoint with credentials, since the session is a cookie", async () => {
     respondWith(200, { needsSetup: false, authed: true });
     await fetchIsAdmin();
-    const call = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(call[0]).toBe("/api/status");
-    expect((call[1] as RequestInit).credentials).toBe("include");
+    // Written out in full and passed through as it stands: the global surface
+    // spells its own `/api`, and nothing here adds one.
+    const [url, init] = lastCall();
+    expect(url).toBe("/api/status");
+    expect(init.credentials).toBe("include");
   });
 
   it("never throws, so a caller cannot forget to handle the failure", async () => {

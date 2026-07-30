@@ -10,7 +10,7 @@
  * made the list jump under the pointer.
  */
 import { ref } from "vue";
-import { api, apiError } from "../../lib/api";
+import { api, apiError, eventSettingsPath } from "../../lib/api";
 import { formatDateTime } from "../../lib/dates";
 import { eventTypeLabel } from "../../lib/event-form";
 import Button from "../ui/Button.vue";
@@ -51,7 +51,7 @@ async function remove(): Promise<void> {
   error.value = "";
   deleting.value = true;
   try {
-    await api.del(`/events/${event.id}`);
+    await api.del(eventSettingsPath(event.id));
     confirming.value = null;
     emit("changed");
   } catch (err) {

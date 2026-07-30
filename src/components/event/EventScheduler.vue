@@ -30,26 +30,55 @@ import {
 } from "../../lib/dates";
 import { buildGrid, buildResponseIndex, maxRespondents } from "../../lib/grid";
 import { toAvailabilitySets, toIsoArray, type AvailabilityType, type EventDoc } from "../../lib/event";
+import type { PresenceEntry, RealtimeSession, SavePayload } from "../../lib/realtime";
+import { createSaveTransport } from "../../lib/save-transport";
+import { guestNameProblem, userKey } from "../../lib/user-key";
+import { userPath } from "../../lib/api";
 import { createSyncEngine, type SyncBaseline } from "../../lib/sync";
+
+/**
+ * The half of the realtime handle this component uses: one method that either
+ * takes a save or says it cannot.
+ *
+ * Narrow on purpose. The socket belongs to the page above — it is one
+ * connection for the whole event, and presence arrives on it — but the saves
+ * belong here, so the page passes down the ability to send one and nothing
+ * else.
+ */
+export interface RealtimeWriter {
+  save(payload: SavePayload): Promise<void> | null;
+}
 
 const props = withDefaults(
   defineProps<{
     event: EventDoc;
     /**
-     * Who else is on this page right now, by the name each of them adopted.
-     * Comes off the realtime channel, which the page above owns, and is empty
-     * whenever there is no live connection — so the list simply has no dots in
-     * it, which is what it looked like before presence existed.
+     * Who else holds a write session on this event right now. Comes off the
+     * realtime channel, which the page above owns, and is empty whenever there
+     * is no live connection — so the list simply has no dots in it, which is
+     * what it looked like before presence existed.
      */
-    present?: string[];
+    present?: PresenceEntry[];
+    /**
+     * The page's write session, when there is one open. Saves go over it; with
+     * no session, or one that is down, they go over the REST PUT exactly as
+     * they always did.
+     */
+    writer?: RealtimeWriter | null;
   }>(),
-  { present: () => [] },
+  { present: () => [], writer: null },
 );
 
 const emit = defineEmits<{
   refresh: [];
-  /** The name this visitor is answering as, or null once they are nobody. */
-  identity: [name: string | null];
+  /** Who this visitor is answering as, or null once they are nobody. */
+  identity: [session: RealtimeSession | null];
+  /**
+   * Ask for the write session again for the identity already adopted. Entering
+   * "My availability" after a refused claim is the case: the page above owns
+   * the socket and is the only thing that can try.
+   */
+  claim: [];
 }>();
 
 const STORAGE = {
@@ -140,7 +169,16 @@ const timezones = computed(() => {
 
 const availability = reactive(new Set<number>());
 const ifNeeded = reactive(new Set<number>());
-const guestName = ref<string | null>(null);
+/**
+ * Who this page is answering as: the key it files under and the name it shows.
+ *
+ * One ref for both halves rather than two, because they are one fact and the
+ * two must never disagree — a key without its spelling cannot render a row, and
+ * a spelling without its key cannot match one.
+ */
+const identity = ref<RealtimeSession | null>(null);
+const guestKey = computed(() => identity.value?.key ?? null);
+const guestName = computed(() => identity.value?.displayName ?? null);
 const editing = ref(false);
 const identityOpen = ref(false);
 /** Day columns a viewport of the chart holds; the rest is scrolled to. */
@@ -163,7 +201,7 @@ const highlight = ref<string | null>(null);
  * which also means there is no state left behind for a later visit to the page
  * to be confused by.
  */
-const soloName = ref<string | null>(null);
+const soloKey = ref<string | null>(null);
 /** Set when the guest paints; blocks a background refresh from clobbering edits. */
 const dirtySinceConfirm = ref(false);
 let awaitingIdentityRefresh: string | null = null;
@@ -178,7 +216,14 @@ const model = computed(() =>
 );
 
 const override = computed(() =>
-  guestName.value ? { name: guestName.value, availability, ifNeeded } : null,
+  identity.value
+    ? {
+        key: identity.value.key,
+        displayName: identity.value.displayName,
+        availability,
+        ifNeeded,
+      }
+    : null,
 );
 
 const responseIndex = computed(() => buildResponseIndex(props.event, override.value));
@@ -211,36 +256,61 @@ const slotLabel = computed(() => {
   );
 });
 
-const existingNames = computed(() => Object.keys(props.event.responses ?? {}).sort());
+/**
+ * Everyone who has already answered, as the identity dialog needs them: the key
+ * to match on, the name to offer. Ordered by the name, which is what is read.
+ */
+const existingPeople = computed(() =>
+  Object.entries(props.event.responses ?? {})
+    .map(([key, response]) => ({ key, displayName: response?.displayName || key }))
+    .sort((a, b) => a.displayName.localeCompare(b.displayName)),
+);
 
 /**
  * Announces the identity upwards so the realtime connection can carry it.
  *
- * A watcher rather than a call in each of the three places a name is taken up
- * or given up: it fires after the synchronous work of the switch — including
+ * A watcher rather than a call in each of the three places an identity is taken
+ * up or given up: it fires after the synchronous work of the switch — including
  * `engine.flush()`, which has to reach the server as the person being stepped
  * out of — so reconnecting cannot get ahead of the autosave it follows.
  */
-watch(guestName, (name) => emit("identity", name));
+watch(identity, (session) => emit("identity", session));
 
 // --- autosave -------------------------------------------------------------
 
 /**
- * Whose answer the queued payload is. Not `guestName`: switching person while
- * an edit is still queued must not post that edit under the name being switched
+ * Whose answer the queued payload is. Not `identity`: switching person while an
+ * edit is still queued must not post that edit under the person being switched
  * *to*. It is set where the payload is built and left alone thereafter, so a
  * flush during the switch still lands under the person who made the edit.
  */
-let savingAs: string | null = null;
+let savingAs: RealtimeSession | null = null;
+
+/**
+ * One save, over whichever pipe is open — the write session when this page
+ * holds one, the REST `PUT` otherwise and whenever the socket lets it down.
+ * The rule lives in `save-transport.ts`; this only says who is saving.
+ *
+ * The sync engine above it is untouched by any of it: coalescing, the era
+ * counter, the baselines and the retry all work off one `save` promise, and
+ * this is that promise however it was kept.
+ */
+const saveResponse = createSaveTransport({
+  overSocket: (payload) => props.writer?.save(payload) ?? null,
+  overRest: (payload) => {
+    const session = savingAs;
+    if (!session) return Promise.resolve();
+    return api.put(userPath(props.event.id, session.key), {
+      displayName: session.displayName,
+      ...payload,
+    });
+  },
+});
 
 const engine = createSyncEngine({
   save: async (payload) => {
-    const name = savingAs;
-    if (!name) return;
-    await api.put(
-      `/events/${props.event.id}/responses/${encodeURIComponent(name)}`,
-      payload,
-    );
+    if (!savingAs) return;
+    await saveResponse(payload);
   },
 });
 
@@ -248,8 +318,8 @@ const syncStatus = engine.status;
 const syncError = engine.error;
 
 function queueSave() {
-  if (!guestName.value) return;
-  savingAs = guestName.value;
+  if (!identity.value) return;
+  savingAs = identity.value;
   engine.schedule({
     availability: toIsoArray(availability),
     ifNeeded: toIsoArray(ifNeeded),
@@ -301,8 +371,8 @@ onBeforeUnmount(() => {
  * the same question — a stored response always has at least one mark, so an
  * empty grid after loading means there is no response.
  */
-function loadResponseFor(name: string) {
-  const sets = toAvailabilitySets(props.event.responses?.[name]);
+function loadResponseFor(key: string) {
+  const sets = toAvailabilitySets(props.event.responses?.[key]);
   availability.clear();
   for (const slot of sets.availability) availability.add(slot);
   ifNeeded.clear();
@@ -312,21 +382,21 @@ function loadResponseFor(name: string) {
   engine.reset(baseline);
 }
 
-function confirmIdentity(name: string) {
+function confirmIdentity(person: RealtimeSession) {
   // Whatever the person being stepped out of had queued goes to the server
   // before the grid is re-seeded under someone else; `loadResponseFor` drops
   // the queue, and an unsaved edit is not this new person's to carry.
   engine.flush();
-  guestName.value = name;
-  writeStorage(STORAGE.guestName, name);
+  identity.value = person;
+  writeStorage(STORAGE.guestName, person.displayName);
   identityOpen.value = false;
   dirtySinceConfirm.value = false;
-  loadResponseFor(name);
+  loadResponseFor(person.key);
   editing.value = true;
   pinnedSlot.value = null;
   highlight.value = null;
   // Pull the freshest copy: someone may have answered since this page loaded.
-  awaitingIdentityRefresh = name;
+  awaitingIdentityRefresh = person.key;
   emit("refresh");
 }
 
@@ -348,7 +418,7 @@ function browseOnly() {
   clearStorage(STORAGE.guestName);
   identityOpen.value = false;
   awaitingIdentityRefresh = null;
-  guestName.value = null;
+  identity.value = null;
   availability.clear();
   ifNeeded.clear();
   engine.reset("empty");
@@ -362,10 +432,10 @@ function browseOnly() {
 watch(
   () => props.event,
   () => {
-    const name = awaitingIdentityRefresh;
+    const key = awaitingIdentityRefresh;
     awaitingIdentityRefresh = null;
-    if (!name || dirtySinceConfirm.value || engine.pending.value) return;
-    loadResponseFor(name);
+    if (!key || dirtySinceConfirm.value || engine.pending.value) return;
+    loadResponseFor(key);
   },
 );
 
@@ -385,7 +455,7 @@ const hasMarks = computed(() => availability.size > 0 || ifNeeded.size > 0);
  */
 async function clearMine() {
   clearOpen.value = false;
-  if (!guestName.value) return;
+  if (!identity.value) return;
   availability.clear();
   ifNeeded.clear();
   pinnedSlot.value = null;
@@ -416,17 +486,15 @@ async function clearMine() {
 const deletingName = ref<string | null>(null);
 const deleteError = ref<string | null>(null);
 
-async function removeRespondent(name: string) {
+async function removeRespondent(key: string) {
   if (deletingName.value) return;
-  deletingName.value = name;
+  deletingName.value = key;
   deleteError.value = null;
   try {
-    await api.del(
-      `/events/${props.event.id}/responses/${encodeURIComponent(name)}`,
-    );
+    await api.del(userPath(props.event.id, key));
     // Their own answer is held locally as well; drop it so the override cannot
     // put the row straight back.
-    if (guestName.value === name) {
+    if (guestKey.value === key) {
       availability.clear();
       ifNeeded.clear();
       engine.reset("empty");
@@ -440,13 +508,31 @@ async function removeRespondent(name: string) {
 }
 
 function startEditing() {
-  if (guestName.value) {
+  if (identity.value) {
     editing.value = true;
     pinnedSlot.value = null;
+    // The session may have been refused, or taken away, since this identity was
+    // adopted. Asking again here is what makes "My availability" the place a
+    // takeover is offered from.
+    emit("claim");
     return;
   }
   identityOpen.value = true;
 }
+
+/**
+ * Somebody else took this key's write session. Step back to the group view: the
+ * page is no longer the one editing as this person, and leaving the grid live
+ * would invite marks that have nowhere to go. The identity itself is kept, so
+ * "My availability" can ask for the session back.
+ */
+function leaveEditing() {
+  engine.flush();
+  editing.value = false;
+  pinnedSlot.value = null;
+}
+
+defineExpose({ leaveEditing, resumeEditing: startEditing });
 
 function stopEditing() {
   engine.flush();
@@ -514,17 +600,39 @@ onMounted(() => {
   updateLayout();
   window.addEventListener("resize", updateLayout);
 
-  const stored = readStorage(STORAGE.guestName)?.trim();
-  if (stored) {
+  const stored = readStorage(STORAGE.guestName)?.trim() ?? "";
+  // A name stored before dashes were illegal cannot be saved under, so it is
+  // not a name this page can be. Dropping it asks once, and the key the guest
+  // retypes lands on the very record the old spelling pointed at.
+  if (stored && guestNameProblem(stored) === null) {
     // A returning guest is not interrupted: their answer is loaded and the grid
     // opens ready to edit.
-    guestName.value = stored;
-    loadResponseFor(stored);
+    identity.value = adopt(stored);
+    loadResponseFor(identity.value.key);
     editing.value = true;
   } else {
+    if (stored) clearStorage(STORAGE.guestName);
     identityOpen.value = true;
   }
 });
+
+/**
+ * The identity for a typed name, snapped to the spelling already on the event.
+ *
+ * Two people who type the same name differently are one person — that is what
+ * the key decides — and the group should keep seeing the spelling it already
+ * knows rather than having it rewritten by whoever answered last. A stored
+ * spelling that is itself no longer legal (a legacy name with a dash in it) is
+ * the exception: it cannot be written back, so the new one replaces it.
+ */
+function adopt(displayName: string): RealtimeSession {
+  const key = userKey(displayName);
+  const known = props.event.responses?.[key]?.displayName;
+  return {
+    key,
+    displayName: known && guestNameProblem(known) === null ? known : displayName.trim(),
+  };
+}
 
 onBeforeUnmount(() => window.removeEventListener("resize", updateLayout));
 
@@ -549,21 +657,26 @@ function onHover(slot: number | null) {
  */
 function closePeople() {
   peopleOpen.value = false;
-  soloName.value = null;
+  soloKey.value = null;
   // The rows the pointer was over have just gone; nothing is left to hover.
   highlight.value = null;
 }
 
 /** The chart shows one person, or the group. Never both, and never nobody. */
-function onSolo(name: string | null) {
-  soloName.value = name;
+function onSolo(key: string | null) {
+  soloKey.value = key;
 }
+
+/** The name to print on the drawer’s title while it is showing one person. */
+const soloLabel = computed(() =>
+  soloKey.value === null ? "" : responseIndex.value.labels.get(soloKey.value) ?? soloKey.value,
+);
 
 // Writing your own answer is not a view of anybody else's, so stepping into it
 // puts the group's chart back. Widening past the phone layout does the same:
 // the drawer this lives in does not exist there.
 watch([editing, compact], () => {
-  if (editing.value || !compact.value) soloName.value = null;
+  if (editing.value || !compact.value) soloKey.value = null;
 });
 
 function onPin(slot: number | null) {
@@ -627,12 +740,12 @@ function onPin(slot: number | null) {
         <button
           type="button"
           class="handle"
-          :aria-label="`Respondents, ${responseIndex.names.length} answered`"
+          :aria-label="`Respondents, ${responseIndex.keys.length} answered`"
           title="Respondents"
           @click="peopleOpen = true"
         >
           <IconPeople stroke-width="1.8" aria-hidden="true" />
-          <span class="handle__count">{{ responseIndex.names.length }}</span>
+          <span class="handle__count">{{ responseIndex.keys.length }}</span>
         </button>
       </div>
     </div>
@@ -651,9 +764,9 @@ function onPin(slot: number | null) {
         :if-needed="ifNeeded"
         :response-index="responseIndex"
         :max-count="maxCount"
-        :total-respondents="responseIndex.names.length"
+        :total-respondents="responseIndex.keys.length"
         :show-best-times="showBestTimes"
-        :highlight-respondent="editing ? null : soloName ?? highlight"
+        :highlight-respondent="editing ? null : soloKey ?? highlight"
         :active-slot="activeSlot"
         :hour12="hour12"
         :compact="compact"
@@ -694,7 +807,7 @@ function onPin(slot: number | null) {
               class="chart-foot__legend"
               :mode="editing ? 'edit' : 'group'"
               :max="maxCount"
-              :total="responseIndex.names.length"
+              :total="responseIndex.keys.length"
             />
 
             <!-- The verb is what a phone's foot row gives up first: beside a
@@ -756,14 +869,15 @@ function onPin(slot: number | null) {
         <RespondentsPanel
           v-if="!compact"
           class="panel-area"
-          :names="responseIndex.names"
+          :keys="responseIndex.keys"
+          :labels="responseIndex.labels"
           :present="present"
           :available-names="availableNames"
           :if-needed-names="ifNeededNames"
           :slot-label="slotLabel"
           :pinned="pinnedSlot !== null"
           :highlight="editing ? null : highlight"
-          :current-name="guestName"
+          :current-key="guestKey"
           :deleting="deletingName"
           :delete-error="deleteError"
           @highlight="highlight = $event"
@@ -783,22 +897,23 @@ function onPin(slot: number | null) {
       v-if="compact"
       variant="sheet"
       :open="peopleOpen"
-      :dim="soloName === null"
-      :title="soloName ? `Only ${soloName}’s times` : 'Respondents'"
+      :dim="soloKey === null"
+      :title="soloKey ? `Only ${soloLabel}’s times` : 'Respondents'"
       @close="closePeople"
     >
       <RespondentsPanel
         embedded
         :soloable="!editing"
-        :names="responseIndex.names"
+        :keys="responseIndex.keys"
+        :labels="responseIndex.labels"
         :present="present"
         :available-names="availableNames"
         :if-needed-names="ifNeededNames"
         :slot-label="slotLabel"
         :pinned="pinnedSlot !== null"
         :highlight="editing ? null : highlight"
-        :solo="soloName"
-        :current-name="guestName"
+        :solo="soloKey"
+        :current-key="guestKey"
         :deleting="deletingName"
         :delete-error="deleteError"
         @highlight="highlight = $event"
@@ -834,7 +949,7 @@ function onPin(slot: number | null) {
 
     <GuestIdentityDialog
       :open="identityOpen"
-      :existing-names="existingNames"
+      :existing-people="existingPeople"
       @confirm="confirmIdentity"
       @browse="browseOnly"
       @close="identityOpen = false"

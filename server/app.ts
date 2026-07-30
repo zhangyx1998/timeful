@@ -17,14 +17,24 @@ import { realtimeEnabled } from "./config.ts";
 import { statusOf } from "./http.ts";
 import type { AssetPaths } from "./paths.ts";
 import { describeTrustedProxies, type TrustProxySetting } from "./proxy.ts";
+import { NOT_FOUND_HTML, sendNotFoundPage } from "./not-found.ts";
 import { attachRealtime } from "./realtime.ts";
 import { authRouter } from "./routes/auth.ts";
-import { eventsRouter, resolveEvent } from "./routes/events.ts";
+import {
+  eventScopedRouter,
+  eventsRouter,
+  resolveEvent,
+  writeResponse,
+} from "./routes/events.ts";
 import { leasesRouter } from "./routes/leases.ts";
 import { sessionsRouter } from "./routes/sessions.ts";
 import { readEvent, readLinks } from "./storage.ts";
 import { tarpitMiss } from "./tarpit.ts";
 import type { StoredEvent } from "./types.ts";
+
+// Re-exported from where it used to live, so importers keep working; the page
+// itself moved to its own module because the event-scoped router needs it too.
+export { NOT_FOUND_HTML };
 
 /** The SSR bundle's shape, borrowed from the source entry it is built from. */
 type SsrModule = typeof import("../src/entry-server.ts");
@@ -69,58 +79,6 @@ function replaceOnce(html: string, marker: string, value: string): string {
   return html.replace(marker, () => value);
 }
 
-/**
- * The miss page. Standalone by design: it is served for paths that resolve to
- * nothing, so it must not depend on the client bundle, the SSR bundle, or the
- * index.html template being present. Colors are inlined copies of the
- * light/dark pairs in src/styles/tokens.css (bg, text, text-muted, accent);
- * `color-scheme: light dark` + `light-dark()` follows the system, and the
- * `data-theme` rules let the same stored override the app uses win over it.
- */
-export const NOT_FOUND_HTML = `<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="robots" content="noindex" />
-    <link rel="icon" href="/favicon.ico" />
-    <title>Not found · Timeful</title>
-    <style>
-      :root { color-scheme: light dark; }
-      :root[data-theme="light"] { color-scheme: light; }
-      :root[data-theme="dark"] { color-scheme: dark; }
-      body { margin: 0; min-height: 100dvh; display: flex; align-items: center;
-        justify-content: center; font: 16px/1.5 system-ui, -apple-system, sans-serif;
-        color: light-dark(#18181b, #e8e8ea); background: light-dark(#fafafa, #1b1b1f); }
-      main { text-align: center; padding: 2rem; }
-      h1 { font-size: 1.5rem; margin: 0 0 .5rem; }
-      p { margin: 0 0 1.5rem; color: light-dark(#71717a, #9a9aa5); }
-      a { color: light-dark(#00994c, #35d07f); }
-    </style>
-    <script>
-      // Same before-first-paint override as index.html, kept in sync by hand
-      // because this page intentionally loads nothing. Storage can throw.
-      (function () {
-        try {
-          var stored = window.localStorage.getItem("timeful.theme");
-          if (stored === "light" || stored === "dark") {
-            document.documentElement.setAttribute("data-theme", stored);
-          }
-        } catch (error) {
-          /* keep the system default */
-        }
-      })();
-    </script>
-  </head>
-  <body>
-    <main>
-      <h1>Event not found</h1>
-      <p>This link doesn't point to an event.</p>
-      <a href="/">Go home</a>
-    </main>
-  </body>
-</html>
-`;
 
 // ---------------------------------------------------------------------------
 // renderers
@@ -189,6 +147,12 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
   });
 
   renderer.attach?.(app);
+
+  // Event-scoped endpoints live on the event's own path, not under `/api`
+  // (ARCHITECTURE.md § API). Mounted *after* the static middleware so a real
+  // file under `/assets/…` is still a file rather than a slug named "assets",
+  // and before the page handler, which owns single-segment paths.
+  app.use(eventScopedRouter);
 
   // -------------------------------------------------------------------------
   // page rendering
@@ -262,7 +226,7 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
   });
 
   app.use((_req: Request, res: Response) => {
-    res.status(404).set("Content-Type", "text/html; charset=utf-8").end(NOT_FOUND_HTML);
+    sendNotFoundPage(res);
   });
 
   app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
@@ -274,7 +238,9 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
     if (status >= 500) console.error(err);
     const detail = err instanceof Error ? err.message : "";
     const message = status >= 500 ? "Internal server error" : detail || "Bad request";
-    if (req.path.startsWith("/api")) {
+    // `/api/*` by its prefix, and the event-scoped endpoints by the mark
+    // `jsonRoute` leaves — their paths look exactly like page URLs.
+    if (req.path.startsWith("/api") || res.locals.jsonRoute === true) {
       res.status(status).json({ error: message });
       return;
     }
@@ -348,7 +314,7 @@ export function serve(options: ServeOptions): Promise<Server> {
       // Attached to the listening server, never to the app: an upgrade is a
       // property of the HTTP connection and never reaches Express at all.
       if (realtime) {
-        const hub = attachRealtime(server, { resolveEvent });
+        const hub = attachRealtime(server, { resolveEvent, writeResponse });
         server.on("close", () => void hub.close());
       }
       console.log(

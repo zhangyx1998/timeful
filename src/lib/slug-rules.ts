@@ -21,6 +21,22 @@ export const MAX_SLUG_LENGTH = 80;
 export const RESERVED_SLUGS: ReadonlySet<string> = new Set(["api", "assets"]);
 
 /**
+ * The sub-segments an event's own path spends on its API: `/<slug>/data`,
+ * `/<slug>/settings`, `/<slug>/users/<key>` and `/<slug>/ws`.
+ *
+ * They are **sub**-segments and constrain nothing about slugs, which are single
+ * segments — `/data` is a perfectly good event page. What they decide is how a
+ * miss under a slug answers: one of these is somebody's API client and gets
+ * JSON, anything else is somebody's browser and gets the 404 page.
+ */
+export const RESERVED_SUBPATHS: ReadonlySet<string> = new Set([
+  "data",
+  "settings",
+  "users",
+  "ws",
+]);
+
+/**
  * Letters, digits and hyphens, starting with a letter or a digit. Everything
  * else a path might carry — a slash, a dot, a space, a percent-escape — is out,
  * which is what keeps a slug a single path segment.

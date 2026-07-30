@@ -9,7 +9,15 @@
  */
 import type { EventDoc, EventResponse, EventType } from "../src/lib/event.ts";
 import type { EventSummary, SessionInfo } from "../src/lib/api.ts";
-import type { RealtimeMessage } from "../src/lib/realtime.ts";
+import type {
+  PresenceEntry,
+  RealtimeMessage,
+  SaveMessage,
+} from "../src/lib/realtime.ts";
+// The one server-side shape re-exported *from* the server: the realtime module
+// takes the write path as an injected function and needs its signature without
+// importing the route layer it lives in.
+import type { ResponseInput, ResponseWrite } from "./routes/events.ts";
 
 export type {
   EventDoc,
@@ -17,7 +25,11 @@ export type {
   EventType,
   EventSummary,
   SessionInfo,
+  PresenceEntry,
   RealtimeMessage,
+  ResponseInput,
+  ResponseWrite,
+  SaveMessage,
 };
 
 /** An event exactly as stored in `var/events/<uuid>.json`. */

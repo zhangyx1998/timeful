@@ -9,7 +9,7 @@
  */
 import { onMounted, ref } from "vue";
 import AccountSection from "./AccountSection.vue";
-import { api, apiError } from "../../lib/api";
+import { api, apiError, eventDataPath } from "../../lib/api";
 import EventFormDialog from "../shared/EventFormDialog.vue";
 import EventList from "./EventList.vue";
 import SessionsSection from "./SessionsSection.vue";
@@ -43,7 +43,7 @@ async function loadEvents(): Promise<void> {
   error.value = "";
   loading.value = true;
   try {
-    events.value = await api.get<EventSummary[]>("/events");
+    events.value = await api.get<EventSummary[]>("/api/events");
   } catch (err) {
     const { message, status } = apiError(err, "Could not load events");
     if (status === 401) {
@@ -63,7 +63,7 @@ function openCreate(): void {
 async function openEdit(summary: EventSummary): Promise<void> {
   error.value = "";
   try {
-    const full = await api.get<EventDoc>(`/events/${summary.id}`);
+    const full = await api.get<EventDoc>(eventDataPath(summary.id));
     form.value = { event: full };
   } catch (err) {
     error.value = apiError(err, "Could not open the event").message;
@@ -77,7 +77,7 @@ async function onSaved(): Promise<void> {
 
 async function logout(): Promise<void> {
   try {
-    await api.post("/auth/logout");
+    await api.post("/api/auth/logout");
   } catch {
     /* signing out locally regardless */
   }

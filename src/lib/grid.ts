@@ -667,16 +667,29 @@ export function placeOverlay(
 // responses and heatmap
 // ---------------------------------------------------------------------------
 
+/**
+ * The event's answers, inverted.
+ *
+ * Everything in here is by **user key**, never by the name a guest typed:
+ * matching one person across a response, a presence entry and the visitor's own
+ * identity is exactly what a key is for. `labels` is the other half — the
+ * spelling each key is rendered as — and nothing outside this module should be
+ * deriving one from the other.
+ */
 export interface ResponseIndex {
-  names: string[];
-  /** Slot -> everyone counted as available there (includes if-needed). */
+  /** Everyone with a stored answer, ordered by the name they are shown under. */
+  keys: string[];
+  /** Key -> the display name to render for it. */
+  labels: Map<string, string>;
+  /** Slot -> every key counted as available there (includes if-needed). */
   available: Map<number, Set<string>>;
-  /** Slot -> everyone who marked it if-needed. */
+  /** Slot -> every key that marked it if-needed. */
   ifNeeded: Map<number, Set<string>>;
 }
 
 export interface ResponseOverride {
-  name: string;
+  key: string;
+  displayName: string;
   availability: Set<number>;
   ifNeeded: Set<number>;
 }
@@ -697,23 +710,30 @@ export function buildResponseIndex(
 ): ResponseIndex {
   const available = new Map<number, Set<string>>();
   const ifNeeded = new Map<number, Set<string>>();
-  const names: string[] = [];
+  const labels = new Map<string, string>();
+  const keys: string[] = [];
 
-  const add = (map: Map<number, Set<string>>, slot: number, name: string) => {
+  const add = (map: Map<number, Set<string>>, slot: number, key: string) => {
     let set = map.get(slot);
     if (!set) {
       set = new Set<string>();
       map.set(slot, set);
     }
-    set.add(name);
+    set.add(key);
   };
 
-  const record = (name: string, availability: Iterable<number>, needed: Iterable<number>) => {
-    names.push(name);
-    for (const slot of availability) add(available, slot, name);
+  const record = (
+    key: string,
+    displayName: string,
+    availability: Iterable<number>,
+    needed: Iterable<number>,
+  ) => {
+    keys.push(key);
+    labels.set(key, displayName);
+    for (const slot of availability) add(available, slot, key);
     for (const slot of needed) {
-      add(available, slot, name);
-      add(ifNeeded, slot, name);
+      add(available, slot, key);
+      add(ifNeeded, slot, key);
     }
   };
 
@@ -722,17 +742,17 @@ export function buildResponseIndex(
       .map((iso) => Date.parse(iso))
       .filter((ms): ms is number => !Number.isNaN(ms));
 
-  for (const [name, response] of Object.entries(event.responses ?? {})) {
-    if (override && override.name === name) continue;
+  for (const [key, response] of Object.entries(event.responses ?? {})) {
+    if (override && override.key === key) continue;
     const typed = response as EventResponse;
-    record(name, parse(typed?.availability), parse(typed?.ifNeeded));
+    record(key, typed?.displayName || key, parse(typed?.availability), parse(typed?.ifNeeded));
   }
   if (override && (override.availability.size > 0 || override.ifNeeded.size > 0)) {
-    record(override.name, override.availability, override.ifNeeded);
+    record(override.key, override.displayName, override.availability, override.ifNeeded);
   }
 
-  names.sort((a, b) => a.localeCompare(b));
-  return { names, available, ifNeeded };
+  keys.sort((a, b) => (labels.get(a) ?? a).localeCompare(labels.get(b) ?? b) || a.localeCompare(b));
+  return { keys, labels, available, ifNeeded };
 }
 
 // ---------------------------------------------------------------------------
@@ -747,7 +767,10 @@ export function buildResponseIndex(
 export type SlotStance = "available" | "if_needed" | "unavailable";
 
 export interface SlotOpinion {
-  name: string;
+  /** The respondent's user key, for matching. */
+  key: string;
+  /** The name to print on the chip. */
+  label: string;
   stance: SlotStance;
 }
 
@@ -792,13 +815,14 @@ export function slotDigest(
   const yes: SlotOpinion[] = [];
   const maybe: SlotOpinion[] = [];
   const no: SlotOpinion[] = [];
-  for (const name of index.names) {
-    if (!available?.has(name)) no.push({ name, stance: "unavailable" });
-    else if (needed?.has(name)) maybe.push({ name, stance: "if_needed" });
-    else yes.push({ name, stance: "available" });
+  for (const key of index.keys) {
+    const label = index.labels.get(key) ?? key;
+    if (!available?.has(key)) no.push({ key, label, stance: "unavailable" });
+    else if (needed?.has(key)) maybe.push({ key, label, stance: "if_needed" });
+    else yes.push({ key, label, stance: "available" });
   }
 
-  const total = index.names.length;
+  const total = index.keys.length;
   const free = [...yes, ...maybe];
   const everyone = [...free, ...no];
   const limit = cap === undefined || cap < 0 ? everyone.length : cap;

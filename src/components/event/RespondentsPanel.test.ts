@@ -15,10 +15,21 @@ import { describe, expect, it } from "vitest";
 import { renderToString } from "vue/server-renderer";
 import { createSSRApp, h } from "vue";
 import RespondentsPanel from "./RespondentsPanel.vue";
+import { userKey } from "../../lib/user-key";
+import type { PresenceEntry } from "../../lib/realtime";
 
+/**
+ * The panel takes user keys throughout — respondents, presence, the visitor's
+ * own identity, the soloed row — and a `labels` map saying how each is spelled.
+ * The tests are written in the names, because the names are what is read on
+ * screen; the keys they file under are derived here, exactly as the page
+ * derives them.
+ */
 interface Options {
+  /** Respondents with a stored answer, by display name. */
   names?: string[];
-  present?: string[];
+  /** Who is on the page: a display name, or an entry that spells itself. */
+  present?: (string | PresenceEntry)[];
   availableNames?: string[] | null;
   ifNeededNames?: string[];
   currentName?: string | null;
@@ -27,20 +38,27 @@ interface Options {
   solo?: string | null;
 }
 
+const entry = (person: string | PresenceEntry): PresenceEntry =>
+  typeof person === "string" ? { key: userKey(person), displayName: person } : person;
+
 function render(options: Options = {}): Promise<string> {
+  const names = options.names ?? [];
   const props = {
-    names: options.names ?? [],
-    present: options.present ?? [],
-    availableNames: options.availableNames ? new Set(options.availableNames) : null,
-    ifNeededNames: new Set(options.ifNeededNames ?? []),
+    keys: names.map(userKey),
+    labels: new Map(names.map((name) => [userKey(name), name])),
+    present: (options.present ?? []).map(entry),
+    availableNames: options.availableNames
+      ? new Set(options.availableNames.map(userKey))
+      : null,
+    ifNeededNames: new Set((options.ifNeededNames ?? []).map(userKey)),
     slotLabel: options.slotLabel ?? null,
     pinned: false,
     highlight: null,
-    currentName: options.currentName ?? null,
+    currentKey: options.currentName == null ? null : userKey(options.currentName),
     deleting: null,
     deleteError: null,
     soloable: options.soloable ?? false,
-    solo: options.solo ?? null,
+    solo: options.solo == null ? null : userKey(options.solo),
   };
   return renderToString(createSSRApp({ render: () => h(RespondentsPanel, props) }));
 }
@@ -108,6 +126,23 @@ describe("respondents list", () => {
     expect(rows(html)).toEqual(["Ada", "Bo"]);
     expect(dotGroups(html)).toBe(1);
     // But the fraction is about answers, and there is still only one.
+    expect(text(html)).toContain("1/1 available");
+  });
+
+  it("spells a row the way the record does, not the way the tab claims", async () => {
+    // Same person, two spellings of one key: the stored answer says
+    // "Ada Lovelace" and the open tab announces itself as "ada LOVELACE".
+    const html = await render({
+      names: ["Ada Lovelace"],
+      present: [{ key: userKey("Ada Lovelace"), displayName: "ada LOVELACE" }],
+    });
+
+    // One key is one person, so one row — and it wears the name the group
+    // already recognises rather than the shouting of whoever is online.
+    expect(rows(html)).toEqual(["Ada Lovelace"]);
+    expect(html).not.toContain("ada LOVELACE");
+    expect(dotGroups(html)).toBe(1);
+    expect(text(html)).toContain("Ada Lovelace (online)");
     expect(text(html)).toContain("1/1 available");
   });
 

@@ -31,7 +31,7 @@ const email = computed(() => status.value?.email ?? "");
 async function refresh(): Promise<void> {
   error.value = "";
   try {
-    status.value = await api.get<StatusResponse>("/status");
+    status.value = await api.get<StatusResponse>("/api/status");
   } catch (err) {
     error.value = apiError(err, "Could not reach the server").message;
   }

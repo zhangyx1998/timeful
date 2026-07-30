@@ -31,7 +31,7 @@ async function submit(): Promise<void> {
   }
   saving.value = true;
   try {
-    const result = await api.post<AuthResponse>("/auth/setup", {
+    const result = await api.post<AuthResponse>("/api/auth/setup", {
       email: email.value.trim(),
       password: password.value,
       persist: true,

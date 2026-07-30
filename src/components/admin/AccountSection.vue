@@ -39,7 +39,7 @@ async function submit(): Promise<void> {
 
   saving.value = true;
   try {
-    await api.put("/auth/credentials", payload);
+    await api.put("/api/auth/credentials", payload);
     emit("signed-out", "Credentials updated. Sign in again.");
   } catch (err) {
     error.value = apiError(err, "Could not update the credentials").message;

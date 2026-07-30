@@ -1,8 +1,18 @@
 <script setup lang="ts">
 /**
- * Up-front identity step (ARCHITECTURE.md § Guest UX). The name is the only
- * identifier a response has, so continuing under a name that already answered
- * loads and then overwrites that answer — which the dialog says plainly.
+ * Up-front identity step (ARCHITECTURE.md § Guest UX). A response is filed
+ * under the [key](../../lib/user-key.ts) of the name, so continuing under a
+ * name that normalizes to one that already answered loads and then overwrites
+ * that answer — which the dialog says plainly, whatever the spelling.
+ *
+ * Matching is on keys and nothing else. "ada  LOVELACE" finds "Ada Lovelace",
+ * and continuing adopts the spelling the event already carries rather than
+ * rewriting it, so the group keeps seeing the name it knows.
+ *
+ * The rules the server would enforce are enforced here, from the same module,
+ * as the guest types — including the one new one, that a name may not contain a
+ * dash. Finding out by being refused would be the same answer a few seconds
+ * later and in a worse place for it.
  *
  * "Just browsing" is not the same as dismissing the dialog: it says "do not
  * take me as anyone", which has to drop whatever identity the page was holding,
@@ -12,6 +22,13 @@ import { computed, ref, watch } from "vue";
 import Button from "../ui/Button.vue";
 import Dialog from "../ui/Dialog.vue";
 import TextInput from "../ui/TextInput.vue";
+import { guestNameProblem, MAX_GUEST_NAME_LENGTH, userKey } from "../../lib/user-key";
+
+/** One person already on the event: the key to match, the name to show. */
+export interface KnownPerson {
+  key: string;
+  displayName: string;
+}
 
 // `dismissible` needs an explicit default: Vue casts an absent Boolean prop to
 // `false`, not `undefined`, so without this the dialog silently loses its close
@@ -19,13 +36,17 @@ import TextInput from "../ui/TextInput.vue";
 const props = withDefaults(
   defineProps<{
     open: boolean;
-    existingNames: string[];
+    existingPeople: KnownPerson[];
     dismissible?: boolean;
   }>(),
   { dismissible: true },
 );
 
-const emit = defineEmits<{ confirm: [name: string]; close: []; browse: [] }>();
+const emit = defineEmits<{
+  confirm: [person: KnownPerson];
+  close: [];
+  browse: [];
+}>();
 
 /**
  * Always blank on open. The dialog asks who you are, and a name typed in for
@@ -49,34 +70,61 @@ watch(
 
 const trimmed = computed(() => name.value.trim());
 
-/** The stored name matching what was typed, ignoring case. */
-const matchedName = computed(() => {
-  const needle = trimmed.value.toLowerCase();
+/** The key what has been typed would file under. Empty for an empty field. */
+const typedKey = computed(() => userKey(name.value));
+
+/**
+ * What is wrong with the name as it stands, from the server's own rules.
+ *
+ * Only once the field has been touched: telling somebody their empty field is
+ * empty before they have typed in it is noise, not help.
+ */
+const problem = computed(() =>
+  touched.value ? guestNameProblem(name.value) : null,
+);
+
+/** Whether the name could be confirmed at all, touched or not. */
+const usable = computed(() => guestNameProblem(name.value) === null);
+
+/** The person already on the event whose key is the one being typed. */
+const matched = computed(() => {
+  const needle = typedKey.value;
   if (!needle) return null;
-  return props.existingNames.find((existing) => existing.toLowerCase() === needle) ?? null;
+  return props.existingPeople.find((person) => person.key === needle) ?? null;
+});
+
+/** The name confirming would adopt: the event's spelling where there is one. */
+const adopted = computed(() => {
+  const known = matched.value?.displayName;
+  // A grandfathered legacy spelling can contain a dash and so cannot be
+  // written back. What was typed replaces it, and the key is the same either
+  // way, so the answer behind it is the same answer.
+  if (known && guestNameProblem(known) === null) return known;
+  return trimmed.value;
 });
 
 const suggestions = computed(() => {
-  const needle = trimmed.value.toLowerCase();
-  return props.existingNames
-    .filter((existing) => existing.toLowerCase() !== needle)
-    .filter((existing) => !needle || existing.toLowerCase().includes(needle))
+  const needle = typedKey.value;
+  return props.existingPeople
+    .filter((person) => person.key !== needle)
+    .filter((person) => !needle || person.key.includes(needle))
     .slice(0, 6);
 });
 
-const invalid = computed(() => touched.value && trimmed.value.length === 0);
-
 function confirm() {
   touched.value = true;
-  if (!trimmed.value) return;
-  // Snap to the stored spelling so a differently-cased name does not create a
-  // second response for the same person.
-  emit("confirm", matchedName.value ?? trimmed.value);
+  if (!usable.value) return;
+  // Snapped to the key, so two spellings of one person are one response.
+  emit("confirm", { key: typedKey.value, displayName: adopted.value });
 }
 
-function pick(suggestion: string) {
-  name.value = suggestion;
-  confirm();
+function pick(person: KnownPerson) {
+  name.value = person.displayName;
+  touched.value = true;
+  // A legacy spelling cannot be confirmed as typed; the chip fills the field
+  // and says why rather than refusing a click it just invited.
+  if (!usable.value) return;
+  emit("confirm", { key: person.key, displayName: adopted.value });
 }
 </script>
 
@@ -91,21 +139,22 @@ function pick(suggestion: string) {
       <TextInput
         v-model="name"
         label="Your name"
-        :invalid="invalid"
+        :invalid="problem !== null"
         type="text"
         autocomplete="name"
         autofocus
-        maxlength="100"
+        :maxlength="MAX_GUEST_NAME_LENGTH"
         placeholder="e.g. Ada Lovelace"
         @blur="touched = true"
       />
 
-      <p v-if="invalid" class="hint hint--error">A name is required.</p>
+      <p v-if="problem" class="hint hint--error">{{ problem }}.</p>
       <!-- The one consequence worth spelling out: continuing under a name that
-           answered already edits that answer rather than adding a second. -->
-      <p v-else-if="matchedName" class="hint hint--warn">
-        <strong>{{ matchedName }}</strong> already answered — continuing edits
-        their times.
+           answered already edits that answer rather than adding a second. Said
+           in the event's own spelling, which is the one that will be kept. -->
+      <p v-else-if="matched" class="hint hint--warn">
+        <strong>{{ matched.displayName }}</strong> already answered — continuing
+        edits their times.
       </p>
       <p v-else class="hint hint--muted" title="Stored in this browser only">
         Saved on this device, so you can come back and edit.
@@ -114,14 +163,14 @@ function pick(suggestion: string) {
       <div v-if="suggestions.length > 0" class="suggestions">
         <span class="suggestions__label">Already answered</span>
         <ul class="chips">
-          <li v-for="suggestion in suggestions" :key="suggestion">
+          <li v-for="person in suggestions" :key="person.key">
             <button
               type="button"
               class="chip"
-              :title="suggestion"
-              @click="pick(suggestion)"
+              :title="person.displayName"
+              @click="pick(person)"
             >
-              {{ suggestion }}
+              {{ person.displayName }}
             </button>
           </li>
         </ul>
@@ -138,14 +187,14 @@ function pick(suggestion: string) {
         <Button
           variant="primary"
           type="submit"
-          :disabled="trimmed.length === 0"
-          :title="matchedName ? `Continue as ${matchedName}` : undefined"
+          :disabled="!usable"
+          :title="matched ? `Continue as ${adopted}` : undefined"
         >
           <!-- One element, so the button's flex gap does not land between the
                words on top of the space that is already there. -->
-          <span v-if="matchedName" class="continue">Continue as <span
+          <span v-if="matched" class="continue">Continue as <span
             class="continue__name"
-          >{{ matchedName }}</span></span>
+          >{{ adopted }}</span></span>
           <template v-else>Continue</template>
         </Button>
       </div>

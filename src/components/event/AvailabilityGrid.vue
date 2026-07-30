@@ -123,6 +123,7 @@ const props = defineProps<{
   maxCount: number;
   totalRespondents: number;
   showBestTimes: boolean;
+  /** Whose answer alone the chart is painting, by user key. */
   highlightRespondent: string | null;
   /** Hovered or pinned slot, outlined in the grid. */
   activeSlot: number | null;
@@ -1716,10 +1717,10 @@ defineExpose({ measure });
           <ul class="digest__people">
             <li
               v-for="person in summary.people"
-              :key="person.name"
+              :key="person.key"
               class="who"
               :class="`who--${person.stance}`"
-              :title="person.name"
+              :title="person.label"
             >
               <!-- The glyph is the whole of what the chip says about them, so
                    it carries the word rather than sitting out of the tree the
@@ -1729,7 +1730,7 @@ defineExpose({ measure });
                 <IconHourglass v-else-if="person.stance === 'if_needed'" />
                 <IconClose v-else stroke-width="2.2" />
               </span>
-              <span class="who__name">{{ person.name }}</span>
+              <span class="who__name">{{ person.label }}</span>
             </li>
             <!-- Everyone the card chose not to name. Only worth saying beside
                  names it did name: with nobody free to list, the fraction above

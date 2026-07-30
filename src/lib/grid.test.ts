@@ -31,6 +31,7 @@ import {
   type OverlayField,
 } from "./grid";
 import type { EventDoc } from "./event";
+import { userKey } from "./user-key";
 
 /** Los Angeles in August: 420 minutes west of UTC. */
 const PDT = 420;
@@ -763,12 +764,14 @@ describe("responses and heatmap", () => {
     duration: 2,
     timeIncrement: 60,
     responses: {
-      Ada: {
+      ada: {
+        displayName: "Ada",
         availability: ["2026-08-01T16:00:00.000Z", "2026-08-01T17:00:00.000Z"],
         ifNeeded: [],
         updatedAt: "2026-07-02T00:00:00.000Z",
       },
-      Grace: {
+      grace: {
+        displayName: "Grace",
         availability: ["2026-08-01T16:00:00.000Z"],
         ifNeeded: ["2026-08-01T17:00:00.000Z"],
         updatedAt: "2026-07-02T00:00:00.000Z",
@@ -778,36 +781,79 @@ describe("responses and heatmap", () => {
 
   it("inverts responses into slot -> respondents", () => {
     const index = buildResponseIndex(event);
-    expect(index.names).toEqual(["Ada", "Grace"]);
+    expect(index.keys).toEqual(["ada", "grace"]);
     expect(index.available.get(iso("2026-08-01T16:00:00.000Z"))).toEqual(
-      new Set(["Ada", "Grace"]),
+      new Set(["ada", "grace"]),
     );
     // If-needed counts towards availability, and is tracked separately for tinting.
     expect(index.available.get(iso("2026-08-01T17:00:00.000Z"))).toEqual(
-      new Set(["Ada", "Grace"]),
+      new Set(["ada", "grace"]),
     );
-    expect(index.ifNeeded.get(iso("2026-08-01T17:00:00.000Z"))).toEqual(new Set(["Grace"]));
+    expect(index.ifNeeded.get(iso("2026-08-01T17:00:00.000Z"))).toEqual(new Set(["grace"]));
     expect(index.ifNeeded.get(iso("2026-08-01T16:00:00.000Z"))).toBeUndefined();
+  });
+
+  it("keeps the spelling of every key, and orders the list by it", () => {
+    // A key is what everything matches on; it is not a name, and nothing may
+    // read one off the other. The stored display name is the only spelling.
+    const index = buildResponseIndex(
+      makeEvent({
+        duration: 2,
+        timeIncrement: 60,
+        responses: {
+          zed: {
+            displayName: "Zed",
+            availability: ["2026-08-01T16:00:00.000Z"],
+            ifNeeded: [],
+            updatedAt: "",
+          },
+          "ada-lovelace": {
+            displayName: "Ada Lovelace",
+            availability: ["2026-08-01T16:00:00.000Z"],
+            ifNeeded: [],
+            updatedAt: "",
+          },
+          écureuil: {
+            displayName: "Écureuil",
+            availability: ["2026-08-01T17:00:00.000Z"],
+            ifNeeded: [],
+            updatedAt: "",
+          },
+        },
+      }),
+    );
+
+    expect(index.labels.get("ada-lovelace")).toBe("Ada Lovelace");
+    expect(index.labels.get("écureuil")).toBe("Écureuil");
+    expect(index.labels.get("zed")).toBe("Zed");
+    expect(index.labels.size).toBe(3);
+
+    // Ordered by the name each is shown under: sorting the keys themselves
+    // would file "écureuil" after "zed", which is not where the eye looks.
+    expect(index.keys).toEqual(["ada-lovelace", "écureuil", "zed"]);
   });
 
   it("replaces a respondent's saved answer with their unsaved edits", () => {
     const index = buildResponseIndex(event, {
-      name: "Grace",
+      key: "grace",
+      displayName: "Grace",
       availability: new Set([iso("2026-08-02T16:00:00.000Z")]),
       ifNeeded: new Set(),
     });
-    expect(index.names).toEqual(["Ada", "Grace"]);
-    expect(index.available.get(iso("2026-08-01T16:00:00.000Z"))).toEqual(new Set(["Ada"]));
-    expect(index.available.get(iso("2026-08-02T16:00:00.000Z"))).toEqual(new Set(["Grace"]));
+    expect(index.keys).toEqual(["ada", "grace"]);
+    expect(index.available.get(iso("2026-08-01T16:00:00.000Z"))).toEqual(new Set(["ada"]));
+    expect(index.available.get(iso("2026-08-02T16:00:00.000Z"))).toEqual(new Set(["grace"]));
   });
 
   it("counts a new guest who has not saved yet", () => {
     const index = buildResponseIndex(event, {
-      name: "Alan",
+      key: "alan",
+      displayName: "Alan",
       availability: new Set([iso("2026-08-01T16:00:00.000Z")]),
       ifNeeded: new Set(),
     });
-    expect(index.names).toEqual(["Ada", "Alan", "Grace"]);
+    expect(index.keys).toEqual(["ada", "alan", "grace"]);
+    expect(index.labels.get("alan")).toBe("Alan");
     expect(index.available.get(iso("2026-08-01T16:00:00.000Z"))?.size).toBe(3);
   });
 
@@ -815,32 +861,35 @@ describe("responses and heatmap", () => {
     // What the Clear button leaves behind: the server deletes the record, so
     // the list must not keep showing Grace off the stale copy of the event.
     const index = buildResponseIndex(event, {
-      name: "Grace",
+      key: "grace",
+      displayName: "Grace",
       availability: new Set(),
       ifNeeded: new Set(),
     });
-    expect(index.names).toEqual(["Ada"]);
-    expect(index.available.get(iso("2026-08-01T16:00:00.000Z"))).toEqual(new Set(["Ada"]));
+    expect(index.keys).toEqual(["ada"]);
+    expect(index.available.get(iso("2026-08-01T16:00:00.000Z"))).toEqual(new Set(["ada"]));
     expect(index.ifNeeded.get(iso("2026-08-01T17:00:00.000Z"))).toBeUndefined();
   });
 
   it("does not list a guest who has identified but marked nothing", () => {
     const index = buildResponseIndex(event, {
-      name: "Alan",
+      key: "alan",
+      displayName: "Alan",
       availability: new Set(),
       ifNeeded: new Set(),
     });
-    expect(index.names).toEqual(["Ada", "Grace"]);
+    expect(index.keys).toEqual(["ada", "grace"]);
   });
 
   it("keeps an override that holds only if-needed slots", () => {
     const index = buildResponseIndex(event, {
-      name: "Alan",
+      key: "alan",
+      displayName: "Alan",
       availability: new Set(),
       ifNeeded: new Set([iso("2026-08-01T16:00:00.000Z")]),
     });
-    expect(index.names).toEqual(["Ada", "Alan", "Grace"]);
-    expect(index.ifNeeded.get(iso("2026-08-01T16:00:00.000Z"))).toEqual(new Set(["Alan"]));
+    expect(index.keys).toEqual(["ada", "alan", "grace"]);
+    expect(index.ifNeeded.get(iso("2026-08-01T16:00:00.000Z"))).toEqual(new Set(["alan"]));
   });
 
   it("takes the maximum over live slots only", () => {
@@ -852,7 +901,8 @@ describe("responses and heatmap", () => {
       duration: 2,
       timeIncrement: 60,
       responses: {
-        Ada: {
+        ada: {
+          displayName: "Ada",
           availability: ["2025-01-01T00:00:00.000Z"],
           ifNeeded: [],
           updatedAt: "2026-07-02T00:00:00.000Z",
@@ -903,13 +953,24 @@ describe("slotDigest", () => {
     duration: 2,
     timeIncrement: 60,
     responses: {
-      Bo: { availability: [], ifNeeded: ["2026-08-01T16:00:00.000Z"], updatedAt: "" },
-      Ada: {
+      bo: {
+        displayName: "Bo",
+        availability: [],
+        ifNeeded: ["2026-08-01T16:00:00.000Z"],
+        updatedAt: "",
+      },
+      ada: {
+        displayName: "Ada",
         availability: ["2026-08-01T16:00:00.000Z", "2026-08-01T17:00:00.000Z"],
         ifNeeded: [],
         updatedAt: "",
       },
-      Cy: { availability: ["2026-08-01T17:00:00.000Z"], ifNeeded: [], updatedAt: "" },
+      cy: {
+        displayName: "Cy",
+        availability: ["2026-08-01T17:00:00.000Z"],
+        ifNeeded: [],
+        updatedAt: "",
+      },
     },
   });
   const index = buildResponseIndex(event);
@@ -917,9 +978,9 @@ describe("slotDigest", () => {
   it("groups the three answers, keeping names alphabetical inside each", () => {
     expect(slotDigest(morning, index)).toEqual({
       people: [
-        { name: "Ada", stance: "available" },
-        { name: "Bo", stance: "if_needed" },
-        { name: "Cy", stance: "unavailable" },
+        { key: "ada", label: "Ada", stance: "available" },
+        { key: "bo", label: "Bo", stance: "if_needed" },
+        { key: "cy", label: "Cy", stance: "unavailable" },
       ],
       hidden: 0,
       free: 2,
@@ -952,8 +1013,8 @@ describe("slotDigest", () => {
     // Not the first two of the whole list — the two who could come. An
     // arbitrary subset of the crosses would say nothing.
     expect(digest.people).toEqual([
-      { name: "Ada", stance: "available" },
-      { name: "Bo", stance: "if_needed" },
+      { key: "ada", label: "Ada", stance: "available" },
+      { key: "bo", label: "Bo", stance: "if_needed" },
     ]);
     // Everyone unnamed is counted, so the card can say how many were left out.
     expect(digest.hidden).toBe(1);
@@ -965,7 +1026,7 @@ describe("slotDigest", () => {
     expect(slotDigest(morning, index, { cap: 9 }).hidden).toBe(0);
     const exact = slotDigest(morning, index, { cap: 3 });
     expect(exact.people).toHaveLength(3);
-    expect(exact.people.at(-1)).toEqual({ name: "Cy", stance: "unavailable" });
+    expect(exact.people.at(-1)).toEqual({ key: "cy", label: "Cy", stance: "unavailable" });
     expect(exact.hidden).toBe(0);
   });
 
@@ -975,13 +1036,18 @@ describe("slotDigest", () => {
       timeIncrement: 60,
       responses: Object.fromEntries(
         ["Ada", "Bo", "Cy", "Dee"].map((name) => [
-          name,
-          { availability: ["2026-08-01T16:00:00.000Z"], ifNeeded: [], updatedAt: "" },
+          userKey(name),
+          {
+            displayName: name,
+            availability: ["2026-08-01T16:00:00.000Z"],
+            ifNeeded: [],
+            updatedAt: "",
+          },
         ]),
       ),
     });
     const digest = slotDigest(morning, buildResponseIndex(busy), { cap: 2 });
-    expect(digest.people.map((p) => p.name)).toEqual(["Ada", "Bo"]);
+    expect(digest.people.map((p) => p.label)).toEqual(["Ada", "Bo"]);
     expect(digest.hidden).toBe(2);
     expect(digest.free).toBe(4);
   });
@@ -1002,14 +1068,15 @@ describe("slotDigest", () => {
 
   it("reads the guest's own unsaved marks, like everything else on the page", () => {
     const withMine = buildResponseIndex(event, {
-      name: "Zed",
+      key: "zed",
+      displayName: "Zed",
       availability: new Set([morning]),
       ifNeeded: new Set(),
     });
     const digest = slotDigest(morning, withMine);
     expect(digest.total).toBe(4);
     expect(digest.free).toBe(3);
-    expect(digest.people.map((p) => p.name)).toEqual(["Ada", "Zed", "Bo", "Cy"]);
+    expect(digest.people.map((p) => p.label)).toEqual(["Ada", "Zed", "Bo", "Cy"]);
   });
 });
 

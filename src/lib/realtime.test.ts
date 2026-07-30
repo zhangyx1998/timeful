@@ -7,15 +7,25 @@
  * survive anything arriving on the wire without taking the page down with it.
  * All of that is timing and dispatch, so it is tested against a fake socket and
  * fake timers rather than a server.
+ *
+ * The write session adds two more things to hold: a save must settle exactly
+ * once however the socket behaves afterwards, and being refused or replaced
+ * must land the page on the browse socket rather than in a fight over the key.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BASE_RETRY_MS,
+  CLOSE_OCCUPIED,
+  CLOSE_REPLACED,
   connectRealtime,
   MAX_FAILED_ATTEMPTS,
   MAX_RETRY_MS,
   parseRealtimeMessage,
+  parseSaveMessage,
+  RealtimeSaveError,
   retryDelay,
+  SAVE_TIMEOUT_MS,
+  type RealtimeEvent,
   type RealtimeSocket,
 } from "./realtime";
 import type { EventDoc } from "./event";
@@ -34,6 +44,9 @@ const EVENT = {
   responses: {},
 } satisfies EventDoc;
 
+const ADA = { key: "ada-lovelace", displayName: "Ada Lovelace" };
+const GRACE = { key: "grace-hopper", displayName: "Grace Hopper" };
+
 /** Every socket the connector has asked for, in order. */
 let sockets: FakeSocket[] = [];
 
@@ -41,7 +54,9 @@ let sockets: FakeSocket[] = [];
 class FakeSocket implements RealtimeSocket {
   readonly url: string;
   closed = false;
-  private listeners = new Map<string, ((event: MessageEvent) => void)[]>();
+  /** Every frame the connector has pushed down this socket, in order. */
+  sent: string[] = [];
+  private listeners = new Map<string, ((event: RealtimeEvent) => void)[]>();
 
   // A parameter property would be neater and is not allowed: the repo compiles
   // under `erasableSyntaxOnly`, and that one has a runtime effect.
@@ -50,42 +65,59 @@ class FakeSocket implements RealtimeSocket {
     sockets.push(this);
   }
 
-  addEventListener(type: string, listener: (event: MessageEvent) => void): void {
+  addEventListener(type: string, listener: (event: RealtimeEvent) => void): void {
     const existing = this.listeners.get(type) ?? [];
     existing.push(listener);
     this.listeners.set(type, existing);
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
   }
 
   close(): void {
     this.closed = true;
   }
 
-  private emit(type: string, event: MessageEvent): void {
-    for (const listener of this.listeners.get(type) ?? []) listener(event);
+  private emit(type: string, event: unknown): void {
+    for (const listener of this.listeners.get(type) ?? [])
+      listener(event as RealtimeEvent);
   }
 
   /** The connection came up. */
   opened(): void {
-    this.emit("open", new MessageEvent("open"));
+    this.emit("open", { type: "open" });
   }
 
   /** A frame arrived. */
   delivers(data: unknown): void {
-    this.emit("message", new MessageEvent("message", { data }));
+    this.emit("message", { data });
+  }
+
+  /** The server acknowledged the save at the head of the queue. */
+  acks(): void {
+    this.delivers(JSON.stringify({ type: "saved" }));
   }
 
   /** The connection went away, for whatever reason. */
-  dropped(): void {
-    this.emit("close", new MessageEvent("close"));
+  dropped(code?: number): void {
+    this.emit("close", code === undefined ? {} : { code });
+  }
+
+  /** What the connector sent, parsed. */
+  frames(): unknown[] {
+    return this.sent.map((raw) => JSON.parse(raw) as unknown);
   }
 }
 
-const URL_FOR_TESTS = "ws://localhost/api/events/e/ws";
+/** The event's socket base; `/ws` and `/users/<key>` hang off it. */
+const BASE = "ws://localhost/e";
+const BROWSE_URL = `${BASE}/ws`;
 
 /** Connects with every seam filled in: fixed URL, fake socket, no jitter. */
 function connect(options: Parameters<typeof connectRealtime>[1] = {}) {
   return connectRealtime("e", {
-    url: URL_FOR_TESTS,
+    url: BASE,
     createSocket: (url: string) => new FakeSocket(url),
     random: () => 0.5,
     ...options,
@@ -117,23 +149,43 @@ describe("parseRealtimeMessage", () => {
       parseRealtimeMessage(JSON.stringify({ type: "event", event: EVENT })),
     ).toEqual({ type: "event", event: EVENT });
     expect(
-      parseRealtimeMessage(JSON.stringify({ type: "presence", names: ["Ada", "Bo"] })),
-    ).toEqual({ type: "presence", names: ["Ada", "Bo"] });
+      parseRealtimeMessage(JSON.stringify({ type: "presence", people: [ADA, GRACE] })),
+    ).toEqual({ type: "presence", people: [ADA, GRACE] });
     expect(
-      parseRealtimeMessage(JSON.stringify({ type: "presence", names: [] })),
-    ).toEqual({ type: "presence", names: [] });
+      parseRealtimeMessage(JSON.stringify({ type: "presence", people: [] })),
+    ).toEqual({ type: "presence", people: [] });
   });
 
-  it("keeps the names in a presence list that did parse", () => {
+  it("reads the write session's own control frames", () => {
+    expect(parseRealtimeMessage(JSON.stringify({ type: "saved" }))).toEqual({
+      type: "saved",
+    });
+    expect(parseRealtimeMessage(JSON.stringify({ type: "replaced" }))).toEqual({
+      type: "replaced",
+    });
+    expect(
+      parseRealtimeMessage(JSON.stringify({ type: "save-failed", message: "Nope" })),
+    ).toEqual({ type: "save-failed", message: "Nope" });
+    // A refusal with nothing to say still has to be a refusal, or the save it
+    // answers would never settle.
+    expect(parseRealtimeMessage(JSON.stringify({ type: "save-failed" }))).toEqual({
+      type: "save-failed",
+      message: "Could not save",
+    });
+  });
+
+  it("keeps the people in a presence list that did parse", () => {
     // The list is advisory — it decides which rows get a pair of dots — so one
     // bad entry costs that entry rather than the whole frame.
     expect(
-      parseRealtimeMessage(JSON.stringify({ type: "presence", names: ["Ada", 7, null] })),
-    ).toEqual({ type: "presence", names: ["Ada"] });
+      parseRealtimeMessage(
+        JSON.stringify({ type: "presence", people: [ADA, 7, null, { key: "" }] }),
+      ),
+    ).toEqual({ type: "presence", people: [ADA] });
     // A list that is not a list is not a presence message at all.
     expect(parseRealtimeMessage(JSON.stringify({ type: "presence" }))).toBeNull();
     expect(
-      parseRealtimeMessage(JSON.stringify({ type: "presence", names: "Ada" })),
+      parseRealtimeMessage(JSON.stringify({ type: "presence", people: "Ada" })),
     ).toBeNull();
   });
 
@@ -152,6 +204,50 @@ describe("parseRealtimeMessage", () => {
       JSON.stringify({ type: "event", event: "nope" }),
     ]) {
       expect(parseRealtimeMessage(input)).toBeNull();
+    }
+  });
+});
+
+describe("parseSaveMessage", () => {
+  it("reads a save the client sent", () => {
+    expect(
+      parseSaveMessage(
+        JSON.stringify({
+          type: "save",
+          displayName: "Ada Lovelace",
+          availability: ["2026-08-03T09:00:00.000Z"],
+          ifNeeded: [],
+        }),
+      ),
+    ).toEqual({
+      type: "save",
+      displayName: "Ada Lovelace",
+      availability: ["2026-08-03T09:00:00.000Z"],
+      ifNeeded: [],
+    });
+  });
+
+  it("treats absent arrays as empty ones", () => {
+    // Clearing an answer is a save with nothing in it, and the shortest way to
+    // say that is to say nothing.
+    expect(parseSaveMessage(JSON.stringify({ type: "save", displayName: "Ada" }))).toEqual(
+      { type: "save", displayName: "Ada", availability: [], ifNeeded: [] },
+    );
+  });
+
+  it("refuses anything that is not a save", () => {
+    for (const input of [
+      "not json",
+      "",
+      "null",
+      JSON.stringify({ type: "presence" }),
+      JSON.stringify({ type: "save" }),
+      JSON.stringify({ type: "save", displayName: 7 }),
+      JSON.stringify({ type: "save", displayName: "Ada", availability: "nope" }),
+      JSON.stringify({ type: "save", displayName: "Ada", ifNeeded: 3 }),
+      new ArrayBuffer(4),
+    ]) {
+      expect(parseSaveMessage(input)).toBeNull();
     }
   });
 });
@@ -218,7 +314,7 @@ describe("connectRealtime", () => {
   });
 
   // -------------------------------------------------------------------------
-  // presence, and the identity behind it
+  // presence, and the session behind it
   // -------------------------------------------------------------------------
 
   it("hands presence lists to onPresence", () => {
@@ -227,40 +323,40 @@ describe("connectRealtime", () => {
     connect({ onPresence, onEvent });
 
     latest().opened();
-    latest().delivers(JSON.stringify({ type: "presence", names: ["Ada", "Bo"] }));
-    latest().delivers(JSON.stringify({ type: "presence", names: ["Ada"] }));
+    latest().delivers(JSON.stringify({ type: "presence", people: [ADA, GRACE] }));
+    latest().delivers(JSON.stringify({ type: "presence", people: [ADA] }));
     latest().delivers(JSON.stringify({ type: "event", event: EVENT }));
 
-    expect(onPresence.mock.calls).toEqual([[["Ada", "Bo"]], [["Ada"]]]);
+    expect(onPresence.mock.calls).toEqual([[[ADA, GRACE]], [[ADA]]]);
     // The two are separate reports about separate things: a presence frame is
     // not a snapshot and must not be mistaken for one.
     expect(onEvent).toHaveBeenCalledTimes(1);
   });
 
-  it("announces the name in the URL, and nothing when there is none", () => {
-    connect({ name: "Ada Lovelace" });
-    expect(latest().url).toBe(`${URL_FOR_TESTS}?name=Ada%20Lovelace`);
+  it("opens the write session's URL, and the browse socket without one", () => {
+    connect({ session: ADA });
+    expect(latest().url).toBe(`${BASE}/users/ada-lovelace?name=Ada+Lovelace`);
 
-    // A page that is only browsing opens the plain URL: no empty parameter to
-    // be told apart from a real one.
-    for (const name of [null, undefined, "", "   "]) {
-      connect({ name });
-      expect(latest().url).toBe(URL_FOR_TESTS);
+    // A page that is only browsing takes the other socket entirely: no key in
+    // the path, so nothing to claim and nothing to be refused.
+    for (const session of [null, undefined, { key: "  ", displayName: "Ada" }]) {
+      connect({ session });
+      expect(latest().url).toBe(BROWSE_URL);
     }
   });
 
-  it("reconnects under a new name, and leaves the old socket behind", () => {
+  it("reconnects under a new session, and leaves the old socket behind", () => {
     vi.useFakeTimers();
     const onPresence = vi.fn();
-    const handle = connect({ name: "Ada", onPresence });
+    const handle = connect({ session: ADA, onPresence });
     const first = latest();
     first.opened();
 
-    handle.setName("Grace");
+    handle.setSession(GRACE);
 
     expect(first.closed).toBe(true);
     expect(sockets).toHaveLength(2);
-    expect(latest().url).toBe(`${URL_FOR_TESTS}?name=Grace`);
+    expect(latest().url).toBe(`${BASE}/users/grace-hopper?name=Grace+Hopper`);
     // Straight away: no backoff wait for something the visitor just did.
     // And the switch does not clear the list — the new connection's own
     // snapshot is a moment away, so there is nothing to blank in between.
@@ -275,7 +371,7 @@ describe("connectRealtime", () => {
 
   it("gives up nothing on a switch: the retry budget starts over", () => {
     vi.useFakeTimers();
-    const handle = connect({ name: "Ada" });
+    const handle = connect({ session: ADA });
 
     // Most of the budget spent failing to connect …
     for (let i = 0; i < MAX_FAILED_ATTEMPTS - 2; i += 1) {
@@ -284,7 +380,7 @@ describe("connectRealtime", () => {
     }
     const before = sockets.length;
 
-    handle.setName("Grace");
+    handle.setSession(GRACE);
 
     // … and the switch is a fresh start, at the base delay rather than the cap.
     expect(sockets).toHaveLength(before + 1);
@@ -293,34 +389,38 @@ describe("connectRealtime", () => {
     expect(sockets).toHaveLength(before + 2);
   });
 
-  it("does nothing when the name has not really changed", () => {
-    const handle = connect({ name: "Ada" });
+  it("does nothing when the session has not really changed", () => {
+    const handle = connect({ session: ADA });
 
-    handle.setName("Ada");
-    handle.setName("  Ada  ");
+    handle.setSession({ ...ADA });
     expect(sockets).toHaveLength(1);
 
     // Browsing after being somebody is a change, and so is the way back.
-    handle.setName(null);
-    expect(latest().url).toBe(URL_FOR_TESTS);
-    handle.setName("");
+    handle.setSession(null);
+    expect(latest().url).toBe(BROWSE_URL);
     expect(sockets).toHaveLength(2);
-    handle.setName("Ada");
-    expect(latest().url).toBe(`${URL_FOR_TESTS}?name=Ada`);
+    handle.setSession(ADA);
+    expect(latest().url).toBe(`${BASE}/users/ada-lovelace?name=Ada+Lovelace`);
     expect(sockets).toHaveLength(3);
+
+    // A new spelling of the same key still has to reach the room: it is what
+    // everyone else's list will render.
+    handle.setSession({ key: ADA.key, displayName: "ADA LOVELACE" });
+    expect(sockets).toHaveLength(4);
+    expect(latest().url).toBe(`${BASE}/users/ada-lovelace?name=ADA+LOVELACE`);
   });
 
   it("stops claiming anyone is there once the connection drops", () => {
     vi.useFakeTimers();
     const onPresence = vi.fn();
-    const handle = connect({ name: "Ada", onPresence });
+    const handle = connect({ session: ADA, onPresence });
     latest().opened();
-    latest().delivers(JSON.stringify({ type: "presence", names: ["Ada", "Bo"] }));
+    latest().delivers(JSON.stringify({ type: "presence", people: [ADA, GRACE] }));
 
     latest().dropped();
 
     // Dots beside a name the page can no longer vouch for are worse than none.
-    expect(onPresence.mock.calls).toEqual([[["Ada", "Bo"]], [[]]]);
+    expect(onPresence.mock.calls).toEqual([[[ADA, GRACE]], [[]]]);
 
     // A deliberate close is the caller's own doing and reports nothing.
     onPresence.mockClear();
@@ -329,16 +429,213 @@ describe("connectRealtime", () => {
     expect(onPresence).not.toHaveBeenCalled();
   });
 
-  it("ignores a name change after it has stopped", () => {
+  it("ignores a session change after it has stopped", () => {
     vi.useFakeTimers();
-    const handle = connect({ name: "Ada" });
+    const handle = connect({ session: ADA });
     handle.close();
 
-    handle.setName("Grace");
+    handle.setSession(GRACE);
 
     expect(sockets).toHaveLength(1);
     vi.advanceTimersByTime(10 * MAX_RETRY_MS);
     expect(sockets).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // saving over the session
+  // -------------------------------------------------------------------------
+
+  const PAYLOAD = { availability: ["2026-08-03T09:00:00.000Z"], ifNeeded: [] };
+
+  it("sends a save over an open session and settles it on the ack", async () => {
+    const onSessionOpen = vi.fn();
+    const handle = connect({ session: ADA, onSessionOpen });
+    latest().opened();
+    expect(onSessionOpen).toHaveBeenCalledWith(ADA);
+
+    const pending = handle.save(PAYLOAD);
+    expect(pending).not.toBeNull();
+    expect(latest().frames()).toEqual([
+      { type: "save", displayName: "Ada Lovelace", ...PAYLOAD },
+    ]);
+
+    latest().acks();
+    await expect(pending).resolves.toBeUndefined();
+  });
+
+  it("refuses to send when there is no session to send over", () => {
+    // Each of these is a page that has to use the REST PUT, and `null` is how
+    // it is told so — the browse socket, a session that has not opened yet, one
+    // that has dropped, and a connector that has been closed.
+    const browsing = connect();
+    latest().opened();
+    expect(browsing.save(PAYLOAD)).toBeNull();
+
+    const unopened = connect({ session: ADA });
+    expect(unopened.save(PAYLOAD)).toBeNull();
+
+    latest().opened();
+    const inFlight = unopened.save(PAYLOAD);
+    expect(inFlight).not.toBeNull();
+    // Claimed here only so the drop below does not surface as an unhandled
+    // rejection; what it settles to is the subject of its own test.
+    void inFlight?.catch(() => {});
+    latest().dropped();
+    expect(unopened.save(PAYLOAD)).toBeNull();
+
+    const closed = connect({ session: ADA });
+    latest().opened();
+    closed.close();
+    expect(closed.save(PAYLOAD)).toBeNull();
+  });
+
+  it("marks a refused save unretryable, so REST is not asked the same question", async () => {
+    const handle = connect({ session: ADA });
+    latest().opened();
+
+    const pending = handle.save(PAYLOAD);
+    latest().delivers(
+      JSON.stringify({ type: "save-failed", message: "A name may not contain a dash" }),
+    );
+
+    await expect(pending).rejects.toMatchObject({
+      name: "RealtimeSaveError",
+      message: "A name may not contain a dash",
+      retryable: false,
+    });
+  });
+
+  it("marks a save lost to a dropped socket retryable", async () => {
+    vi.useFakeTimers();
+    const handle = connect({ session: ADA });
+    latest().opened();
+
+    const pending = handle.save(PAYLOAD);
+    latest().dropped();
+
+    await expect(pending).rejects.toBeInstanceOf(RealtimeSaveError);
+    await pending!.catch((err: RealtimeSaveError) => {
+      // Retryable is the whole of the contract: the caller sends it over REST.
+      expect(err.retryable).toBe(true);
+    });
+  });
+
+  it("gives up on a save the server never acknowledges", async () => {
+    vi.useFakeTimers();
+    const handle = connect({ session: ADA });
+    latest().opened();
+
+    const pending = handle.save(PAYLOAD);
+    vi.advanceTimersByTime(SAVE_TIMEOUT_MS);
+
+    await expect(pending).rejects.toMatchObject({ retryable: true });
+    // A late ack for a save nobody is waiting for is simply dropped.
+    expect(() => latest().acks()).not.toThrow();
+  });
+
+  it("settles saves in the order they were sent", async () => {
+    const handle = connect({ session: ADA });
+    latest().opened();
+
+    const first = handle.save(PAYLOAD);
+    const second = handle.save({ availability: [], ifNeeded: [] });
+    expect(latest().sent).toHaveLength(2);
+
+    latest().acks();
+    await expect(first).resolves.toBeUndefined();
+    latest().delivers(JSON.stringify({ type: "save-failed", message: "no" }));
+    await expect(second).rejects.toMatchObject({ retryable: false });
+  });
+
+  it("never sends anything down the browse socket", () => {
+    const handle = connect();
+    latest().opened();
+    handle.save(PAYLOAD);
+    latest().delivers(JSON.stringify({ type: "presence", people: [] }));
+    expect(latest().sent).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------
+  // one session per key
+  // -------------------------------------------------------------------------
+
+  it("drops to the browse socket when the key is occupied", () => {
+    vi.useFakeTimers();
+    const onOccupied = vi.fn();
+    const handle = connect({ session: ADA, onOccupied });
+    const refused = latest();
+    refused.opened();
+
+    refused.dropped(CLOSE_OCCUPIED);
+
+    // Refused, not failed: the page is told who it could not become, and goes
+    // on watching the event straight away rather than on the backoff schedule.
+    expect(onOccupied).toHaveBeenCalledWith(ADA);
+    expect(sockets).toHaveLength(2);
+    expect(latest().url).toBe(BROWSE_URL);
+    // And it does not keep knocking on the door it was just refused at.
+    vi.advanceTimersByTime(10 * MAX_RETRY_MS);
+    expect(sockets).toHaveLength(2);
+    // Nothing to save over, so the caller falls back to REST.
+    latest().opened();
+    expect(handle.save(PAYLOAD)).toBeNull();
+  });
+
+  it("asks to take over only when told to", () => {
+    const handle = connect({ session: ADA, onOccupied: () => {} });
+    latest().opened();
+    latest().dropped(CLOSE_OCCUPIED);
+
+    handle.setSession(ADA, { takeover: true });
+    expect(latest().url).toBe(
+      `${BASE}/users/ada-lovelace?name=Ada+Lovelace&takeover=1`,
+    );
+
+    // Spent on that one attempt: a later reconnect must never quietly evict
+    // whoever has the session by then.
+    latest().opened();
+    latest().dropped();
+    vi.useFakeTimers();
+  });
+
+  it("does not carry a takeover into the next reconnect", () => {
+    vi.useFakeTimers();
+    const handle = connect({ session: ADA });
+    latest().opened();
+
+    handle.setSession(ADA, { takeover: true });
+    latest().opened();
+    expect(latest().url).toContain("takeover=1");
+
+    latest().dropped();
+    vi.advanceTimersByTime(BASE_RETRY_MS);
+    expect(latest().url).toBe(`${BASE}/users/ada-lovelace?name=Ada+Lovelace`);
+  });
+
+  it("hands the session over when somebody else takes it", async () => {
+    vi.useFakeTimers();
+    const onReplaced = vi.fn();
+    const handle = connect({ session: ADA, onReplaced });
+    const taken = latest();
+    taken.opened();
+
+    const pending = handle.save(PAYLOAD);
+    taken.delivers(JSON.stringify({ type: "replaced" }));
+
+    expect(onReplaced).toHaveBeenCalledWith(ADA);
+    // A save that was in the air belongs to a session this page no longer has.
+    // Retryable, because REST is still open to it.
+    await expect(pending).rejects.toMatchObject({ retryable: true });
+
+    // The close follows the frame; the page comes back as a watcher and does
+    // not try to reclaim the key on its own.
+    taken.dropped(CLOSE_REPLACED);
+    expect(sockets).toHaveLength(2);
+    expect(latest().url).toBe(BROWSE_URL);
+    latest().opened();
+    expect(handle.save(PAYLOAD)).toBeNull();
+    vi.advanceTimersByTime(10 * MAX_RETRY_MS);
+    expect(sockets).toHaveLength(2);
   });
 
   // -------------------------------------------------------------------------
@@ -358,7 +655,7 @@ describe("connectRealtime", () => {
       // … and exactly one socket is opened on time.
       vi.advanceTimersByTime(1);
       expect(sockets).toHaveLength(attempt + 2);
-      expect(latest().url).toBe(URL_FOR_TESTS);
+      expect(latest().url).toBe(BROWSE_URL);
     }
   });
 
@@ -459,7 +756,7 @@ describe("connectRealtime", () => {
     vi.useFakeTimers();
     let attempts = 0;
     connectRealtime("e", {
-      url: URL_FOR_TESTS,
+      url: BASE,
       random: () => 0.5,
       createSocket: (url: string) => {
         attempts += 1;
@@ -495,7 +792,8 @@ describe("connectRealtime", () => {
     expect(sockets).toHaveLength(0);
     // The inert handle answers everything the real one does, so a caller never
     // has to know which one it got.
-    expect(() => handle.setName("Ada")).not.toThrow();
+    expect(() => handle.setSession(ADA)).not.toThrow();
+    expect(handle.save(PAYLOAD)).toBeNull();
     expect(sockets).toHaveLength(0);
     expect(() => handle.close()).not.toThrow();
   });

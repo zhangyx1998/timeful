@@ -57,6 +57,7 @@ import IconPlus from "../../assets/icons/plus.svg";
 import IconEye from "../../assets/icons/eye.svg";
 import IconEyeOff from "../../assets/icons/eye-off.svg";
 import IconPeople from "../../assets/icons/people.svg";
+import type { PresenceEntry } from "../../lib/realtime";
 
 const props = defineProps<{
   /**
@@ -65,24 +66,29 @@ const props = defineProps<{
    */
   embedded?: boolean;
   /**
-   * Everyone with a stored answer. The counts are about these and only these:
-   * being on the page is not an answer.
+   * Everyone with a stored answer, by user key. The counts are about these and
+   * only these: being on the page is not an answer.
+   *
+   * Keys throughout, and never the names themselves — matching a respondent
+   * against a presence entry and against the visitor's own identity is exactly
+   * what a key is for. `labels` says how each one is spelled on screen.
    */
-  names: string[];
+  keys: string[];
+  labels: Map<string, string>;
   /**
-   * Everyone the server says is looking at this event right now, whether or not
-   * they have answered. Empty when the page has no live connection.
+   * Everyone the server says holds a write session on this event right now,
+   * whether or not they have answered. Empty when there is no live connection.
    */
-  present: string[];
-  /** Names available at the active slot. Null when no slot is active. */
+  present: PresenceEntry[];
+  /** Keys available at the active slot. Null when no slot is active. */
   availableNames: Set<string> | null;
   ifNeededNames: Set<string>;
   slotLabel: string | null;
   pinned: boolean;
   highlight: string | null;
-  /** The visitor's own name, when they have one. */
-  currentName: string | null;
-  /** Name whose delete is in flight, if any. */
+  /** The visitor's own key, when they have one. */
+  currentKey: string | null;
+  /** Key whose delete is in flight, if any. */
   deleting: string | null;
   deleteError: string | null;
   /**
@@ -92,18 +98,20 @@ const props = defineProps<{
    * writing your own answer the chart is not showing anybody else's to narrow.
    */
   soloable?: boolean;
-  /** Whose answer the chart is showing alone, if anyone's. */
+  /** Whose answer the chart is showing alone, if anyone's. By key. */
   solo?: string | null;
 }>();
 
 const emit = defineEmits<{
-  highlight: [name: string | null];
+  highlight: [key: string | null];
   unpin: [];
-  delete: [name: string];
+  delete: [key: string];
   add: [];
-  switch: [name: string];
+  /** Adopt this person's identity. The display name goes with the key: it is
+   *  what the identity dialog and the save both need. */
+  switch: [person: { key: string; displayName: string }];
   /** Show this one person's answer on the chart, or null for the group's. */
-  solo: [name: string | null];
+  solo: [key: string | null];
 }>();
 
 /** The respondent the delete dialog is asking about. At most one. */
@@ -112,30 +120,55 @@ const confirming = ref<string | null>(null);
 const switching = ref<string | null>(null);
 
 /** Who has a stored answer, as a set: asked once per row below. */
-const answered = computed(() => new Set(props.names));
-const online = computed(() => new Set(props.present));
+const answered = computed(() => new Set(props.keys));
+const online = computed(() => new Set(props.present.map((person) => person.key)));
 
 /**
- * Every name the list shows: the respondents, plus anyone who is here without
- * having answered, in one alphabetical run so a row does not move when its
- * owner finally saves something.
+ * How each key is spelled: the stored response's own display name when there is
+ * one, and otherwise whatever the presence entry claims.
+ *
+ * The record wins on purpose. A page can connect as `ada-lovelace` spelling
+ * itself "ada LOVELACE" while the stored answer says "Ada Lovelace", and the
+ * list must show one row with the name the group already recognises rather than
+ * the shouting of whoever happens to be online.
+ */
+const labelFor = computed(() => {
+  const map = new Map(props.labels);
+  for (const person of props.present) {
+    if (!map.has(person.key)) map.set(person.key, person.displayName);
+  }
+  return map;
+});
+
+function label(key: string): string {
+  return labelFor.value.get(key) ?? key;
+}
+
+/**
+ * Every key the list shows: the respondents, plus anyone who is here without
+ * having answered, in one run ordered by the name each is shown under so a row
+ * does not move when its owner finally saves something.
  */
 const listed = computed(() => {
-  const extra = props.present.filter((name) => !answered.value.has(name));
-  if (extra.length === 0) return props.names;
-  return [...new Set([...props.names, ...extra])].sort((a, b) => a.localeCompare(b));
+  const extra = props.present
+    .map((person) => person.key)
+    .filter((key) => !answered.value.has(key));
+  if (extra.length === 0) return props.keys;
+  return [...new Set([...props.keys, ...extra])].sort(
+    (a, b) => label(a).localeCompare(label(b)) || a.localeCompare(b),
+  );
 });
 
 // A row that has gone — deleted, the event reloaded, or somebody who was only
-// here and has now closed the tab — must not leave a dialog open over a name
-// that is no longer in the list.
+// here and has now closed the tab — must not leave a dialog open over a person
+// who is no longer in the list.
 watch(
   () => listed.value,
-  (names) => {
-    if (confirming.value !== null && !names.includes(confirming.value)) {
+  (keys) => {
+    if (confirming.value !== null && !keys.includes(confirming.value)) {
       confirming.value = null;
     }
-    if (switching.value !== null && !names.includes(switching.value)) {
+    if (switching.value !== null && !keys.includes(switching.value)) {
       switching.value = null;
     }
   },
@@ -148,7 +181,7 @@ watch(
  * they have marked nothing, so there is nothing of theirs to count.
  */
 const availableCount = computed(() =>
-  props.availableNames ? props.availableNames.size : props.names.length,
+  props.availableNames ? props.availableNames.size : props.keys.length,
 );
 
 /**
@@ -158,7 +191,7 @@ const availableCount = computed(() =>
  */
 const countTone = computed(() => {
   if (availableCount.value === 0) return "none";
-  return availableCount.value === props.names.length ? "all" : "some";
+  return availableCount.value === props.keys.length ? "all" : "some";
 });
 
 type SlotState = "available" | "if-needed" | "unavailable";
@@ -170,10 +203,10 @@ const SLOT_STATE_LABELS: Record<SlotState, string> = {
 };
 
 /** What this person said about the active slot, or null when none is active. */
-function slotState(name: string): SlotState | null {
+function slotState(key: string): SlotState | null {
   if (props.availableNames === null) return null;
-  if (!props.availableNames.has(name)) return "unavailable";
-  return props.ifNeededNames.has(name) ? "if-needed" : "available";
+  if (!props.availableNames.has(key)) return "unavailable";
+  return props.ifNeededNames.has(key) ? "if-needed" : "available";
 }
 
 /**
@@ -206,23 +239,32 @@ const soloing = computed(
  * and the chart it is describing is above it.
  */
 const rows = computed(() =>
-  (soloing.value ? [props.solo as string] : listed.value).map((name) => {
-    const answers = answered.value.has(name);
-    const state = answers ? slotState(name) : null;
+  (soloing.value ? [props.solo as string] : listed.value).map((key) => {
+    const answers = answered.value.has(key);
+    const state = answers ? slotState(key) : null;
     return {
-      name,
+      key,
+      name: label(key),
       answers,
-      online: online.value.has(name),
+      online: online.value.has(key),
       state,
-      label: state ? SLOT_STATE_LABELS[state] : null,
+      stateLabel: state ? SLOT_STATE_LABELS[state] : null,
       unavailable: state === "unavailable",
       ifNeeded: state === "if-needed",
-      isCurrent: name === props.currentName,
+      isCurrent: key === props.currentKey,
       // Nothing stored means nothing to put on the chart alone.
       soloable: Boolean(props.soloable) && answers,
-      isSolo: soloing.value && name === props.solo,
+      isSolo: soloing.value && key === props.solo,
     };
   }),
+);
+
+/** The name behind a key the dialogs are asking about. */
+const confirmingName = computed(() =>
+  confirming.value === null ? "" : label(confirming.value),
+);
+const switchingName = computed(() =>
+  switching.value === null ? "" : label(switching.value),
 );
 
 /**
@@ -243,21 +285,21 @@ const rows = computed(() =>
  * Leaving always clears, whatever the pointer: a highlight nobody set is still
  * one worth dropping.
  */
-function onRowEnter(name: string, event: PointerEvent) {
+function onRowEnter(key: string, event: PointerEvent) {
   if (props.embedded || event.pointerType !== "mouse") return;
-  emit("highlight", name);
+  emit("highlight", key);
 }
 
 function confirmDelete() {
-  const name = confirming.value;
+  const key = confirming.value;
   confirming.value = null;
-  if (name) emit("delete", name);
+  if (key) emit("delete", key);
 }
 
 function confirmSwitch() {
-  const name = switching.value;
+  const key = switching.value;
   switching.value = null;
-  if (name) emit("switch", name);
+  if (key) emit("switch", { key, displayName: label(key) });
 }
 </script>
 
@@ -270,7 +312,7 @@ function confirmSwitch() {
       <h2 class="heading">
         <template v-if="!embedded">Respondents</template>
         <span class="count" :class="`count--${countTone}`">
-          {{ availableCount }}/{{ names.length }} available
+          {{ availableCount }}/{{ keys.length }} available
         </span>
       </h2>
       <p v-if="slotLabel" class="slot">
@@ -288,28 +330,28 @@ function confirmSwitch() {
       </p>
     </header>
 
-    <p v-if="names.length === 0 && !soloing" class="empty">No answers yet.</p>
+    <p v-if="keys.length === 0 && !soloing" class="empty">No answers yet.</p>
 
     <ul class="names">
       <li
         v-for="row in rows"
-        :key="row.name"
+        :key="row.key"
         class="name"
         :class="{
           unavailable: row.unavailable,
           'if-needed': row.ifNeeded,
-          dimmed: highlight !== null && highlight !== row.name,
+          dimmed: highlight !== null && highlight !== row.key,
           'is-current': row.isCurrent,
         }"
-        @pointerenter="onRowEnter(row.name, $event)"
+        @pointerenter="onRowEnter(row.key, $event)"
         @pointerleave="emit('highlight', null)"
       >
         <span
           class="avatar"
           :class="row.state ? `avatar--${row.state}` : null"
-          :role="row.label ? 'img' : undefined"
-          :aria-label="row.label ?? undefined"
-          :aria-hidden="row.label ? undefined : 'true'"
+          :role="row.stateLabel ? 'img' : undefined"
+          :aria-label="row.stateLabel ?? undefined"
+          :aria-hidden="row.stateLabel ? undefined : 'true'"
         >
           <!-- On a slot: what this person marked there. -->
           <IconCheck v-if="row.state === 'available'" />
@@ -331,7 +373,7 @@ function confirmSwitch() {
           type="button"
           class="text text--switch"
           :title="`Answer as ${row.name}`"
-          @click="switching = row.name"
+          @click="switching = row.key"
         >
           {{ row.name }}<span v-if="row.online" class="hidden"> (online)</span>
         </button>
@@ -357,7 +399,7 @@ function confirmSwitch() {
           :aria-pressed="row.isSolo"
           :aria-label="row.isSolo ? 'Show everyone again' : `Show only ${row.name}`"
           :title="row.isSolo ? 'Show everyone again' : `Show only ${row.name}`"
-          @click="emit('solo', row.isSolo ? null : row.name)"
+          @click="emit('solo', row.isSolo ? null : row.key)"
         >
           <IconEyeOff v-if="row.isSolo" aria-hidden="true" />
           <IconEye v-else aria-hidden="true" />
@@ -367,7 +409,7 @@ function confirmSwitch() {
              nothing for a delete to do. And with the list collapsed to a single
              row, a bin beside it is only something to hit by mistake. -->
         <template v-if="row.answers && !soloing">
-          <span v-if="deleting === row.name" class="busy">
+          <span v-if="deleting === row.key" class="busy">
             <Spinner :size="15" :label="`Removing ${row.name}`" />
           </span>
           <button
@@ -377,7 +419,7 @@ function confirmSwitch() {
             :disabled="deleting !== null"
             :aria-label="`Remove ${row.name}`"
             :title="`Remove ${row.name}`"
-            @click="confirming = row.name"
+            @click="confirming = row.key"
           >
             <IconTrash stroke-width="1.7" aria-hidden="true" />
           </button>
@@ -414,7 +456,7 @@ function confirmSwitch() {
     >
       <div class="confirm">
         <p class="confirm__text">
-          This deletes everything <strong>{{ confirming }}</strong> marked on this
+          This deletes everything <strong>{{ confirmingName }}</strong> marked on this
           event and takes them off the respondents list. They can answer again
           from the same link.
         </p>
@@ -427,13 +469,13 @@ function confirmSwitch() {
 
     <Dialog
       :open="switching !== null"
-      :title="`Switch to ${switching}?`"
+      :title="`Switch to ${switchingName}?`"
       @close="switching = null"
     >
       <div class="confirm">
         <p class="confirm__text">
           You’ll be editing their availability: the grid loads what
-          <strong>{{ switching }}</strong> marked, and anything you change is
+          <strong>{{ switchingName }}</strong> marked, and anything you change is
           saved as them.
         </p>
         <div class="confirm__actions">

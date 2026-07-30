@@ -4,13 +4,25 @@
  * These mirror `var/events/<uuid>.json` exactly (see ARCHITECTURE.md § Storage).
  * The event document arrives fully hydrated — responses inline — either through
  * SSR (`window.__EVENT__`, provided to the app as `initialEvent`) or from
- * `GET /api/events/:slug`.
+ * `GET /<slug>/data`.
  */
+// The `.ts` is load-bearing. This module is imported at runtime by the server
+// (`storage.ts`, for the legacy read), which runs as `.ts` under Node's own
+// type stripping and resolves relative specifiers literally — an extensionless
+// specifier here is a crash on startup for the packaged CLI, not a warning.
+import { legacyUserKey } from "./user-key.ts";
 
 export type EventType = "specific_dates" | "dow";
 
-/** One guest's answer. Timestamps are ISO slot-start instants. */
+/**
+ * One guest's answer, filed under their [user key](./user-key.ts).
+ *
+ * `displayName` is what they typed and the only spelling anything renders; the
+ * key it is filed under is `userKey(displayName)`. Timestamps are ISO
+ * slot-start instants.
+ */
 export interface EventResponse {
+  displayName: string;
   availability: string[];
   ifNeeded: string[];
   updatedAt: string;
@@ -40,7 +52,75 @@ export interface EventDoc {
   realtime?: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Keyed by `userKey(displayName)`, never by the display name itself. */
   responses: Record<string, EventResponse>;
+}
+
+/**
+ * Brings an event's responses up to the keyed format, in place of a migration.
+ *
+ * There are no migration scripts and no schema version (ARCHITECTURE.md §
+ * Storage), so an old file has to be readable as it stands. An old file is
+ * keyed by the raw name the guest typed — dashes and all — and its records
+ * carry no `displayName`. That missing field is the marker: a record that has
+ * one is already keyed, and is left exactly alone.
+ *
+ * A legacy record is re-filed under `legacyUserKey(rawName)`, which reads its
+ * dashes as the spaces they stood in for, and keeps the raw name as its
+ * display name. Grandfathering the spelling matters: the name on the row is
+ * the one the group recognises, and re-deriving it from the key would rewrite
+ * somebody's capitalisation on their behalf.
+ *
+ * Two legacy names can normalize to one key — "Ada Lovelace" and
+ * "ada-lovelace" both land on `ada-lovelace` — and only one record can survive
+ * that. The newer `updatedAt` wins, because it is the answer the group has
+ * been looking at, and `onWarn` says so. Nothing is logged about *who*: a
+ * warning is not a place to put a guest's name.
+ *
+ * Returns the responses to use and whether anything moved. Nothing is written
+ * here — the caller reads through this, and the next ordinary write persists
+ * the result.
+ */
+export function normalizeResponses(
+  responses: Record<string, EventResponse> | null | undefined,
+  onWarn?: (message: string) => void,
+): { responses: Record<string, EventResponse>; changed: boolean } {
+  const source = responses ?? {};
+  const out: Record<string, EventResponse> = {};
+  let changed = false;
+
+  for (const [rawKey, record] of Object.entries(source)) {
+    const stored = (record ?? {}) as Partial<EventResponse>;
+    if (typeof stored.displayName === "string") {
+      // Already keyed. Nothing about it is ours to second-guess.
+      out[rawKey] = record;
+      continue;
+    }
+
+    changed = true;
+    // An all-dash or all-space legacy name normalizes to nothing; keeping the
+    // raw string as its own key is lossless and stays idempotent, since
+    // `userKey` of a key is that key.
+    const key = legacyUserKey(rawKey) || rawKey;
+    const migrated: EventResponse = {
+      displayName: rawKey,
+      availability: Array.isArray(stored.availability) ? stored.availability : [],
+      ifNeeded: Array.isArray(stored.ifNeeded) ? stored.ifNeeded : [],
+      updatedAt: typeof stored.updatedAt === "string" ? stored.updatedAt : "",
+    };
+
+    const clash = out[key];
+    if (!clash) {
+      out[key] = migrated;
+      continue;
+    }
+    onWarn?.(
+      "Two legacy responses on one event normalize to the same guest key; keeping the more recently updated one.",
+    );
+    if (migrated.updatedAt > clash.updatedAt) out[key] = migrated;
+  }
+
+  return { responses: out, changed };
 }
 
 /**

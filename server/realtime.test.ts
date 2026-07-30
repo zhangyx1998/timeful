@@ -6,12 +6,17 @@
  * no client library, and nothing about the transport mocked. The properties
  * under test are the ones the feature is only worth having if it holds:
  *
- * - a mutation through the REST API reaches everyone watching that event;
- * - **the socket is read-only** — a client can send whatever it likes and
- *   change nothing, and the REST API stays the sole write path;
+ * - a mutation reaches everyone watching that event, whichever way it arrived;
+ * - **the browse socket is read-only** — a client can send whatever it likes
+ *   down `/<slug>/ws` and change nothing;
+ * - a **write session** accepts saves and validates them exactly as the REST
+ *   `PUT` does, because it runs the same function;
+ * - **one session per key**: a second claim is refused, a takeover evicts the
+ *   incumbent and tells it so, and neither is ever automatic;
  * - an upgrade naming an event that does not exist is tarpitted exactly like
  *   an HTTP miss, so subscribing is no cheaper to scan than fetching;
- * - with realtime off, nothing is registered at all;
+ * - with realtime off, nothing is registered at all — no sessions, and so no
+ *   exclusivity — and the REST API carries on being the write path;
  * - rooms do not outlive their subscribers.
  */
 import fs from "node:fs/promises";
@@ -32,21 +37,23 @@ const { MISS_DELAY_MS } = vi.hoisted(() => {
   return { MISS_DELAY_MS: 60 };
 });
 
+import { CLOSE_OCCUPIED, CLOSE_REPLACED } from "../src/lib/realtime.ts";
 import { createApp, type Renderer } from "./app.ts";
 import { createSession, setCredential } from "./auth.ts";
 import {
   attachRealtime,
   clientCount,
-  presenceNames,
+  presencePeople,
   roomCount,
+  sessionKeys,
   type RealtimeServer,
 } from "./realtime.ts";
-import { resolveEvent } from "./routes/events.ts";
+import { resolveEvent, writeResponse } from "./routes/events.ts";
 import { updateEvent } from "./storage.ts";
 import { missTarpit } from "./tarpit.ts";
-import type { RealtimeMessage, StoredEvent } from "./types.ts";
+import type { PresenceEntry, RealtimeMessage, StoredEvent } from "./types.ts";
 
-/** No page is rendered in these tests; only `/api` and the upgrade path. */
+/** No page is rendered in these tests; only the API and the upgrade paths. */
 const renderer: Renderer = {
   loadTemplate: () => Promise.resolve("<!doctype html><div id=\"app\"></div>"),
   loadRender: () => Promise.reject(new Error("SSR is not used in these tests")),
@@ -92,7 +99,7 @@ afterEach(async () => {
 
 /** Registers the upgrade listener. Left to each test: some want it absent. */
 function attach(heartbeatMs?: number): RealtimeServer {
-  hub = attachRealtime(server, { resolveEvent, heartbeatMs });
+  hub = attachRealtime(server, { resolveEvent, writeResponse, heartbeatMs });
   return hub;
 }
 
@@ -144,41 +151,52 @@ async function createEvent(
   return res.body as StoredEvent;
 }
 
-interface Subscriber {
-  socket: WebSocket;
-  /** Snapshots and `gone`, in order. Presence is kept separately. */
-  received: RealtimeMessage[];
-  /** Every presence list this socket has been sent, in order. */
-  presence: string[][];
-  /** Resolves once at least `count` snapshots or `gone`s have arrived. */
-  take(count: number): Promise<RealtimeMessage[]>;
-  /** Resolves once at least `count` presence lists have arrived. */
-  takePresence(count: number): Promise<string[][]>;
-  /** The most recent presence list, or an empty one before the first. */
-  names(): string[];
+/** The REST write, as the page makes it when there is no session. */
+function put(
+  idOrSlug: string,
+  key: string,
+  displayName: string,
+  body: Record<string, unknown> = { availability: SLOTS },
+) {
+  return call("PUT", `/${idOrSlug}/users/${key}`, { body: { displayName, ...body } });
 }
 
-/**
- * Opens a subscription and resolves once the socket is actually open.
- *
- * A `name` is announced the way the client announces one: in the upgrade URL,
- * because there is no inbound frame that could carry it.
- */
-function subscribe(idOrSlug: string, name?: string): Promise<Subscriber> {
-  const query = name === undefined ? "" : `?name=${encodeURIComponent(name)}`;
-  const socket = new WebSocket(
-    `${wsBase}/api/events/${encodeURIComponent(idOrSlug)}/ws${query}`,
-  );
+interface Subscriber {
+  socket: WebSocket;
+  /** Everything but presence — snapshots, acks, refusals, `gone`, `replaced`. */
+  received: RealtimeMessage[];
+  /** Every presence list this socket has been sent, in order. */
+  presence: PresenceEntry[][];
+  /** Resolves once at least `count` non-presence messages have arrived. */
+  take(count: number): Promise<RealtimeMessage[]>;
+  /** Resolves once at least `count` presence lists have arrived. */
+  takePresence(count: number): Promise<PresenceEntry[][]>;
+  /** The most recent presence list, or an empty one before the first. */
+  people(): PresenceEntry[];
+  /** The close code and reason, once the server hangs up. */
+  closed(): Promise<{ code: number; reason: string }>;
+}
+
+/** Opens a socket at an arbitrary path and resolves once it is actually open. */
+function openSocket(url: string): Promise<Subscriber> {
+  const socket = new WebSocket(url);
   clients.push(socket);
   const received: RealtimeMessage[] = [];
-  const presence: string[][] = [];
+  const presence: PresenceEntry[][] = [];
   const waiting = new Set<() => void>();
 
   socket.addEventListener("message", (event: MessageEvent) => {
     const message = JSON.parse(String(event.data)) as RealtimeMessage;
-    if (message.type === "presence") presence.push(message.names);
+    if (message.type === "presence") presence.push(message.people);
     else received.push(message);
     for (const notify of [...waiting]) notify();
+  });
+
+  const closeEvent = new Promise<{ code: number; reason: string }>((resolve) => {
+    socket.addEventListener("close", (event: Event) => {
+      const close = event as CloseEvent;
+      resolve({ code: close.code, reason: close.reason });
+    });
   });
 
   const waitFor = <T,>(ready: () => T | null, label: string): Promise<T> =>
@@ -201,7 +219,7 @@ function subscribe(idOrSlug: string, name?: string): Promise<Subscriber> {
   const take = (count: number) =>
     waitFor(
       () => (received.length >= count ? received : null),
-      `${count} snapshots (${received.length} arrived)`,
+      `${count} messages (${received.length} arrived)`,
     );
   const takePresence = (count: number) =>
     waitFor(
@@ -217,11 +235,44 @@ function subscribe(idOrSlug: string, name?: string): Promise<Subscriber> {
         presence,
         take,
         takePresence,
-        names: () => presence[presence.length - 1] ?? [],
+        people: () => presence[presence.length - 1] ?? [],
+        closed: () => closeEvent,
       }),
     );
     socket.addEventListener("error", () => reject(new Error("upgrade refused")));
   });
+}
+
+/** The browse socket: watching, claiming nothing, sending nothing. */
+function subscribe(idOrSlug: string): Promise<Subscriber> {
+  return openSocket(`${wsBase}/${encodeURIComponent(idOrSlug)}/ws`);
+}
+
+/**
+ * The named write session. `name` is the spelling the room should render; a
+ * takeover is only ever asked for after a `4409`.
+ */
+function session(
+  idOrSlug: string,
+  key: string,
+  options: { name?: string; takeover?: boolean } = {},
+): Promise<Subscriber> {
+  const query = new URLSearchParams();
+  if (options.name !== undefined) query.set("name", options.name);
+  if (options.takeover) query.set("takeover", "1");
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return openSocket(
+    `${wsBase}/${encodeURIComponent(idOrSlug)}/users/${encodeURIComponent(key)}${suffix}`,
+  );
+}
+
+/** One save frame, as the client's connector sends it. */
+function save(
+  subscriber: Subscriber,
+  displayName: string,
+  body: Record<string, unknown> = { availability: SLOTS, ifNeeded: [] },
+): void {
+  subscriber.socket.send(JSON.stringify({ type: "save", displayName, ...body }));
 }
 
 /** Resolves to how long an upgrade took to fail, in ms. */
@@ -242,6 +293,10 @@ async function until(predicate: () => boolean, label: string): Promise<void> {
 
 const SLOTS = ["2026-08-03T13:00:00.000Z", "2026-08-03T13:30:00.000Z"];
 
+/** The names in a presence list, for the assertions that only care about those. */
+const names = (people: PresenceEntry[]) => people.map((p) => p.displayName);
+const keysOf = (people: PresenceEntry[]) => people.map((p) => p.key);
+
 // ---------------------------------------------------------------------------
 // tests
 // ---------------------------------------------------------------------------
@@ -253,18 +308,15 @@ describe("the realtime channel", () => {
     // By slug, the way a page reaches it: the capability URL is the address.
     const watcher = await subscribe(event.slug);
 
-    expect(
-      (await call("PUT", `/api/events/${event.id}/responses/Alice`, {
-        body: { availability: SLOTS, ifNeeded: [] },
-      })).status,
-    ).toBe(200);
+    expect((await put(event.id, "alice", "Alice")).status).toBe(200);
 
     const [message] = await watcher.take(1);
     expect(message.type).toBe("event");
     if (message.type !== "event") throw new Error("unreachable");
     // The whole document, responses inline — the same bytes a GET returns.
     expect(message.event.id).toBe(event.id);
-    expect(message.event.responses.Alice.availability).toEqual(SLOTS);
+    expect(message.event.responses.alice.availability).toEqual(SLOTS);
+    expect(message.event.responses.alice.displayName).toBe("Alice");
   });
 
   it("reaches every subscriber watching the same event", async () => {
@@ -275,14 +327,12 @@ describe("the realtime channel", () => {
     const second = await subscribe(event.id);
     expect(clientCount(event.id)).toBe(2);
 
-    await call("PUT", `/api/events/${event.id}/responses/Bob`, {
-      body: { availability: SLOTS },
-    });
+    await put(event.id, "bob", "Bob");
 
     for (const messages of [await first.take(1), await second.take(1)]) {
       const [message] = messages;
       if (message.type !== "event") throw new Error("expected a snapshot");
-      expect(Object.keys(message.event.responses)).toEqual(["Bob"]);
+      expect(Object.keys(message.event.responses)).toEqual(["bob"]);
     }
   });
 
@@ -290,13 +340,11 @@ describe("the realtime channel", () => {
     attach();
     const cookie = await adminCookie();
     const event = await createEvent(cookie);
-    await call("PUT", `/api/events/${event.id}/responses/Carol`, {
-      body: { availability: SLOTS },
-    });
+    await put(event.id, "carol", "Carol");
     const watcher = await subscribe(event.slug);
 
-    await call("DELETE", `/api/events/${event.id}/responses/Carol`);
-    await call("DELETE", `/api/events/${event.id}`, { cookie });
+    await call("DELETE", `/${event.id}/users/carol`);
+    await call("DELETE", `/${event.id}/settings`, { cookie });
 
     const [removed, gone] = await watcher.take(2);
     if (removed.type !== "event") throw new Error("expected a snapshot");
@@ -313,7 +361,7 @@ describe("the realtime channel", () => {
     const watcher = await subscribe(event.slug);
 
     expect(
-      (await call("PATCH", `/api/events/${event.id}`, {
+      (await call("PATCH", `/${event.id}/settings`, {
         cookie,
         body: { name: "Offsite, moved", slug: "moved-offsite" },
       })).status,
@@ -328,35 +376,32 @@ describe("the realtime channel", () => {
   });
 
   // -------------------------------------------------------------------------
-  // read-only
+  // the browse socket is read-only
   // -------------------------------------------------------------------------
 
-  it("ignores everything a client sends, and stays connected", async () => {
+  it("ignores everything a browsing client sends, and stays connected", async () => {
     attach();
     const event = await createEvent(await adminCookie());
     const watcher = await subscribe(event.slug);
 
-    // A forged snapshot, and something shaped like the write it is imitating.
-    // Neither is parsed, let alone acted on: no `message` listener exists.
+    // A forged snapshot, a save frame in exactly the shape the write session
+    // accepts, and rubbish. None is parsed, let alone acted on: this socket has
+    // no `message` listener at all.
     watcher.socket.send(
       JSON.stringify({
         type: "event",
-        event: { ...event, name: "Pwned", responses: { Mallory: { availability: SLOTS } } },
+        event: { ...event, name: "Pwned", responses: { mallory: { availability: SLOTS } } },
       }),
     );
     watcher.socket.send(
-      JSON.stringify({
-        method: "PUT",
-        path: `/api/events/${event.id}/responses/Mallory`,
-        body: { availability: SLOTS },
-      }),
+      JSON.stringify({ type: "save", displayName: "Mallory", availability: SLOTS }),
     );
     watcher.socket.send("not json at all");
 
     // Give the server every chance to have done something with it.
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    const stored = (await call("GET", `/api/events/${event.id}`)).body as StoredEvent;
+    const stored = (await call("GET", `/${event.id}/data`)).body as StoredEvent;
     expect(stored.name).toBe("Team Offsite");
     expect(stored.responses).toEqual({});
     expect(watcher.received).toEqual([]);
@@ -364,12 +409,300 @@ describe("the realtime channel", () => {
     // Ignoring is friendlier than closing: the socket is still healthy and
     // still delivers the next real update.
     expect(watcher.socket.readyState).toBe(WebSocket.OPEN);
-    await call("PUT", `/api/events/${event.id}/responses/Dan`, {
-      body: { availability: SLOTS },
-    });
+    await put(event.id, "dan", "Dan");
     const [message] = await watcher.take(1);
     if (message.type !== "event") throw new Error("expected a snapshot");
-    expect(Object.keys(message.event.responses)).toEqual(["Dan"]);
+    expect(Object.keys(message.event.responses)).toEqual(["dan"]);
+  });
+
+  // -------------------------------------------------------------------------
+  // the named write session
+  // -------------------------------------------------------------------------
+
+  describe("a write session", () => {
+    it("acknowledges a save and broadcasts it to the room", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      const watcher = await subscribe(event.slug);
+      const ada = await session(event.slug, "ada-lovelace", { name: "Ada Lovelace" });
+
+      save(ada, "Ada Lovelace");
+
+      // The writer gets an ack — the autosave engine's success signal …
+      const [ack] = await ada.take(1);
+      expect(ack).toEqual({ type: "saved" });
+      // … and the room gets the snapshot, the writer included.
+      const [broadcast] = await watcher.take(1);
+      if (broadcast.type !== "event") throw new Error("expected a snapshot");
+      expect(broadcast.event.responses["ada-lovelace"]).toMatchObject({
+        displayName: "Ada Lovelace",
+        availability: SLOTS,
+      });
+
+      // And it is on disk, not just on the wire.
+      const stored = (await call("GET", `/${event.id}/data`)).body as StoredEvent;
+      expect(stored.responses["ada-lovelace"].availability).toEqual(SLOTS);
+    });
+
+    it("validates a save exactly as the REST PUT does", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      const ada = await session(event.slug, "ada-lovelace", { name: "Ada Lovelace" });
+
+      // Every one of these is a 400 over REST. Over the socket it is a refusal
+      // carrying the same words, because it is the same validator that wrote
+      // them — and never a closed connection.
+      const bad: Array<[Record<string, unknown>, string]> = [
+        [{ displayName: "Ada-Lovelace" }, "A name may not contain a dash — use spaces instead"],
+        [{ displayName: "   " }, "A name is required"],
+        [{ displayName: "Grace Hopper" }, "The name does not match the key in the path"],
+        [
+          { displayName: "Ada Lovelace", availability: ["not a date"] },
+          "availability must be an array of ISO date strings",
+        ],
+      ];
+      for (const [body, message] of bad) {
+        ada.socket.send(JSON.stringify({ type: "save", ...body }));
+        const seen = await ada.take(ada.received.length + 1);
+        expect(seen[seen.length - 1]).toEqual({ type: "save-failed", message });
+
+        const rest = await call("PUT", `/${event.id}/users/ada-lovelace`, { body });
+        expect(rest.status).toBe(400);
+        expect((rest.body as { error: string }).error).toBe(message);
+      }
+
+      expect(ada.socket.readyState).toBe(WebSocket.OPEN);
+      expect(((await call("GET", `/${event.id}/data`)).body as StoredEvent).responses)
+        .toEqual({});
+    });
+
+    it("ignores a frame that is not a save, without hanging up", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      const ada = await session(event.slug, "ada-lovelace", { name: "Ada Lovelace" });
+
+      // A message type from a newer client is not an attack, and closing on it
+      // would punish a page for speaking a word this server has not learned.
+      for (const frame of [
+        "not json",
+        JSON.stringify({ type: "presence", people: [] }),
+        JSON.stringify({ type: "save" }),
+        JSON.stringify({ type: "save", displayName: 7 }),
+      ]) {
+        ada.socket.send(frame);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(ada.received).toEqual([]);
+      expect(ada.socket.readyState).toBe(WebSocket.OPEN);
+      // Still a working session afterwards.
+      save(ada, "Ada Lovelace");
+      expect((await ada.take(1))[0]).toEqual({ type: "saved" });
+    });
+
+    it("clears an answer with an empty save, keeping the zero-record rule", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      const ada = await session(event.slug, "ada-lovelace", { name: "Ada Lovelace" });
+      save(ada, "Ada Lovelace");
+      // The writer is in the room too, so its own save comes back as a
+      // snapshot as well as an ack: two messages per save, not one.
+      await ada.take(2);
+
+      save(ada, "Ada Lovelace", { availability: [], ifNeeded: [] });
+
+      await ada.take(4);
+      expect(ada.received.filter((m) => m.type === "saved")).toHaveLength(2);
+      // Not a hollow record: the guest is off the event entirely.
+      const stored = (await call("GET", `/${event.id}/data`)).body as StoredEvent;
+      expect(stored.responses).toEqual({});
+    });
+
+    it("says nothing to the room for a clear that cleared nothing", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      const watcher = await subscribe(event.slug);
+      const ada = await session(event.slug, "ada-lovelace", { name: "Ada Lovelace" });
+
+      save(ada, "Ada Lovelace", { availability: [], ifNeeded: [] });
+
+      // Acknowledged, because the save did land — and no snapshot, because
+      // nothing about the event changed.
+      expect((await ada.take(1))[0]).toEqual({ type: "saved" });
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(watcher.received).toEqual([]);
+    });
+
+    it("normalizes the key in the path", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      // A page would send the key; a hand-written URL may not. Both are the
+      // same person, and the same session.
+      const ada = await session(event.slug, "Ada Lovelace", { name: "Ada Lovelace" });
+      expect(sessionKeys(event.id)).toEqual(["ada-lovelace"]);
+
+      save(ada, "Ada Lovelace");
+      await ada.take(1);
+      const stored = (await call("GET", `/${event.id}/data`)).body as StoredEvent;
+      expect(Object.keys(stored.responses)).toEqual(["ada-lovelace"]);
+    });
+
+    it("still writes over REST while a session is open", async () => {
+      // The socket is an addition, not a replacement: the REST PUT is the write
+      // API whenever there is no session, and it never stops working.
+      attach();
+      const event = await createEvent(await adminCookie());
+      const ada = await session(event.slug, "ada-lovelace", { name: "Ada Lovelace" });
+
+      expect((await put(event.id, "grace-hopper", "Grace Hopper")).status).toBe(200);
+
+      const [message] = await ada.take(1);
+      if (message.type !== "event") throw new Error("expected a snapshot");
+      expect(Object.keys(message.event.responses)).toEqual(["grace-hopper"]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // one session per key
+  // -------------------------------------------------------------------------
+
+  describe("exclusivity", () => {
+    it("refuses a second session for the same key", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      const first = await session(event.slug, "ada-lovelace", { name: "Ada Lovelace" });
+
+      // A different spelling of the same name is the same key, and so the same
+      // session — which is the whole point of normalizing it.
+      const second = await session(event.slug, "ada  LOVELACE", { name: "ada  LOVELACE" });
+
+      const closed = await second.closed();
+      expect(closed.code).toBe(CLOSE_OCCUPIED);
+      expect(closed.reason).toBe("occupied");
+      // The incumbent is untouched: not told anything, and still the holder.
+      expect(first.socket.readyState).toBe(WebSocket.OPEN);
+      expect(first.received).toEqual([]);
+      expect(sessionKeys(event.id)).toEqual(["ada-lovelace"]);
+      expect(clientCount(event.id)).toBe(1);
+
+      save(first, "Ada Lovelace");
+      expect((await first.take(1))[0]).toEqual({ type: "saved" });
+    });
+
+    it("lets a different key in beside it", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      await session(event.slug, "ada-lovelace", { name: "Ada Lovelace" });
+      const grace = await session(event.slug, "grace-hopper", { name: "Grace Hopper" });
+
+      expect(grace.socket.readyState).toBe(WebSocket.OPEN);
+      expect(sessionKeys(event.id)).toEqual(["ada-lovelace", "grace-hopper"]);
+    });
+
+    it("hands the session over when the newcomer asks to take it", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      const first = await session(event.slug, "ada-lovelace", { name: "Ada Lovelace" });
+
+      const second = await session(event.slug, "ada-lovelace", {
+        name: "Ada Lovelace",
+        takeover: true,
+      });
+
+      // The incumbent is told in words before it is hung up on, so its page can
+      // say what happened rather than showing a dropped connection.
+      const [replaced] = await first.take(1);
+      expect(replaced).toEqual({ type: "replaced" });
+      const closed = await first.closed();
+      expect(closed.code).toBe(CLOSE_REPLACED);
+
+      // And the newcomer holds a working session.
+      expect(second.socket.readyState).toBe(WebSocket.OPEN);
+      await until(() => clientCount(event.id) === 1, "the old session to go");
+      expect(sessionKeys(event.id)).toEqual(["ada-lovelace"]);
+      save(second, "Ada Lovelace");
+      expect((await second.take(1))[0]).toEqual({ type: "saved" });
+    });
+
+    it("does not let the evicted session's close evict the newcomer", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      const first = await session(event.slug, "ada-lovelace", { name: "Ada Lovelace" });
+      const second = await session(event.slug, "ada-lovelace", {
+        name: "Ada Lovelace",
+        takeover: true,
+      });
+      await first.closed();
+      await until(() => clientCount(event.id) === 1, "the old session to go");
+
+      // The claim belongs to whoever holds it now, not to whoever held it last.
+      expect(sessionKeys(event.id)).toEqual(["ada-lovelace"]);
+      save(second, "Ada Lovelace");
+      expect((await second.take(1))[0]).toEqual({ type: "saved" });
+    });
+
+    it("refuses a save from a session that has been taken over", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      const first = await session(event.slug, "ada-lovelace", { name: "Ada Lovelace" });
+      await session(event.slug, "ada-lovelace", { name: "Ada Lovelace", takeover: true });
+
+      // A frame already on the wire when the takeover landed writes nothing:
+      // the session is not this socket's any more.
+      save(first, "Ada Lovelace");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      const stored = (await call("GET", `/${event.id}/data`)).body as StoredEvent;
+      expect(stored.responses).toEqual({});
+    });
+
+    it("frees the key once the session closes", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      const first = await session(event.slug, "ada-lovelace", { name: "Ada Lovelace" });
+
+      first.socket.close();
+      await until(() => sessionKeys(event.id).length === 0, "the session to be freed");
+
+      // No takeover needed: nobody holds it.
+      const second = await session(event.slug, "ada-lovelace", { name: "Ada Lovelace" });
+      expect(second.socket.readyState).toBe(WebSocket.OPEN);
+      expect(sessionKeys(event.id)).toEqual(["ada-lovelace"]);
+    });
+
+    it("does not enforce anything when realtime is off", async () => {
+      // No sessions exist, so there is nothing to be exclusive about. Two
+      // browsers editing as one person is exactly the behaviour the app had
+      // before write sessions, and the REST PUT is how they both do it.
+      const event = await createEvent(await adminCookie(), { realtime: false });
+
+      await expect(
+        session(event.slug, "ada-lovelace", { name: "Ada Lovelace" }),
+      ).rejects.toThrow("upgrade refused");
+
+      expect((await put(event.id, "ada-lovelace", "Ada Lovelace")).status).toBe(200);
+      expect(
+        (await put(event.id, "ada-lovelace", "Ada Lovelace", {
+          availability: ["2026-08-04T13:00:00.000Z"],
+        })).status,
+      ).toBe(200);
+      const stored = (await call("GET", `/${event.id}/data`)).body as StoredEvent;
+      expect(stored.responses["ada-lovelace"].availability).toEqual([
+        "2026-08-04T13:00:00.000Z",
+      ]);
+    });
+
+    it("does not let a browse socket claim or block anything", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      await subscribe(event.slug);
+      await subscribe(event.slug);
+
+      expect(sessionKeys(event.id)).toEqual([]);
+      const ada = await session(event.slug, "ada-lovelace", { name: "Ada Lovelace" });
+      expect(ada.socket.readyState).toBe(WebSocket.OPEN);
+      expect(sessionKeys(event.id)).toEqual(["ada-lovelace"]);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -389,6 +722,20 @@ describe("the realtime channel", () => {
     expect(roomCount()).toBe(0);
   });
 
+  it("tarpits a write-session upgrade that names no event", async () => {
+    attach();
+    await createEvent(await adminCookie());
+
+    const started = Date.now();
+    await expect(
+      session("Nx7Kq2mWx9Az", "ada-lovelace", { name: "Ada Lovelace" }),
+    ).rejects.toThrow("upgrade refused");
+
+    // A session URL must be no cheaper to scan than the browse one beside it.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(MISS_DELAY_MS - 15);
+    expect(roomCount()).toBe(0);
+  });
+
   it("registers nothing at all when realtime is off", async () => {
     // No attach(): this is what `serve()` does with realtime disabled.
     const event = await createEvent(await adminCookie());
@@ -397,7 +744,7 @@ describe("the realtime channel", () => {
     expect(roomCount()).toBe(0);
 
     // And the page it would have enhanced is untouched: REST still answers.
-    const res = await call("GET", `/api/events/${event.slug}`);
+    const res = await call("GET", `/${event.slug}/data`);
     expect(res.status).toBe(200);
     expect((res.body as StoredEvent).id).toBe(event.id);
   });
@@ -405,9 +752,11 @@ describe("the realtime channel", () => {
   it("leaves an upgrade for any other path alone", async () => {
     attach();
     const event = await createEvent(await adminCookie());
-    // A plain GET of the socket path is not an upgrade, and falls through to
-    // the events catch-all rather than to anything realtime owns.
-    expect((await call("GET", `/api/events/${event.slug}/ws`)).status).toBe(404);
+    // A plain GET of either socket path is not an upgrade, and falls through to
+    // the event-scoped catch-all rather than to anything realtime owns. The
+    // slug resolved, so it is a plain 404 with no delay behind it.
+    expect((await call("GET", `/${event.slug}/ws`)).status).toBe(404);
+    expect((await call("GET", `/${event.slug}/users/ada-lovelace`)).status).toBe(404);
   });
 
   // -------------------------------------------------------------------------
@@ -470,7 +819,7 @@ describe("the realtime channel", () => {
       expect(roomCount()).toBe(0);
 
       // And the event itself is entirely unaffected: REST still serves it.
-      expect((await call("GET", `/api/events/${event.slug}`)).status).toBe(200);
+      expect((await call("GET", `/${event.slug}/data`)).status).toBe(200);
     });
 
     it("treats an event written before the flag existed as on", async () => {
@@ -483,9 +832,7 @@ describe("the realtime channel", () => {
       });
 
       const watcher = await subscribe(event.slug);
-      await call("PUT", `/api/events/${event.id}/responses/Frank`, {
-        body: { availability: SLOTS },
-      });
+      await put(event.id, "frank", "Frank");
       expect((await watcher.take(1))[0].type).toBe("event");
     });
 
@@ -494,27 +841,22 @@ describe("the realtime channel", () => {
       const cookie = await adminCookie();
       const event = await createEvent(cookie);
       const watcher = await subscribe(event.slug);
-      const closed = new Promise<CloseEvent>((resolve) => {
-        watcher.socket.addEventListener("close", (e: Event) => resolve(e as CloseEvent));
-      });
 
       expect(
-        (await call("PATCH", `/api/events/${event.id}`, {
+        (await call("PATCH", `/${event.id}/settings`, {
           cookie,
           body: { realtime: false },
         })).status,
       ).toBe(200);
 
-      await closed;
+      await watcher.closed();
       // Hung up on, not told the event is gone — it is still there, and still
       // answerable over REST.
       expect(watcher.received.some((m) => m.type === "gone")).toBe(false);
       await until(() => roomCount() === 0, "the room to close");
 
       // Nothing is broadcast for it afterwards, and reconnecting is refused.
-      await call("PUT", `/api/events/${event.id}/responses/Gina`, {
-        body: { availability: SLOTS },
-      });
+      await put(event.id, "gina", "Gina");
       expect(roomCount()).toBe(0);
       await expect(subscribe(event.slug)).rejects.toThrow("upgrade refused");
     });
@@ -525,15 +867,13 @@ describe("the realtime channel", () => {
       const event = await createEvent(cookie, { realtime: false });
       await expect(subscribe(event.slug)).rejects.toThrow("upgrade refused");
 
-      await call("PATCH", `/api/events/${event.id}`, {
+      await call("PATCH", `/${event.id}/settings`, {
         cookie,
         body: { realtime: true },
       });
 
       const watcher = await subscribe(event.slug);
-      await call("PUT", `/api/events/${event.id}/responses/Hank`, {
-        body: { availability: SLOTS },
-      });
+      await put(event.id, "hank", "Hank");
       expect((await watcher.take(1))[0].type).toBe("event");
     });
   });
@@ -547,68 +887,80 @@ describe("the realtime channel", () => {
       attach();
       const event = await createEvent(await adminCookie());
 
-      const alice = await subscribe(event.slug, "Alice");
-      // Her own name is in her first list: she is one of the people here.
-      expect(await alice.takePresence(1)).toEqual([["Alice"]]);
+      const alice = await session(event.slug, "alice", { name: "Alice" });
+      // Her own entry is in her first list: she is one of the people here.
+      expect(await alice.takePresence(1)).toEqual([[{ key: "alice", displayName: "Alice" }]]);
 
-      const bob = await subscribe(event.slug, "Bob");
+      const bob = await session(event.slug, "bob", { name: "Bob" });
       // The newcomer is told the whole room, not just himself …
-      expect((await bob.takePresence(1))[0]).toEqual(["Alice", "Bob"]);
-      // … and the room is told about him, sorted rather than in arrival order.
+      expect(names((await bob.takePresence(1))[0])).toEqual(["Alice", "Bob"]);
+      // … and the room is told about him, ordered by name rather than arrival.
       await alice.takePresence(2);
-      expect(alice.names()).toEqual(["Alice", "Bob"]);
-      expect(presenceNames(event.id)).toEqual(["Alice", "Bob"]);
+      expect(names(alice.people())).toEqual(["Alice", "Bob"]);
+      expect(keysOf(presencePeople(event.id))).toEqual(["alice", "bob"]);
 
       // Presence is not an answer: nobody has responded to this event at all.
-      expect(Object.keys((await call("GET", `/api/events/${event.id}`)).body as never))
-        .not.toContain("presence");
-      expect(((await call("GET", `/api/events/${event.id}`)).body as StoredEvent).responses)
-        .toEqual({});
+      const doc = (await call("GET", `/${event.id}/data`)).body as StoredEvent;
+      expect(Object.keys(doc)).not.toContain("presence");
+      expect(doc.responses).toEqual({});
     });
 
-    it("counts a name once however many connections it has", async () => {
+    it("carries the spelling the session announced", async () => {
       attach();
       const event = await createEvent(await adminCookie());
-      const watcher = await subscribe(event.slug, "Alice");
-      await watcher.takePresence(1);
-
-      // A second tab under the same name: the same list, so nothing is sent.
-      const secondTab = await subscribe(event.slug, "Alice");
-      expect((await secondTab.takePresence(1))[0]).toEqual(["Alice"]);
-      expect(presenceNames(event.id)).toEqual(["Alice"]);
-      expect(watcher.presence).toHaveLength(1);
-
-      // One tab closing leaves the other holding the name.
-      secondTab.socket.close();
-      await until(() => clientCount(event.id) === 1, "the second tab to go");
-      expect(presenceNames(event.id)).toEqual(["Alice"]);
-      expect(watcher.presence).toHaveLength(1);
+      // The key is what matches; the display name is what a row renders.
+      const ada = await session(event.slug, "ada-lovelace", { name: "ada  LOVELACE" });
+      expect((await ada.takePresence(1))[0]).toEqual([
+        { key: "ada-lovelace", displayName: "ada  LOVELACE" },
+      ]);
     });
 
-    it("takes a name off the list when its last connection goes", async () => {
+    it("falls back to the key when the announced name is not one", async () => {
       attach();
       const event = await createEvent(await adminCookie());
-      const alice = await subscribe(event.slug, "Alice");
-      const bob = await subscribe(event.slug, "Bob");
+
+      // Whitespace, empty, and over the guest-name limit. A name silently
+      // shortened would put a stranger's spelling in the list, so the key —
+      // which is load-bearing and already normalized — is shown instead.
+      for (const name of ["   ", "", "\t\n", "L".repeat(101)]) {
+        const watcher = await session(event.slug, "ada-lovelace", { name });
+        expect((await watcher.takePresence(1))[0]).toEqual([
+          { key: "ada-lovelace", displayName: "ada-lovelace" },
+        ]);
+        watcher.socket.close();
+        await until(() => sessionKeys(event.id).length === 0, "the session to close");
+      }
+
+      // Right up to the limit is a name, and it is trimmed on the way in.
+      const long = "L".repeat(100);
+      const watcher = await session(event.slug, "ada-lovelace", { name: `  ${long}  ` });
+      expect(names((await watcher.takePresence(1))[0])).toEqual([long]);
+    });
+
+    it("takes somebody off the list when their session goes", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      const alice = await session(event.slug, "alice", { name: "Alice" });
+      const bob = await session(event.slug, "bob", { name: "Bob" });
       await alice.takePresence(2);
 
       bob.socket.close();
 
-      expect((await alice.takePresence(3))[2]).toEqual(["Alice"]);
-      expect(presenceNames(event.id)).toEqual(["Alice"]);
+      expect(names((await alice.takePresence(3))[2])).toEqual(["Alice"]);
+      expect(keysOf(presencePeople(event.id))).toEqual(["alice"]);
     });
 
     it("sends a browsing page the list without putting it on one", async () => {
       attach();
       const event = await createEvent(await adminCookie());
-      const alice = await subscribe(event.slug, "Alice");
+      const alice = await session(event.slug, "alice", { name: "Alice" });
       await alice.takePresence(1);
 
-      // No `name` at all: this page is reading, not answering.
+      // The browse socket claims nothing: this page is reading, not answering.
       const browsing = await subscribe(event.slug);
 
-      expect((await browsing.takePresence(1))[0]).toEqual(["Alice"]);
-      expect(presenceNames(event.id)).toEqual(["Alice"]);
+      expect(names((await browsing.takePresence(1))[0])).toEqual(["Alice"]);
+      expect(keysOf(presencePeople(event.id))).toEqual(["alice"]);
       // And nobody was told anything, because nothing changed.
       expect(alice.presence).toHaveLength(1);
 
@@ -617,54 +969,41 @@ describe("the realtime channel", () => {
       expect(alice.presence).toHaveLength(1);
     });
 
-    it("treats a name that is not one as no name at all", async () => {
+    it("keeps the room's own list out of what a client can set", async () => {
       attach();
       const event = await createEvent(await adminCookie());
-
-      // Whitespace, an empty value, and one over the guest-name limit. Every
-      // one of them is a connection that simply has no name.
-      for (const name of ["   ", "", "\t\n", "L".repeat(101)]) {
-        const watcher = await subscribe(event.slug, name);
-        expect((await watcher.takePresence(1))[0]).toEqual([]);
-        expect(presenceNames(event.id)).toEqual([]);
-        watcher.socket.close();
-      }
-
-      // Right up to the limit is a name, and it is trimmed on the way in.
-      const long = "L".repeat(100);
-      const watcher = await subscribe(event.slug, `  ${long}  `);
-      expect((await watcher.takePresence(1))[0]).toEqual([long]);
-    });
-
-    it("keeps the room's own name list out of what a client can set", async () => {
-      attach();
-      const event = await createEvent(await adminCookie());
-      const alice = await subscribe(event.slug, "Alice");
+      const alice = await session(event.slug, "alice", { name: "Alice" });
       const watcher = await subscribe(event.slug);
       await watcher.takePresence(1);
 
-      // A forged presence frame, in exactly the shape the server sends: still
-      // read off the wire and dropped, because no `message` listener exists.
-      watcher.socket.send(JSON.stringify({ type: "presence", names: ["Mallory", "Alice"] }));
-      watcher.socket.send(JSON.stringify({ type: "presence", names: [] }));
+      // A forged presence frame, in exactly the shape the server sends. On the
+      // browse socket nothing reads it at all; on a write session it is not a
+      // save and is dropped.
+      const forged = JSON.stringify({
+        type: "presence",
+        people: [{ key: "mallory", displayName: "Mallory" }],
+      });
+      watcher.socket.send(forged);
+      alice.socket.send(forged);
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      expect(presenceNames(event.id)).toEqual(["Alice"]);
-      expect(watcher.presence).toEqual([["Alice"]]);
-      expect(alice.presence).toEqual([["Alice"]]);
+      expect(keysOf(presencePeople(event.id))).toEqual(["alice"]);
+      expect(watcher.presence).toHaveLength(1);
+      expect(alice.presence).toHaveLength(1);
       expect(watcher.socket.readyState).toBe(WebSocket.OPEN);
+      expect(alice.socket.readyState).toBe(WebSocket.OPEN);
     });
 
-    it("drops a name whose socket the heartbeat reaped", async () => {
+    it("drops somebody whose socket the heartbeat reaped", async () => {
       attach(30);
       const event = await createEvent(await adminCookie());
-      const alice = await subscribe(event.slug, "Alice");
+      const alice = await session(event.slug, "alice", { name: "Alice" });
 
       // A client that has stopped answering — the case the heartbeat exists
       // for: a connection through a proxy that quietly went away looks exactly
       // like an idle one, and the name behind it must not linger on the list.
       const mute = new WsClient(
-        `${wsBase}/api/events/${encodeURIComponent(event.slug)}/ws?name=Zoe`,
+        `${wsBase}/${encodeURIComponent(event.slug)}/users/zoe?name=Zoe`,
       );
       mute.pong = (() => {}) as typeof mute.pong;
       await new Promise<void>((resolve, reject) => {
@@ -672,12 +1011,12 @@ describe("the realtime channel", () => {
         mute.on("error", reject);
       });
       await alice.takePresence(2);
-      expect(alice.names()).toEqual(["Alice", "Zoe"]);
+      expect(names(alice.people())).toEqual(["Alice", "Zoe"]);
 
       // One round pings it, the next terminates it, and the close it triggers
       // is the same exit any other departure takes.
-      expect((await alice.takePresence(3))[2]).toEqual(["Alice"]);
-      expect(presenceNames(event.id)).toEqual(["Alice"]);
+      expect(names((await alice.takePresence(3))[2])).toEqual(["Alice"]);
+      expect(keysOf(presencePeople(event.id))).toEqual(["alice"]);
       expect(clientCount(event.id)).toBe(1);
       mute.terminate();
     });
@@ -686,10 +1025,12 @@ describe("the realtime channel", () => {
       attach();
       const event = await createEvent(await adminCookie(), { realtime: false });
 
-      await expect(subscribe(event.slug, "Alice")).rejects.toThrow("upgrade refused");
+      await expect(session(event.slug, "alice", { name: "Alice" })).rejects.toThrow(
+        "upgrade refused",
+      );
 
       // No socket means no room, and no room means no presence to leak.
-      expect(presenceNames(event.id)).toEqual([]);
+      expect(presencePeople(event.id)).toEqual([]);
       expect(roomCount()).toBe(0);
     });
 
@@ -697,9 +1038,11 @@ describe("the realtime channel", () => {
       // No attach(): the kill switch is the absence of the listener.
       const event = await createEvent(await adminCookie());
 
-      await expect(subscribe(event.slug, "Alice")).rejects.toThrow("upgrade refused");
+      await expect(session(event.slug, "alice", { name: "Alice" })).rejects.toThrow(
+        "upgrade refused",
+      );
 
-      expect(presenceNames(event.id)).toEqual([]);
+      expect(presencePeople(event.id)).toEqual([]);
       expect(roomCount()).toBe(0);
     });
   });
@@ -714,9 +1057,7 @@ describe("the realtime channel", () => {
 
     expect(watcher.socket.readyState).toBe(WebSocket.OPEN);
     expect(clientCount(event.id)).toBe(1);
-    await call("PUT", `/api/events/${event.id}/responses/Erin`, {
-      body: { availability: SLOTS },
-    });
+    await put(event.id, "erin", "Erin");
     expect((await watcher.take(1))[0].type).toBe("event");
   });
 });

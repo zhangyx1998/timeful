@@ -2,9 +2,10 @@ import crypto from "node:crypto";
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { requireAdmin } from "../auth.ts";
-import { asRecord, BadRequest, param } from "../http.ts";
+import { asRecord, BadRequest, jsonRoute, param } from "../http.ts";
 import { consumeLease, isLeased } from "../leases.ts";
 import { broadcastEvent, broadcastGone, closeRoom } from "../realtime.ts";
+import { sendNotFoundPage } from "../not-found.ts";
 import { randomSlug, slugProblem } from "../slugs.ts";
 import {
   deleteEvent,
@@ -17,12 +18,38 @@ import {
   writeEvent,
 } from "../storage.ts";
 import { tarpitMiss } from "../tarpit.ts";
-import type { EventSummary, EventType, LinksMap, StoredEvent } from "../types.ts";
+import type {
+  EventResponse,
+  EventSummary,
+  EventType,
+  LinksMap,
+  StoredEvent,
+} from "../types.ts";
+// Runtime, like the slug rules: the identity dialog has to reject exactly what
+// this rejects, in the same words (src/lib/user-key.ts).
+import { guestNameProblem, userKey, userKeyFromParam } from "../../src/lib/user-key.ts";
+import { RESERVED_SUBPATHS } from "../../src/lib/slug-rules.ts";
 
+/**
+ * The global half: `/api/events` list and create, and nothing else.
+ *
+ * Anything addressed *to one event* lives on the event's own path instead
+ * (`eventScopedRouter`), because the event's URL is the capability and hanging
+ * its endpoints off `/api` only ever hid that.
+ */
 export const eventsRouter = Router();
 
+/**
+ * The event-scoped half, mounted at the site root rather than under `/api`.
+ *
+ * `/<slug>` is the page; `/<slug>/data`, `/<slug>/settings` and
+ * `/<slug>/users/<userKey>` are what you can do to it. `users`, `ws`, `data`
+ * and `settings` are therefore reserved *sub*-segments — slugs themselves are
+ * still single segments and unaffected.
+ */
+export const eventScopedRouter = Router();
+
 const MAX_NAME_LENGTH = 200;
-const MAX_GUEST_NAME_LENGTH = 100;
 const MAX_DATES = 366;
 const MAX_SLOTS = 20000;
 
@@ -123,13 +150,37 @@ function requireRealtime(value: unknown): boolean {
   return value;
 }
 
-function guestName(raw: unknown): string {
-  const name = String(raw ?? "").trim();
-  if (!name) throw new BadRequest("Guest name is required");
-  if (name.length > MAX_GUEST_NAME_LENGTH)
-    throw new BadRequest(
-      `Guest name must be at most ${MAX_GUEST_NAME_LENGTH} characters`,
-    );
+/**
+ * The key a `/<slug>/users/<userKey>` path segment addresses.
+ *
+ * Re-normalized rather than taken as given, so `Ada%20Lovelace` and
+ * `ada-lovelace` are the same record and nobody can invent a second spelling
+ * of one person by hand-writing a URL.
+ */
+function requireUserKey(raw: unknown): string {
+  const key = userKeyFromParam(String(raw ?? ""));
+  if (!key) throw new BadRequest("A guest key is required");
+  return key;
+}
+
+/**
+ * The name to show for a record, checked against the key it is being filed
+ * under.
+ *
+ * The two must agree or the document stops meaning anything: display names are
+ * what the page renders and keys are what it matches on, and a record whose
+ * name does not normalize to its own key would appear twice or not at all.
+ * That is also what stops a legacy display name containing a dash from being
+ * written back — the grandfathered spelling is readable, not writable, and
+ * saving under that key needs a legal name that maps to it.
+ */
+function requireDisplayName(value: unknown, key: string): string {
+  if (typeof value !== "string") throw new BadRequest("A name is required");
+  const problem = guestNameProblem(value);
+  if (problem) throw new BadRequest(problem);
+  const name = value.trim();
+  if (userKey(name) !== key)
+    throw new BadRequest("The name does not match the key in the path");
   return name;
 }
 
@@ -165,18 +216,18 @@ function summarize(event: StoredEvent): EventSummary {
 // admin routes
 // ---------------------------------------------------------------------------
 
-// GET /api/events
-eventsRouter.get("/events", requireAdmin, async (_req, res) => {
+// GET /api/events — admin
+async function listEvents(_req: Request, res: Response): Promise<void> {
   const ids = await listEventIds();
   const events = (await Promise.all(ids.map((id) => readEvent(id))))
     .filter((event): event is StoredEvent => event !== null)
     .map(summarize)
     .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
   res.json(events);
-});
+}
 
-// POST /api/events
-eventsRouter.post("/events", requireAdmin, async (req, res) => {
+// POST /api/events — admin
+async function createEvent(req: Request, res: Response): Promise<void> {
   const body = asRecord(req.body);
   const name = requireName(body.name);
   const type = requireType(body.type);
@@ -244,12 +295,11 @@ eventsRouter.post("/events", requireAdmin, async (req, res) => {
   }
 
   res.status(201).json(event);
-});
+}
 
-// PATCH /api/events/:id
-eventsRouter.patch("/events/:id", requireAdmin, async (req, res) => {
-  const id = param(req.params.id);
-  const existing = await readEvent(id);
+// PATCH /<slug>/settings — admin. The segment may be the uuid or the slug.
+async function patchEvent(req: Request, res: Response): Promise<void> {
+  const existing = await resolveEvent(param(req.params.slug));
   if (!existing) {
     res.status(404).json({ error: "Event not found" });
     return;
@@ -313,12 +363,11 @@ eventsRouter.patch("/events/:id", requireAdmin, async (req, res) => {
   // reconnect, be refused, and give up.
   if (!updated.realtime) closeRoom(updated.id);
   res.json(updated);
-});
+}
 
-// DELETE /api/events/:id
-eventsRouter.delete("/events/:id", requireAdmin, async (req, res) => {
-  const id = param(req.params.id);
-  const existing = await readEvent(id);
+// DELETE /<slug>/settings — admin. The segment may be the uuid or the slug.
+async function deleteEventRoute(req: Request, res: Response): Promise<void> {
+  const existing = await resolveEvent(param(req.params.slug));
   if (!existing) {
     res.status(404).json({ error: "Event not found" });
     return;
@@ -332,7 +381,7 @@ eventsRouter.delete("/events/:id", requireAdmin, async (req, res) => {
   // Only once it is actually gone from disk; the room is closed with it.
   broadcastGone(existing.id);
   res.json({ ok: true });
-});
+}
 
 // ---------------------------------------------------------------------------
 // public routes
@@ -345,19 +394,24 @@ function eventMiss(req: Request, res: Response): Promise<void> {
   });
 }
 
-// GET /api/events/:idOrSlug — public
-eventsRouter.get("/events/:idOrSlug", async (req, res) => {
-  const event = await resolveEvent(param(req.params.idOrSlug));
+/**
+ * GET /<slug>/data — public: the whole event document.
+ *
+ * This is what the event page reads, and what a realtime snapshot is a copy
+ * of. The segment may be the uuid or the slug.
+ */
+async function getEventData(req: Request, res: Response): Promise<void> {
+  const event = await resolveEvent(param(req.params.slug));
   if (!event) {
     await eventMiss(req, res);
     return;
   }
   res.json(event);
-});
+}
 
 /**
  * Removes a guest's record from an event, under the event's file lock.
- * Resolves to false when the event vanished mid-request; a name that was not
+ * Resolves to false when the event vanished mid-request; a key that was not
  * there is a successful no-op.
  *
  * `event` is the document as it stands afterwards — unchanged when nothing was
@@ -365,38 +419,61 @@ eventsRouter.get("/events/:idOrSlug", async (req, res) => {
  */
 async function dropResponse(
   id: string,
-  name: string,
+  key: string,
 ): Promise<{ ok: boolean; removed: boolean; event: StoredEvent | null }> {
   let removed = false;
   const updated = await updateEvent(id, (current) => {
-    if (!current.responses?.[name]) return undefined;
+    if (!current.responses?.[key]) return undefined;
     removed = true;
-    delete current.responses[name];
+    delete current.responses[key];
     current.updatedAt = new Date().toISOString();
     return current;
   });
   return { ok: updated !== null, removed, event: updated };
 }
 
-// PUT /api/events/:id/responses/:name — public guest autosave
-eventsRouter.put("/events/:id/responses/:name", async (req, res) => {
-  const name = guestName(req.params.name);
-  const body = asRecord(req.body);
+/** What a save carries, however it arrived: a REST body or a socket frame. */
+export interface ResponseInput {
+  displayName?: unknown;
+  availability?: unknown;
+  ifNeeded?: unknown;
+}
+
+export interface ResponseWrite {
+  /** False when the event vanished between resolving it and writing. */
+  ok: boolean;
+  /** The record as stored, or null when the save cleared it away. */
+  response: EventResponse | null;
+  /** The document afterwards, for the caller to broadcast. */
+  event: StoredEvent | null;
+  /** Whether anything actually changed; a clear that cleared nothing did not. */
+  changed: boolean;
+}
+
+/**
+ * Validates and applies one guest's answer. **The only write path there is.**
+ *
+ * Both the REST `PUT` and a `save` frame on a named write session come through
+ * here, which is what makes "validated exactly like the REST PUT" a fact about
+ * the code rather than a promise about it: there is one validator, one
+ * zero-record rule and one place the document is touched. Throws `BadRequest`
+ * on anything malformed — the callers differ only in what they do with that.
+ */
+export async function writeResponse(
+  eventId: string,
+  key: string,
+  input: ResponseInput,
+): Promise<ResponseWrite> {
+  const displayName = requireDisplayName(input.displayName, key);
   const availability = requireIsoArray(
-    body.availability ?? [],
+    input.availability ?? [],
     "availability",
     MAX_SLOTS,
   );
-  const ifNeededRaw = requireIsoArray(body.ifNeeded ?? [], "ifNeeded", MAX_SLOTS);
+  const ifNeededRaw = requireIsoArray(input.ifNeeded ?? [], "ifNeeded", MAX_SLOTS);
   // availability and ifNeeded are mutually exclusive; availability wins.
   const available = new Set(availability);
   const ifNeeded = ifNeededRaw.filter((iso) => !available.has(iso));
-
-  const existing = await resolveEvent(param(req.params.id));
-  if (!existing) {
-    await eventMiss(req, res);
-    return;
-  }
 
   // Zero-record invariant (ARCHITECTURE.md § API): an answer with nothing in
   // it is not an answer. Clearing the grid takes the guest off the event
@@ -405,50 +482,66 @@ eventsRouter.put("/events/:id/responses/:name", async (req, res) => {
   // the path a guest's "Clear" takes — and it has to be a no-op when they were
   // never on the list.
   if (availability.length === 0 && ifNeeded.length === 0) {
-    const { ok, removed, event } = await dropResponse(existing.id, name);
-    if (!ok) {
-      await eventMiss(req, res);
-      return;
-    }
-    // A clear that cleared nothing changed nothing, and a room should only
-    // ever be woken for something that actually happened.
-    if (removed && event) broadcastEvent(event);
-    res.json({ ok: true, name, response: null });
-    return;
+    const { ok, removed, event } = await dropResponse(eventId, key);
+    return { ok, response: null, event, changed: removed };
   }
 
   const now = new Date().toISOString();
-  const response = { availability, ifNeeded, updatedAt: now };
-  const updated = await updateEvent(existing.id, (current) => {
+  const response: EventResponse = { displayName, availability, ifNeeded, updatedAt: now };
+  const updated = await updateEvent(eventId, (current) => {
     current.responses ??= {};
-    current.responses[name] = response;
+    current.responses[key] = response;
     current.updatedAt = now;
     return current;
   });
-  if (!updated) {
-    await eventMiss(req, res);
-    return;
-  }
-  broadcastEvent(updated);
-  res.json({ ok: true, name, response });
-});
+  return {
+    ok: updated !== null,
+    response: updated ? response : null,
+    event: updated,
+    changed: updated !== null,
+  };
+}
 
 /**
- * DELETE /api/events/:id/responses/:name — public.
+ * PUT /<slug>/users/<userKey> — public guest autosave.
  *
- * Public by contract (ARCHITECTURE.md § API): a guest may clear their own
- * record, and the capability URL is the auth boundary — anyone who can read
- * the event can already answer it. The admin's per-respondent delete on the
- * event page uses this same endpoint.
+ * Public by contract (ARCHITECTURE.md § API): the capability URL is the auth
+ * boundary, so anyone who can read the event can already answer it.
  */
-eventsRouter.delete("/events/:id/responses/:name", async (req, res) => {
-  const name = guestName(req.params.name);
-  const existing = await resolveEvent(param(req.params.id));
+export async function putResponse(req: Request, res: Response): Promise<void> {
+  const key = requireUserKey(req.params.userKey);
+  const body = asRecord(req.body);
+
+  const existing = await resolveEvent(param(req.params.slug));
   if (!existing) {
     await eventMiss(req, res);
     return;
   }
-  const { ok, removed, event } = await dropResponse(existing.id, name);
+
+  const { ok, response, event, changed } = await writeResponse(existing.id, key, body);
+  if (!ok) {
+    await eventMiss(req, res);
+    return;
+  }
+  // A room should only ever be woken for something that actually happened.
+  if (changed && event) broadcastEvent(event);
+  res.json({ ok: true, key, response });
+}
+
+/**
+ * DELETE /<slug>/users/<userKey> — public.
+ *
+ * The admin's per-respondent delete on the event page uses this same endpoint;
+ * gating it would only hide a door already open to everyone holding the link.
+ */
+export async function deleteResponse(req: Request, res: Response): Promise<void> {
+  const key = requireUserKey(req.params.userKey);
+  const existing = await resolveEvent(param(req.params.slug));
+  if (!existing) {
+    await eventMiss(req, res);
+    return;
+  }
+  const { ok, removed, event } = await dropResponse(existing.id, key);
   if (!ok) {
     await eventMiss(req, res);
     return;
@@ -459,21 +552,60 @@ eventsRouter.delete("/events/:id/responses/:name", async (req, res) => {
   }
   if (event) broadcastEvent(event);
   res.json({ ok: true });
-});
-
-/**
- * Anything else under `/api/events/:idOrSlug`, any method: a real event gets a
- * plain 404 (unknown subroute), an unresolvable one is a scan and is
- * tarpitted. Registered last so the routes above always win.
- */
-async function eventCatchAll(req: Request, res: Response): Promise<void> {
-  const event = await resolveEvent(param(req.params.idOrSlug));
-  if (!event) {
-    await eventMiss(req, res);
-    return;
-  }
-  res.status(404).json({ error: "Not found" });
 }
 
-eventsRouter.all("/events/:idOrSlug", eventCatchAll);
-eventsRouter.all("/events/:idOrSlug/{*rest}", eventCatchAll);
+/**
+ * Anything else under `/<slug>/…`, any method.
+ *
+ * Two decisions, and they are independent of each other.
+ *
+ * **Delay.** An unresolvable first segment is a scan and is
+ * [tarpitted](../tarpit.ts). A *resolvable* one is not: whoever asked has
+ * already proved they hold the capability URL, so an unknown sub-segment under
+ * it is an ordinary mistake and gets an ordinary, undelayed 404.
+ *
+ * **Shape.** A reserved sub-segment is somebody's API client and gets JSON.
+ * Anything else is somebody's browser following a stale or mistyped link, and
+ * gets the same 404 page a bad single-segment URL gets — this router sits in
+ * front of the page handler for every multi-segment path, so without the
+ * distinction a mistyped link would answer a person with raw JSON.
+ *
+ * Registered last, so the real sub-paths always win. A plain `GET /<slug>/ws`
+ * or `GET /<slug>/users/<key>` lands here too: those are WebSocket upgrades,
+ * they never reach Express, and a non-upgrade request for them is not a route.
+ */
+async function eventScopedCatchAll(req: Request, res: Response): Promise<void> {
+  const wantsJson = RESERVED_SUBPATHS.has(req.path.split("/")[2] ?? "");
+  if (wantsJson) res.locals.jsonRoute = true;
+  const miss = () => {
+    if (wantsJson) res.status(404).json({ error: "Event not found" });
+    else sendNotFoundPage(res);
+  };
+
+  const event = await resolveEvent(param(req.params.slug));
+  if (!event) {
+    await tarpitMiss(req, res, miss);
+    return;
+  }
+  if (wantsJson) res.status(404).json({ error: "Not found" });
+  else sendNotFoundPage(res);
+}
+
+// ---------------------------------------------------------------------------
+// the route table
+// ---------------------------------------------------------------------------
+
+// Global: the list and the create, admin-only, and nothing event-scoped.
+eventsRouter.get("/events", requireAdmin, listEvents);
+eventsRouter.post("/events", requireAdmin, createEvent);
+
+// Event-scoped, mounted at the root. `/<slug>` itself is the page and is not
+// here: it belongs to the SSR handler in app.ts.
+eventScopedRouter.get("/:slug/data", jsonRoute(getEventData));
+eventScopedRouter.patch("/:slug/settings", requireAdmin, jsonRoute(patchEvent));
+eventScopedRouter.delete("/:slug/settings", requireAdmin, jsonRoute(deleteEventRoute));
+eventScopedRouter.put("/:slug/users/:userKey", jsonRoute(putResponse));
+eventScopedRouter.delete("/:slug/users/:userKey", jsonRoute(deleteResponse));
+// Not wrapped in `jsonRoute`: it decides for itself, because most of what
+// reaches it is a browser rather than an API client.
+eventScopedRouter.all("/:slug/{*rest}", eventScopedCatchAll);

@@ -32,6 +32,24 @@ export function param(value: string | string[] | undefined): string {
   return value ?? "";
 }
 
+/**
+ * Marks a route as answering in JSON, for the error middleware.
+ *
+ * `/api/*` is JSON by its prefix, but the event-scoped endpoints live on the
+ * event's own path — `/<slug>/data`, `/<slug>/users/<key>` — which is
+ * indistinguishable from a page URL by inspection. Rather than teach the error
+ * handler the route table, each JSON route says so as it starts, and a request
+ * that merely passed through the router on its way to the page handler never
+ * sets it.
+ */
+export function jsonRoute<T extends (...args: never[]) => unknown>(handler: T): T {
+  return function marked(this: unknown, ...args: never[]) {
+    const res = args[1] as { locals: Record<string, unknown> } | undefined;
+    if (res?.locals) res.locals.jsonRoute = true;
+    return handler.apply(this, args);
+  } as T;
+}
+
 /** The `status` an error asks for, when it carries a usable one. */
 export function statusOf(err: unknown): number | undefined {
   if (typeof err !== "object" || err === null || !("status" in err)) return undefined;

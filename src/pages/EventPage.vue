@@ -16,14 +16,22 @@ import IconButton from "../components/ui/IconButton.vue";
 import ThemeToggle from "../components/ui/ThemeToggle.vue";
 import IconPencil from "../assets/icons/pencil.svg";
 import IconHome from "../assets/icons/home.svg";
-import { api, fetchIsAdmin } from "../lib/api";
+import Button from "../components/ui/Button.vue";
+import Dialog from "../components/ui/Dialog.vue";
+import { api, eventDataPath, fetchIsAdmin } from "../lib/api";
 import {
   formatEventDateRange,
   getLocalTimezone,
   getScheduleTimezoneOffset,
 } from "../lib/dates";
 import type { EventDoc } from "../lib/event";
-import { connectRealtime, type RealtimeHandle } from "../lib/realtime";
+import {
+  connectRealtime,
+  type PresenceEntry,
+  type RealtimeHandle,
+  type RealtimeSession,
+  type SavePayload,
+} from "../lib/realtime";
 
 defineProps<{ slug?: string }>();
 
@@ -54,23 +62,96 @@ let realtime: RealtimeHandle | null = null;
  * arrives on the same connection as the snapshots, and there is one owner of
  * that connection.
  */
-const present = ref<string[]>([]);
+const present = ref<PresenceEntry[]>([]);
 
 /**
- * The name the scheduler is answering under, which the socket announces on the
- * visitor's behalf.
+ * Who the scheduler is answering as, which the socket claims a write session
+ * for on the visitor's behalf.
  *
  * Kept in a ref as well as pushed at the handle because the two are mounted in
  * an order neither can rely on: the scheduler may adopt a stored name before
  * this page has connected, in which case the connection reads it from here.
  */
-const identity = ref<string | null>(null);
+const identity = ref<RealtimeSession | null>(null);
 
-function onIdentity(name: string | null): void {
-  identity.value = name;
-  // Reconnecting is how the room learns about it: a name is part of the
-  // handshake, and the socket has no inbound path to tell it any other way.
-  realtime?.setName(name);
+/** The scheduler, for the two things only this page can tell it to do. */
+const scheduler = ref<{
+  leaveEditing: () => void;
+  resumeEditing: () => void;
+} | null>(null);
+
+/** The key whose session is held elsewhere, while the prompt is up. */
+const occupiedBy = ref<RealtimeSession | null>(null);
+/** The identity this page just lost to another window, while the notice is up. */
+const replacedFor = ref<RealtimeSession | null>(null);
+
+/**
+ * The scheduler's way onto the socket: one method, and no more of the handle
+ * than that.
+ *
+ * A stable object rather than the handle itself, because the handle is replaced
+ * on mount and the prop must not go stale — and because "can this page send a
+ * save right now" is the only question the scheduler ever asks of it.
+ */
+const writer = {
+  save(payload: SavePayload) {
+    return realtime?.save(payload) ?? null;
+  },
+};
+
+function onIdentity(session: RealtimeSession | null): void {
+  identity.value = session;
+  // Reconnecting is how the room learns about it: the identity is part of the
+  // handshake, and the write session is a property of the connection.
+  realtime?.setSession(session);
+}
+
+/**
+ * "My availability" was entered again under an identity already adopted. If the
+ * session was refused or taken away, this is the retry; if it is already held,
+ * `setSession` sees no change and does nothing.
+ */
+function onClaim(): void {
+  realtime?.setSession(identity.value);
+}
+
+/**
+ * Somebody else is editing as this person. Step back to the group view and ask
+ * — a takeover is a thing done to another human, so it is never automatic.
+ */
+function onOccupied(session: RealtimeSession): void {
+  scheduler.value?.leaveEditing();
+  occupiedBy.value = session;
+}
+
+/**
+ * Set for exactly one reconnection: the one a takeover asked for.
+ *
+ * Without it every reopened session would push the page back into edit mode —
+ * a network blip while somebody is reading the group's chart would take the
+ * chart away from them.
+ */
+let resumeOnOpen = false;
+
+function takeOver(): void {
+  const session = occupiedBy.value;
+  occupiedBy.value = null;
+  if (!session) return;
+  resumeOnOpen = true;
+  realtime?.setSession(session, { takeover: true });
+}
+
+/** The other side of a takeover: this window is the one that lost the session. */
+function onReplaced(session: RealtimeSession): void {
+  scheduler.value?.leaveEditing();
+  replacedFor.value = session;
+}
+
+/** A session opened. Only a takeover puts the page back into edit mode. */
+function onSessionOpen(): void {
+  if (!resumeOnOpen) return;
+  resumeOnOpen = false;
+  scheduler.value?.resumeEditing();
 }
 
 /** SSR has no timezone, so the subtitle renders in UTC and is refined on mount. */
@@ -111,7 +192,7 @@ async function refresh() {
   const target = event.value?.slug ?? event.value?.id;
   if (!target) return;
   try {
-    applyEvent((await api.get(`/events/${encodeURIComponent(target)}`)) as EventDoc);
+    applyEvent((await api.get(eventDataPath(target))) as EventDoc);
   } catch {
     // Keep showing what we already have; the grid stays usable either way.
   }
@@ -151,12 +232,15 @@ onMounted(() => {
   const id = event.value?.id;
   if (id) {
     realtime = connectRealtime(id, {
-      name: identity.value,
+      session: identity.value,
       onEvent: applyEvent,
-      onPresence: (names) => {
-        present.value = names;
+      onPresence: (people) => {
+        present.value = people;
       },
       onGone,
+      onOccupied,
+      onReplaced,
+      onSessionOpen,
     });
   }
 });
@@ -203,10 +287,13 @@ onBeforeUnmount(() => {
       <template v-if="event">
         <EventScheduler
           v-if="mounted"
+          ref="scheduler"
           :event="event"
           :present="present"
+          :writer="writer"
           @refresh="refresh"
           @identity="onIdentity"
+          @claim="onClaim"
         />
         <p v-else class="loading">Loading availability…</p>
       </template>
@@ -229,6 +316,48 @@ onBeforeUnmount(() => {
       @saved="onEdited"
       @close="editOpen = false"
     />
+
+    <!-- One session per person per event, so adopting a name somebody is
+         already editing under is a question rather than a fight. Cancelling
+         leaves the page in the group view with the name still remembered: "My
+         availability" asks again. -->
+    <Dialog
+      :open="occupiedBy !== null"
+      title="Already being edited"
+      @close="occupiedBy = null"
+    >
+      <div class="ask">
+        <p class="ask__text">
+          <strong>{{ occupiedBy?.displayName }}</strong> is being edited in
+          another session. Take over?
+        </p>
+        <div class="ask__actions">
+          <Button variant="ghost" @click="occupiedBy = null">Cancel</Button>
+          <Button variant="primary" @click="takeOver">Take over</Button>
+        </div>
+      </div>
+    </Dialog>
+
+    <!-- The other end of the same handshake. Said plainly, because from here it
+         looks like the page simply stopped saving — and it is not reclaimed
+         automatically, or the two windows would take turns forever. -->
+    <Dialog
+      :open="replacedFor !== null"
+      title="Editing session taken over"
+      @close="replacedFor = null"
+    >
+      <div class="ask">
+        <p class="ask__text">
+          Your editing session for
+          <strong>{{ replacedFor?.displayName }}</strong> was taken over by
+          another window or device. Your times are still saved; this page is now
+          showing the group's availability.
+        </p>
+        <div class="ask__actions">
+          <Button variant="primary" @click="replacedFor = null">OK</Button>
+        </div>
+      </div>
+    </Dialog>
   </div>
 </template>
 
@@ -283,6 +412,27 @@ onBeforeUnmount(() => {
 .loading {
   font-size: 0.875rem;
   color: var(--color-text-muted);
+}
+
+/* The two session dialogs. Same shape as every other confirm on the page: what
+   happened, then the way out of it at the trailing edge. */
+.ask {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.ask__text {
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--color-text-muted);
+}
+
+.ask__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
 }
 
 /* The event went away under an open page. Centred and quiet: it is the whole

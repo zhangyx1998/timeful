@@ -8,6 +8,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+// A runtime import from `src/lib`, like `realtimeAllowed` in realtime.ts and
+// the slug rules in slugs.ts: what an old event file means is a rule both
+// halves have to read the same way, so there is one copy of it.
+import { normalizeResponses } from "../src/lib/event.ts";
 import type {
   Credential,
   LinksMap,
@@ -153,9 +157,27 @@ export const readLinks = (): Promise<LinksMap> => readJson<LinksMap>(LINKS_FILE,
 export const updateLinks = (mutator: Mutator<LinksMap>): Promise<LinksMap> =>
   updateJson<LinksMap>(LINKS_FILE, {}, mutator);
 
-export function readEvent(id: string): Promise<StoredEvent | null> {
-  if (!isUuid(id)) return Promise.resolve(null);
-  return readJson<StoredEvent | null>(eventFile(id), null);
+/**
+ * Brings a file written before guest keys existed up to the current shape.
+ *
+ * Every read goes through this, so nothing above the storage layer ever sees a
+ * legacy document — and nothing has to be rewritten to make that true. The
+ * result is persisted by the next ordinary write, whenever that happens to be;
+ * an event nobody answers again is simply migrated afresh on every read, which
+ * costs one pass over a handful of records.
+ */
+function migrate(event: StoredEvent | null): StoredEvent | null {
+  if (!event) return null;
+  const { responses, changed } = normalizeResponses(event.responses, (message) =>
+    console.warn(message),
+  );
+  if (!changed) return event;
+  return { ...event, responses };
+}
+
+export async function readEvent(id: string): Promise<StoredEvent | null> {
+  if (!isUuid(id)) return null;
+  return migrate(await readJson<StoredEvent | null>(eventFile(id), null));
 }
 
 export function writeEvent(event: StoredEvent): Promise<StoredEvent> {
@@ -169,8 +191,12 @@ export function updateEvent(
 ): Promise<StoredEvent | null> {
   if (!isUuid(id)) return Promise.resolve(null);
   return updateJson<StoredEvent | null>(eventFile(id), null, async (current) => {
-    if (!current) return undefined;
-    return mutator(current);
+    // Migrated before the mutator sees it, so a write can never mix a keyed
+    // record into a legacy document — and a mutation is exactly the "next
+    // ordinary write" that persists the migration.
+    const migrated = migrate(current);
+    if (!migrated) return undefined;
+    return mutator(migrated);
   });
 }
 

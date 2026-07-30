@@ -42,7 +42,7 @@ async function load(): Promise<void> {
   error.value = "";
   loading.value = true;
   try {
-    sessions.value = await api.get<SessionInfo[]>("/sessions");
+    sessions.value = await api.get<SessionInfo[]>("/api/sessions");
   } catch (err) {
     const { message, status } = apiError(err, "Could not load sessions");
     if (status === 401) {
@@ -67,7 +67,7 @@ async function revoke(session: SessionInfo): Promise<void> {
   confirming.value = null;
   busyToken.value = session.token;
   try {
-    await api.del(`/sessions/${session.token}`);
+    await api.del(`/api/sessions/${session.token}`);
     if (session.current) {
       emit("signed-out");
       return;
@@ -84,7 +84,7 @@ async function purge(): Promise<void> {
   error.value = "";
   purging.value = true;
   try {
-    await api.del("/sessions");
+    await api.del("/api/sessions");
     confirming.value = null;
     await load();
   } catch (err) {

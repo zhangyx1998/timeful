@@ -1,10 +1,16 @@
 /**
- * The typed JSON client for the `/api` surface — the only one in the app.
- * Used by the admin panel and by the public event page alike.
+ * The typed JSON client — the only one in the app. Used by the admin panel and
+ * by the public event page alike.
  *
  * Requests always send cookies (the session lives in an httpOnly cookie) and
  * always resolve to parsed JSON; anything non-2xx throws an `ApiError`
  * carrying the HTTP status and the server's `{ error }` message.
+ *
+ * **Paths are written out in full.** There are two namespaces now — `/api/*`
+ * for what is global (status, auth, sessions, slug leases, the event list) and
+ * `/<slug>/…` for what belongs to one event — so a client that quietly
+ * prefixed `/api` would be guessing between them. The event-scoped paths have
+ * builders below rather than being spelled at each call site.
  *
  * The response types below describe the wire format of `server/routes/*`; the
  * server imports them back from here so the two halves cannot drift.
@@ -38,8 +44,7 @@ export async function request<T>(
   path: string,
   { method = "GET", body, signal }: RequestOptions = {},
 ): Promise<T> {
-  const url = path.startsWith("/api") ? path : `/api${path}`;
-  const res = await fetch(url, {
+  const res = await fetch(path, {
     method,
     credentials: "include",
     signal,
@@ -83,6 +88,30 @@ export const api = {
     request<T>(path, { ...options, method: "DELETE" }),
 };
 
+// ---------------------------------------------------------------------------
+// event-scoped paths
+// ---------------------------------------------------------------------------
+//
+// An event's endpoints hang off the event's own URL, because the event's URL is
+// the capability that grants access to them (ARCHITECTURE.md § API). Each takes
+// the uuid or the slug; the uuid is the safer choice from a page that might be
+// open across a rename.
+
+/** `GET /<idOrSlug>/data` — the whole event document, public. */
+export function eventDataPath(idOrSlug: string): string {
+  return `/${encodeURIComponent(idOrSlug)}/data`;
+}
+
+/** `PATCH`/`DELETE /<idOrSlug>/settings` — the owner's controls. */
+export function eventSettingsPath(idOrSlug: string): string {
+  return `/${encodeURIComponent(idOrSlug)}/settings`;
+}
+
+/** `PUT`/`DELETE /<idOrSlug>/users/<userKey>` — one guest's answer, public. */
+export function userPath(idOrSlug: string, userKey: string): string {
+  return `/${encodeURIComponent(idOrSlug)}/users/${encodeURIComponent(userKey)}`;
+}
+
 /** Extracts a human-readable message plus HTTP status from a caught error. */
 export function apiError(
   err: unknown,
@@ -124,7 +153,7 @@ export function isAuthedStatus(value: unknown): boolean {
  */
 export async function fetchIsAdmin(options?: CallOptions): Promise<boolean> {
   try {
-    return isAuthedStatus(await api.get<unknown>("/status", options));
+    return isAuthedStatus(await api.get<unknown>("/api/status", options));
   } catch {
     return false;
   }
@@ -148,7 +177,7 @@ export interface EventSummary {
 }
 
 /**
- * Payload accepted by `POST /api/events` and `PATCH /api/events/:id`.
+ * Payload accepted by `POST /api/events` and `PATCH /<slug>/settings`.
  *
  * `slug` is optional on create and omitting it is meaningful: the server then
  * mints a fresh capability slug. Never fill it in with something derived from
@@ -179,12 +208,12 @@ export interface SlugLease {
  * lease; anything else should release it.
  */
 export function createSlugLease(options?: CallOptions): Promise<SlugLease> {
-  return api.post<SlugLease>("/slug-leases", undefined, options);
+  return api.post<SlugLease>("/api/slug-leases", undefined, options);
 }
 
 /** Releases a lease early. Idempotent — a lapsed lease is not an error. */
 export function releaseSlugLease(slug: string, options?: CallOptions): Promise<void> {
-  return api.del<void>(`/slug-leases/${encodeURIComponent(slug)}`, options);
+  return api.del<void>(`/api/slug-leases/${encodeURIComponent(slug)}`, options);
 }
 
 /** A `GET /api/sessions` row. */

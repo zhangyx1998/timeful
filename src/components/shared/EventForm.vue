@@ -31,7 +31,13 @@
  * `EventFormDialog`, which supplies the panel and the title.
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { api, apiError, createSlugLease, releaseSlugLease } from "../../lib/api";
+import {
+  api,
+  apiError,
+  createSlugLease,
+  eventSettingsPath,
+  releaseSlugLease,
+} from "../../lib/api";
 import MonthCalendar from "./MonthCalendar.vue";
 import Button from "../ui/Button.vue";
 import IconButton from "../ui/IconButton.vue";
@@ -254,8 +260,8 @@ async function submit(): Promise<void> {
   saving.value = true;
   try {
     const saved = props.event
-      ? await api.patch<EventDoc>(`/events/${props.event.id}`, buildPayload())
-      : await api.post<EventDoc>("/events", buildPayload());
+      ? await api.patch<EventDoc>(eventSettingsPath(props.event.id), buildPayload())
+      : await api.post<EventDoc>("/api/events", buildPayload());
     // The write consumed the reservation server-side — a create always does,
     // and a rename onto the leased path does too — so do not hand it back.
     if (!props.event || saved.slug === leasedSlug.value) leaseConsumed = true;
