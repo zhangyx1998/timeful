@@ -16,17 +16,61 @@ import { parseTrustedProxies, type TrustProxySetting } from "./proxy.ts";
 
 const isDev = process.argv.includes("--dev");
 
-const host = process.env.HOST || "127.0.0.1";
+/**
+ * `--host [addr]`, following Vite's convention: the bare flag means `0.0.0.0`
+ * (every interface — the LAN-testing switch), a value binds that address. The
+ * flag beats the `HOST` environment variable, which beats loopback.
+ */
+function resolveHost(): string {
+  const argv = process.argv.slice(2);
+  let value: string | undefined;
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--host") {
+      const next = argv[i + 1];
+      // A following flag is not a value: `--host --dev` means every interface.
+      if (next === undefined || next.startsWith("-")) value = "0.0.0.0";
+      else {
+        value = next;
+        i += 1;
+      }
+    } else if (arg.startsWith("--host=")) {
+      value = arg.slice("--host=".length);
+      if (value === "") {
+        console.error("--host= requires an address; bare --host means 0.0.0.0.");
+        process.exit(1);
+      }
+    }
+  }
+  // `||`, not `??`: an empty HOST in the environment means "unset", as before.
+  return value ?? (process.env.HOST || "127.0.0.1");
+}
+
+const host = resolveHost();
 
 /** True when something is already listening there. */
-function portTaken(candidate: number): Promise<boolean> {
+function boundElsewhere(candidate: number, address: string): Promise<boolean> {
   return new Promise((resolve) => {
     const probe = net
       .createServer()
       .once("error", () => resolve(true))
       .once("listening", () => probe.close(() => resolve(false)));
-    probe.listen(candidate, host);
+    probe.listen(candidate, address);
   });
+}
+
+/**
+ * True when something is already listening where this server would answer.
+ *
+ * A wildcard bind also probes loopback: on macOS a wildcard socket can bind a
+ * port whose loopback address another process holds, and the two then split
+ * the traffic — the startup line would print a 127.0.0.1 URL that reaches the
+ * *other* server. A port like that is taken, not free.
+ */
+async function portTaken(candidate: number): Promise<boolean> {
+  if (await boundElsewhere(candidate, host)) return true;
+  const wildcard = host === "0.0.0.0" || host === "::";
+  return wildcard ? boundElsewhere(candidate, "127.0.0.1") : false;
 }
 
 /**

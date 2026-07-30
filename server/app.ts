@@ -8,6 +8,7 @@
  */
 import fs from "node:fs/promises";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import type { IncomingMessage, Server } from "node:http";
 import { pathToFileURL } from "node:url";
@@ -396,10 +397,40 @@ export async function serve(options: ServeOptions): Promise<Server> {
     server.on("close", () => void hub.close());
   }
 
-  console.log(
-    `Timeful ${options.mode ?? "production"} server on http://${options.host}:${options.port}`,
-  );
-  console.log(`Trusted proxies: ${describeTrustedProxies(options.trustProxy)}`);
-  console.log(`Realtime updates: ${realtime ? "on" : "off"}`);
+  for (const line of startupLines(options, realtime)) console.log(line);
   return server;
+}
+
+/**
+ * The startup printout. A loopback bind keeps the single line it has always
+ * printed — the CLI's end-to-end tests match that literal. A wildcard bind is
+ * reachable from the LAN, so the loopback URL comes first and every
+ * non-internal IPv4 address follows: the URL a phone needs. A specific
+ * non-loopback address prints itself alone — binding 192.168.x.y does not
+ * listen on 127.0.0.1, and a URL that will not answer must not be printed.
+ */
+function startupLines(options: ServeOptions, realtime: boolean): string[] {
+  const { host, port } = options;
+  const wildcard = host === "0.0.0.0" || host === "::";
+  const lines = [
+    `Timeful ${options.mode ?? "production"} server on http://${wildcard ? "127.0.0.1" : host}:${port}`,
+  ];
+  if (wildcard) {
+    for (const address of lanAddresses())
+      lines.push(`  network: http://${address}:${port}`);
+  }
+  lines.push(`Trusted proxies: ${describeTrustedProxies(options.trustProxy)}`);
+  lines.push(`Realtime updates: ${realtime ? "on" : "off"}`);
+  return lines;
+}
+
+/** Every non-internal IPv4 address this machine holds, for the wildcard bind. */
+function lanAddresses(): string[] {
+  const seen = new Set<string>();
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      if (entry.family === "IPv4" && !entry.internal) seen.add(entry.address);
+    }
+  }
+  return [...seen];
 }

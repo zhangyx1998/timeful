@@ -38,6 +38,17 @@ flags pass through after `--`:
 npm start -- --port=8080 --trusted-proxy=10.0.0.0/8
 ```
 
+To test from a phone on the same network, bind every interface and open the
+printed `network:` URL:
+
+```sh
+npm run dev -- --host      # bare --host means 0.0.0.0; --host <addr> binds one
+```
+
+Hot reload works there too: in dev the HMR WebSocket rides the app's own port
+(see `server/dev.ts`), so the one address the phone can reach is the only one
+it needs. The `HOST` environment variable still works; the flag wins.
+
 ## Repository layout
 
 ```
