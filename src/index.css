@@ -72,6 +72,43 @@ summary,
   touch-action: manipulation;
 }
 
+/* Keyboard focus, in one place. `:where()` keeps the specificity at bare
+   `:focus-visible` (0,1,0) on purpose: fields that trade the outline for
+   `--focus-shadow` (TextInput, Select) suppress it with a plain scoped
+   `outline: none` at (0,2,0), and any component wanting a different ring
+   simply out-specifies this rule. Sites that want the ring drawn inside
+   their box set `--focus-ring-inset` — usually
+   `calc(var(--focus-ring-offset) * -1)` — on the control. Note it is an
+   inherited custom property: declare it on the focusable element itself,
+   not on a container, or every focusable descendant inherits the inset. */
+:where(
+    button,
+    a[href],
+    summary,
+    input,
+    select,
+    textarea,
+    [tabindex]:not([tabindex="-1"])
+  ):focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-ring-inset, var(--focus-ring-offset));
+}
+
+/* When the platform asks for reduced motion, transitions complete at once.
+   `0s`, not `1ms`: with a zero duration Vue's getTransitionInfo computes a
+   zero timeout and <Transition> resolves synchronously — identical to
+   `transition: none` — while `1ms` would keep the async transitionend path
+   alive for no benefit. Durations only: `animation` (Spinner, the panel's
+   pulse) is deliberately left alone, and nothing in the app declares a
+   `transition-delay` for this to strand. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0s !important;
+  }
+}
+
 /* Keep component stacking contexts from escaping the app root. */
 #app {
   isolation: isolate;
