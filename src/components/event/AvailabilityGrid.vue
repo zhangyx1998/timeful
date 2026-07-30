@@ -1021,10 +1021,40 @@ function dismissMenu() {
   closeMenu();
 }
 
+/**
+ * What the strip measured, once it has been on screen long enough to measure.
+ *
+ * The constants are a floor rather than the answer. They have to exist, because
+ * the strip is placed on the very frame it first appears on — but they are a
+ * guess about *text*, and the labels are set in whatever the platform calls its
+ * UI font. The same three words are wider under iOS than they are here, which
+ * is enough to put the trailing control past the edge the clamp thought it was
+ * keeping the strip inside. Nothing is clipped by that any more (the strip is
+ * `max-content` wide and clips nothing), but it can hang off the chart, so the
+ * real box wins as soon as there is one.
+ */
+const measuredMenuWidth = ref(0);
+
+// Re-measured whenever the strip becomes a different strip: a creation menu and
+// an erase menu carry different controls, and a coarse pointer sizes both.
+watch(
+  () => (menuState.value ? `${menuState.value.kind}:${coarsePointer.value}` : null),
+  (key) => {
+    measuredMenuWidth.value = 0;
+    if (key === null) return;
+    void nextTick(() => {
+      const element = menuEl.value;
+      if (element) measuredMenuWidth.value = element.offsetWidth;
+    });
+  },
+  { flush: "post" },
+);
+
 // A finger's menu is bigger in both directions, and both numbers are what its
 // placement is worked out against.
 function menuWidthFor(kind: "create" | "erase"): number {
-  return (coarsePointer.value ? MENU_WIDTH_TOUCH : MENU_WIDTH)[kind];
+  const floor = (coarsePointer.value ? MENU_WIDTH_TOUCH : MENU_WIDTH)[kind];
+  return Math.max(floor, measuredMenuWidth.value);
 }
 const menuHeight = computed(() => (coarsePointer.value ? MENU_HEIGHT_TOUCH : MENU_HEIGHT));
 
@@ -1930,7 +1960,7 @@ defineExpose({ measure, clearSelection });
             aria-label="Dismiss"
             @click="dismissRegion"
           >
-            <IconClose aria-hidden="true" />
+            <IconClose width="14" height="14" aria-hidden="true" />
           </button>
         </div>
 
@@ -2005,7 +2035,7 @@ defineExpose({ measure, clearSelection });
             :tabindex="menu.live ? undefined : -1"
             @click="chooseType('available')"
           >
-            <IconCheck aria-hidden="true" />
+            <IconCheck width="14" height="14" aria-hidden="true" />
             Available
           </button>
 
@@ -2017,7 +2047,7 @@ defineExpose({ measure, clearSelection });
             :tabindex="menu.live ? undefined : -1"
             @click="chooseType('if_needed')"
           >
-            <IconHourglass aria-hidden="true" />
+            <IconHourglass width="14" height="14" aria-hidden="true" />
             If needed
           </button>
 
@@ -2035,7 +2065,7 @@ defineExpose({ measure, clearSelection });
             :tabindex="menu.live ? undefined : -1"
             @click="undoSelection"
           >
-            <IconUndo aria-hidden="true" />
+            <IconUndo width="14" height="14" aria-hidden="true" />
           </button>
         </template>
 
@@ -2050,7 +2080,7 @@ defineExpose({ measure, clearSelection });
           :tabindex="menu.live ? undefined : -1"
           @click="undoSelection"
         >
-          <IconUndo aria-hidden="true" />
+          <IconUndo width="14" height="14" aria-hidden="true" />
           Undo
         </button>
 
@@ -2066,7 +2096,7 @@ defineExpose({ measure, clearSelection });
           :tabindex="menu.live ? undefined : -1"
           @click="dismissMenu"
         >
-          <IconClose aria-hidden="true" />
+          <IconClose width="14" height="14" aria-hidden="true" />
         </button>
       </div>
     </div>
@@ -2580,7 +2610,17 @@ defineExpose({ measure, clearSelection });
   z-index: 15;
   display: flex;
   align-items: stretch;
-  overflow: hidden;
+  /* Exactly as wide as what is in it, and never a pixel less.
+     Absolutely positioned, it would otherwise be shrink-to-fit — sized against
+     whatever is left of the containing block to the right of `left` — and how
+     an engine resolves the minimum width of a flex row is exactly the thing
+     engines disagree about. WebKit came out narrower here, and with the
+     `overflow: hidden` this used to carry, the disagreement was invisible: the
+     first label was cut off mid-word and the last two controls were not drawn
+     at all. Content that does not fit now overflows, which is a thing you can
+     see and fix rather than a thing that looks like a rendering bug. */
+  width: -webkit-max-content;
+  width: max-content;
   transform: translateX(-50%);
   background: var(--color-surface);
   border: 1px solid var(--color-border-strong);
@@ -2618,6 +2658,17 @@ defineExpose({ measure, clearSelection });
   border-left: 1px solid var(--color-border);
 }
 
+/* The corners the container used to clip for them. Inset by the border, so the
+   tinted "chosen" fill follows the strip's own curve instead of squaring it
+   off. */
+.meaning__option:first-child {
+  border-radius: calc(var(--radius-md) - 1px) 0 0 calc(var(--radius-md) - 1px);
+}
+
+.meaning__option:last-child {
+  border-radius: 0 calc(var(--radius-md) - 1px) calc(var(--radius-md) - 1px) 0;
+}
+
 /* Sized by its glyph rather than by absent text: the undo in a creation strip,
    and the dismissal in both. */
 .meaning__option--icon {
@@ -2643,6 +2694,12 @@ defineExpose({ measure, clearSelection });
   background: var(--color-danger-soft);
 }
 
+/* The size that applies. The same five glyphs also carry `width`/`height`
+   attributes at their usage sites, which this beats everywhere it lands — they
+   are there as a floor, because an inline SVG with only a `viewBox` has no
+   intrinsic size to fall back on, and an engine that missed this rule would
+   give each one a default box wide enough to shove the rest of the strip out
+   of the chart. */
 .meaning__option svg {
   width: 0.85rem;
   height: 0.85rem;

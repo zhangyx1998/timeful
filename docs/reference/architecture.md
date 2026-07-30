@@ -1037,6 +1037,22 @@ text.
   is read rather than painted — see the region summary below. The grab-pan
   therefore lives on the headings and the gutter in both modes: wherever a drag
   over the cells means something, it cannot also mean panning.
+
+  ::: warning The options strip is `max-content` wide and clips nothing.
+  It is absolutely positioned, so without a width it is shrink-to-fit — sized
+  against whatever is left of the containing block — and how an engine resolves
+  the minimum width of a flex row is exactly the thing engines disagree about.
+  WebKit came out narrower than Chromium, and the `overflow: hidden` the strip
+  used to carry turned that disagreement into missing controls: "Available" cut
+  off mid-word and the undo and the dismissal not drawn at all. `MENU_WIDTH`
+  and `MENU_WIDTH_TOUCH` are now a **floor** for the placement clamp rather than
+  the answer — the box is measured once it exists and the larger wins — because
+  they are also a guess about text set in the platform's own UI font, and the
+  same three words are wider on iOS. Every glyph in the strip additionally
+  carries `width`/`height` attributes at its usage site: an inline SVG with only
+  a `viewBox` has no intrinsic size, so a missed CSS rule would size it to a
+  default box wide enough to shove the rest of the strip out of the chart.
+  :::
 - A resize commits on every step, so its undo is a record that **grows** rather
   than a snapshot taken once (`selectionStep` in `src/lib/grid.ts`): a cell is
   recorded the first time the rectangle takes it in and never again, since after
