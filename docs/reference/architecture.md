@@ -984,12 +984,34 @@ text.
   leaves **drag handles** on the opposite corners of the rectangle to grow it
   with. `touch-action: none` appears in exactly one place, under those handles.
   Both paths reach the same commit, the same floating options and the same undo.
+  **Both mean something in the group view too**, where the rectangle they draw
+  is read rather than painted — see the region summary below. The grab-pan
+  therefore lives on the headings and the gutter in both modes: wherever a drag
+  over the cells means something, it cannot also mean panning.
 - A resize commits on every step, so its undo is a record that **grows** rather
   than a snapshot taken once (`selectionStep` in `src/lib/grid.ts`): a cell is
   recorded the first time the rectangle takes it in and never again, since after
   that what it holds is the selection's own doing. Cancelling therefore restores
   the state the tap interrupted however far the handles travelled, and a deletion
   region dragged over a mixed block puts each mark back as its own kind.
+- **Undo and redo are one stack, and it belongs to the edit session**
+  (`lib/history.ts`). An entry is a pair of those same records over one set of
+  slots — what they held before an action and what they hold after it — so undo
+  replays the first and redo the second, both as the chart's own `paint` and
+  `flip` emits. Nothing reaches the marks by any other route, and so nothing
+  reaches the server by any other route either: an undo autosaves exactly as a
+  drag does. Every commit carries the id of the gesture that made it, and one
+  gesture is one entry however many times it commits — a tap, every step of a
+  handle drag across it, and whatever the options strip is then told the
+  rectangle means, are one thing to take back. The stack holds 100 entries, is
+  created empty when a name starts editing and is emptied on every way out:
+  the view switch, "just browsing", answering as somebody else, and the page
+  closing. Reached from cmd/ctrl+Z and cmd/ctrl+shift+Z (never both modifiers,
+  never with alt, and never while a field or a dialog has the keystroke), from
+  the arrow on the floating options — which asks for "the last action" rather
+  than replaying its own rectangle, so the two cannot disagree — and from a pair
+  of buttons in the phone's settings drawer, disabled rather than hidden when
+  there is nothing left to do.
 - Every column is laid out once inside a **native scroll container**, which the
   track may rest anywhere on — there is no paging and no snapping. Native
   because `getBoundingClientRect()` already carries the scroll offset, so
@@ -1010,15 +1032,26 @@ text.
   the view settings move into bottom-sheet drawers. Both the clock and the
   legend live in the settings drawer there rather than in the chart's foot: they
   describe the chart rather than changing it, and a foot row of a fixed pane
-  costs grid. Clearing your own answer goes the other way, onto the identity
-  bar beside the name it wipes, which leaves the phone's foot holding the
-  best-times filter in the group view and **nothing at all** in the edit view —
-  so there is no foot then, rather than an empty row.
-- Two readings of the group's answer that the desktop gets from the column
-  beside the chart are given back to the phone, where that column is behind a
-  drawer. A **tap** on a cell raises a card over it naming who is free at that
-  slot in the respondents list's own glyphs — the pinned slot, read a second
-  way, not a second kind of selection.
+  costs grid. The drawer also carries the one control a phone cannot get from a
+  keyboard: undo and redo, while the edit view is the one open. Clearing your
+  own answer goes the other way, onto the identity bar beside the name it wipes,
+  which leaves the phone's foot holding the best-times filter in the group view
+  and **nothing at all** in the edit view — so there is no foot then, rather
+  than an empty row.
+- **A region of the group's answers, read as one.** The column beside the chart
+  answers for one cell, and on a phone it is behind a drawer besides. A drag
+  (mouse) or a tap (touch, with the same handles editing gets) selects a region
+  in the group view, and a card over the chart names who can make **all** of it,
+  in the respondents list's own glyphs. `regionDigest` in `src/lib/grid.ts` is
+  the rule: a person is unavailable if a single cell of the region is,
+  if-needed if they are free throughout but qualified anywhere, and available
+  only if every cell is an unqualified yes — so "4 of 9 free" is four people who
+  can make the whole span. A one-cell region is exactly the old slot reading,
+  and `slotDigest` is that function with one slot in it. The card does not
+  auto-hide; it goes with its region, which a press outside it or its own cross
+  takes away. A plain **click** with no drag still only pins, and a chart with
+  no region on it hovers, tooltips and pins exactly as it did before regions
+  existed.
 - An **eye** on every row of the respondents list puts that one person's answer
   on the chart alone, since a heatmap is a sum and a sum cannot say who is
   behind it. It is a view of the chart rather than a mode of the list
