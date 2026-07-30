@@ -70,7 +70,7 @@ Timeful start refusing a scanner sooner.
 
 An event page left open keeps itself current: when somebody else answers, the
 heatmap and the respondents list change under you, without a reload. It works
-over a WebSocket at `/api/events/:idOrSlug/ws`, and the whole of it is optional.
+over a WebSocket at `/<slug>/ws`, and the whole of it is optional.
 
 **The event owns the setting.** Every event has a **Live updates** checkbox in
 its create and edit dialog, on by default. Turn it off and pages watching that
@@ -83,10 +83,18 @@ stored, and that reads as on.
 `TIMEFUL_REALTIME=0` — means no event gets a channel whatever its own setting
 says, and the server registers no upgrade listener at all.
 
+**Editing is one session at a time.** While live updates are on, a page that
+has adopted a name holds that name's *edit session* on a second socket,
+`/<slug>/users/<key>`, and there can only be one of those per name per event.
+Opening the same name in another window offers to take the session over, and
+the window that had it is told so and drops back to the group view.
+
 ::: tip Nothing depends on it
-The socket only ever carries notifications *from* the server. Every write still
-goes through the ordinary REST API, so turning live updates off — at either
-level — costs you the live updates and nothing else. See
+Turning live updates off — at either level — costs you the live updates and
+nothing else. Every write still works over the ordinary REST API, which is what
+the page falls back to; with no sockets there are also no edit sessions, so two
+windows answering as the same person is simply last-write-wins, exactly as it
+was before any of this existed. See
 [the realtime channel](/reference/architecture#realtime-updates) for the
 message shapes and the security reasoning.
 :::

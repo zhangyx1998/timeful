@@ -52,7 +52,8 @@ src/
   router.ts           '/' -> Admin (CSR), '/:slug' -> Event (SSR)
   pages/              AdminPage.vue, EventPage.vue
   components/         admin/, event/, shared/, ui/
-  lib/                dates, grid model, api client, sync engine, theme, colors
+  lib/                dates, grid model, api client, sync engine, user keys,
+                      realtime client, save transport, theme, colors
   styles/tokens.css   the palette — single source of truth
 
 server/
@@ -62,8 +63,8 @@ server/
   paths.ts            finds dist/client + dist/server relative to the entry module
   storage.ts          atomic JSON store (temp file + rename, per-file queue)
   auth.ts             scrypt hashing, session tokens, requireAdmin
-  slugs.ts leases.ts tarpit.ts proxy.ts config.ts http.ts
-  realtime.ts         per-event WebSocket rooms and the upgrade listener
+  slugs.ts leases.ts tarpit.ts proxy.ts config.ts http.ts not-found.ts
+  realtime.ts         per-event WebSocket rooms, write sessions, the upgrade listener
   routes/             auth, sessions, leases, events
   cli/                the `npx timeful` CLI, bundled into dist/cli.js
     index.ts          entry: webroot detection, wizard, service subcommands
@@ -165,10 +166,20 @@ resolves relative specifiers literally. Strict mode is on and
 imports, erased before Node ever sees them. One definition, both halves — the
 wire format cannot drift. Edit those files, not a server-side copy.
 
-One runtime import crosses the same boundary on purpose: `server/realtime.ts`
-imports `realtimeAllowed` from `src/lib/event.ts`, because "an event with no
-`realtime` field has live updates on" is a default the server and the admin form
-must agree on exactly. Adding a second such import wants a reason as good.
+A handful of **runtime** imports cross the same boundary on purpose — the
+defaults and rules both halves have to apply identically rather than merely
+agree about: `realtimeAllowed` and `normalizeResponses` from `src/lib/event.ts`,
+the guest-name rules from `src/lib/user-key.ts`, the path rules from
+`src/lib/slug-rules.ts`, and the frame parser and close codes from
+`src/lib/realtime.ts`. See
+[the module map](/reference/architecture#module-map) for which module takes
+which, and why. Adding another wants a reason as good.
+
+**A `src/lib` module the server imports at runtime must use explicit `.ts`
+extensions in its own imports.** Node resolves relative specifiers literally, so
+an extensionless one there is a crash on startup for the packaged CLI, not a
+warning — and nothing in the browser build will tell you, because Vite resolves
+it happily.
 
 ### Styling: scoped CSS with semantic class names
 

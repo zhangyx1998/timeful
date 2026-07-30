@@ -1,8 +1,8 @@
 # Architecture
 
 This page is the **binding contract** for Timeful: the storage format, the
-complete `/api` surface, the routing and SSR rules, the security design, and how
-the package is built. It describes what the code actually does. Where an
+complete HTTP and WebSocket surface, the routing and SSR rules, the security
+design, and how the package is built. It describes what the code actually does. Where an
 implementation and this document disagree, one of them is a bug — say which
 before changing either.
 
@@ -42,7 +42,8 @@ server/
   slugs.ts      slug alphabet, generation, validation, reserved names
   leases.ts     in-memory slug reservations
   tarpit.ts     per-IP serial miss queue
-  realtime.ts   per-event WebSocket rooms, broadcast, the upgrade listener
+  realtime.ts   per-event WebSocket rooms, write sessions, the upgrade listener
+  not-found.ts  the standalone 404 page, and the one way to send it
   proxy.ts      --trusted-proxy parsing
   config.ts     env-only runtime knobs
   http.ts       small helpers
@@ -57,10 +58,21 @@ server/
 imports, erased before Node sees them. There is one definition of the wire
 format and both halves of the app share it.
 
-There is exactly one exception, and it is deliberate: `server/realtime.ts`
-imports `realtimeAllowed` from `src/lib/event.ts` at **runtime**. "An event with
-no `realtime` field has live updates on" is a default that must have a single
-definition, and both the server and the admin form need to ask it.
+A handful of **runtime** imports cross the same boundary, each because it is a
+rule both halves must apply identically rather than a shape they must agree on:
+
+| Imported | By | Why |
+| -------- | -- | --- |
+| `realtimeAllowed` (`event.ts`) | `realtime.ts` | "no `realtime` field means on" is one default |
+| `normalizeResponses` (`event.ts`) | `storage.ts` | what a legacy file *means* is one reading |
+| `userKey`, `guestNameProblem`, … (`user-key.ts`) | `routes/events.ts`, `realtime.ts` | the dialog must reject what the server rejects, in the same words |
+| `slugProblem`, `RESERVED_SUBPATHS` (`slug-rules.ts`) | `slugs.ts`, `routes/events.ts` | same, for paths |
+| `parseSaveMessage`, close codes (`realtime.ts`) | `realtime.ts` | one definition of the frame both ends write |
+
+Adding another wants a reason as good. Note that any `src/lib` module the
+server imports at runtime must use **explicit `.ts` extensions** in its own
+imports: Node resolves relative specifiers literally, and an extensionless one
+is a crash on startup for the packaged CLI rather than a warning.
 
 ## Storage
 
@@ -109,10 +121,11 @@ interface EventDoc {
   realtime?: boolean;               // live updates; ABSENT MEANS TRUE
   createdAt: string;                // ISO
   updatedAt: string;                // ISO
-  responses: Record<string, EventResponse>;   // keyed by guest name
+  responses: Record<string, EventResponse>;   // keyed by USER KEY
 }
 
 interface EventResponse {
+  displayName: string;              // exactly what the guest typed
   availability: string[];           // ISO slot-start instants
   ifNeeded: string[];               // ISO slot-start instants
   updatedAt: string;
@@ -128,6 +141,54 @@ event written before [live updates](#realtime-updates) existed lacks it, none of
 them are rewritten, and **absent reads as `true`**. Code asks
 `realtimeAllowed(event)` (`src/lib/event.ts`) rather than testing the field, so
 the default has one definition that both halves of the app share.
+
+### User keys
+
+A guest's name is two things. The **display name** is exactly what they typed
+and the only string anything renders. The **user key** is what the response is
+filed under, what a URL carries, and the only string anything matches on:
+
+```
+userKey(raw) = trim  ->  casefold  ->  collapse each whitespace RUN to one dash
+
+"  Ada   Lovelace "  ->  "ada-lovelace"
+"ada  LOVELACE"      ->  "ada-lovelace"
+```
+
+`src/lib/user-key.ts` is the single definition, imported by both halves the way
+`slug-rules.ts` is — the identity dialog rejects exactly what the server
+rejects, in the same words.
+
+::: danger A raw name may not contain a dash
+A dash is what a run of whitespace *becomes*. Allowing one in a raw name would
+make `a-b` and `a b` the same key with two spellings and no way to tell which
+was meant, and a key that is not injective is not safe in a URL or in a match.
+The server answers `400`, and the identity dialog refuses to continue.
+:::
+
+A stored record's `displayName` must normalize to the key it is filed under —
+`PUT` checks it — so the document cannot hold a row that would render twice or
+not at all.
+
+#### Legacy files
+
+There are no migrations and no schema version, so an event written before keys
+existed has to be readable as it stands: keyed by the raw name, dashes and all,
+with no `displayName` on its records. That missing field is the marker.
+
+Every read goes through `normalizeResponses` (`src/lib/event.ts`, called from
+`storage.ts`), which re-files a legacy record under
+`legacyUserKey(rawName)` — its dashes read as the spaces they stood in for — and
+**grandfathers the raw name as the display name**. Nothing is rewritten to make
+that true; the next ordinary write persists it. Two legacy names can normalize
+to one key, and only one record survives: the newer `updatedAt` wins, with a
+warning that names nobody.
+
+A grandfathered spelling is readable but not writable — it may contain a dash,
+which is now illegal — so saving under that key needs a legal name that maps to
+it. The identity dialog does that automatically: type "Ada Lovelace", land on
+the record that was "Ada-Lovelace", and the spelling is replaced on the next
+save.
 
 The `id` must match
 `/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i`. Non-uuid
@@ -166,9 +227,26 @@ their answer disappears from it entirely.
 
 ## API
 
-Everything is JSON under `/api`. Routers mount in the order `auth` → `sessions`
-→ `leases` → `events`, then a catch-all `404 {"error": "Not found"}`. The body
-parser is `express.json({ limit: "2mb" })`; malformed JSON yields `400`.
+Everything is JSON, in **two namespaces**.
+
+`/api/*` is **global only**: status, auth, sessions, slug leases, and the event
+*list* and *create*. Routers mount in the order `auth` → `sessions` → `leases` →
+`events`, then a catch-all `404 {"error": "Not found"}`.
+
+Everything addressed **to one event** hangs off that event's own path —
+`/<slug>/data`, `/<slug>/settings`, `/<slug>/users/<userKey>`, `/<slug>/ws` —
+because the event's URL *is* the capability that grants access to it, and
+hanging its endpoints off `/api` only ever obscured that. The event-scoped
+router mounts after the static middleware and before the page handler.
+
+::: danger There are no compatibility shims
+Nothing keeps the old `/api/events/:id/...` paths. They fall through to the
+`/api` catch-all and answer `404`. Any client written against them is broken,
+deliberately and visibly, rather than quietly working against two surfaces.
+:::
+
+The body parser is `express.json({ limit: "2mb" })`; malformed JSON yields
+`400`.
 
 "Admin" below means a valid session cookie; without one those routes answer
 `401 {"error": "Not authenticated"}`. "Public" means the URL is the only
@@ -214,21 +292,35 @@ Admin-only. See [Slug leases](#slug-leases-1) for what they are for.
 | `POST /api/slug-leases` | `201 { slug, expiresAt }` — or `503` after 32 failed allocation attempts |
 | `DELETE /api/slug-leases/:slug` | `204`, idempotent |
 
-### Events
+### Events — the global two
 
 | Route | Auth | Notes |
 | ----- | ---- | ----- |
 | `GET /api/events` | admin | `{ id, slug, name, type, responseCount, createdAt, updatedAt }[]`, newest-updated first |
 | `POST /api/events` | admin | body `{ name, type, dates, duration, timeIncrement, startOnMonday, slug? }` → `201` full event |
-| `PATCH /api/events/:id` | admin | any subset of the same fields; `:id` **must be the uuid** |
-| `DELETE /api/events/:id` | admin | `:id` **must be the uuid** → `{ ok: true }` |
-| `GET /api/events/:idOrSlug` | **public** | the full event document — this is what the event page reads |
-| `PUT /api/events/:id/responses/:name` | **public** | `{ availability?, ifNeeded? }` → `{ ok, name, response \| null }` |
-| `DELETE /api/events/:id/responses/:name` | **public** | `{ ok: true }`; `404 "Response not found"` if the event exists but the guest does not |
-| `GET /api/events/:idOrSlug/ws` | **public** | WebSocket upgrade — [live updates](#realtime-updates), read-only. A non-upgrade `GET` is a plain `404` |
 
-The public response routes accept **either** the uuid or the slug; the
-admin-only `PATCH`/`DELETE` accept only the uuid.
+### Events — the event's own path
+
+Every `<slug>` below may be **either the uuid or the slug**. The uuid is the
+safer choice from a page that might be open across a rename.
+
+| Route | Auth | Notes |
+| ----- | ---- | ----- |
+| `GET /<slug>/data` | **public** | the full event document — this is what the event page reads |
+| `PATCH /<slug>/settings` | admin | any subset of the create fields, plus `slug` to rename |
+| `DELETE /<slug>/settings` | admin | → `{ ok: true }` |
+| `PUT /<slug>/users/<userKey>` | **public** | `{ displayName, availability?, ifNeeded? }` → `{ ok, key, response \| null }` |
+| `DELETE /<slug>/users/<userKey>` | **public** | `{ ok: true }`; `404 "Response not found"` if the event exists but the guest does not |
+| `GET /<slug>/ws` | **public** | WebSocket upgrade — the [browse socket](#realtime-updates), read-only. A non-upgrade `GET` is a plain `404` |
+| `GET /<slug>/users/<userKey>` | **public** | WebSocket upgrade — the [named write session](#named-write-sessions). A non-upgrade `GET` is a plain `404` |
+
+`data`, `settings`, `users` and `ws` are therefore **reserved sub-segments**.
+Slugs themselves are single segments and are unaffected; the reserved-slug list
+in `slug-rules.ts` is unchanged.
+
+The `<userKey>` in a path is **re-normalized** rather than taken as given, so
+`/…/users/Ada%20Lovelace` and `/…/users/ada-lovelace` address the same record
+and nobody can invent a second spelling of one person by hand-writing a URL.
 
 The response routes are public **by contract**: a guest may edit and clear their
 own record because the capability URL is the authentication boundary. Gating
@@ -256,7 +348,8 @@ Rejected with `400` and a message:
 | `timeIncrement` | integer, `0 < i ≤ 240`, and a divisor of 1440 |
 | `startOnMonday` | coerced with `Boolean()`; defaults to `false` |
 | `realtime` | must be a real boolean — **not** coerced; omitted on create means `true` |
-| guest `:name` | trimmed, non-empty, ≤ 100 chars |
+| `<userKey>` | re-normalized from the path; non-empty, ≤ 100 chars |
+| `displayName` | trimmed, non-empty, ≤ 100 chars, **no dash**, and `userKey(it)` must equal the path key |
 | `availability` / `ifNeeded` | ISO strings, ≤ 20000 entries each |
 | the whole body | ≤ 2 MB |
 
@@ -276,44 +369,67 @@ would be guessable, and a guessable capability URL is not a capability URL.
 
 ### Client wrapper
 
-`src/lib/api.ts` prefixes `/api` when absent, sends `credentials: "include"`,
-and throws `ApiError { message, status, body }` on any non-2xx, taking the
-message from the `{ error }` field. `fetchIsAdmin()` fails **closed**.
+`src/lib/api.ts` sends `credentials: "include"` and throws
+`ApiError { message, status, body }` on any non-2xx, taking the message from
+the `{ error }` field. `fetchIsAdmin()` fails **closed**.
+
+**Paths are written out in full**, and are no longer prefixed with `/api`
+automatically: there are two namespaces now, and a client that guessed between
+them would be guessing. The event-scoped ones have builders —
+`eventDataPath`, `eventSettingsPath`, `userPath` — so no call site spells
+one by hand.
 
 ## Realtime updates
 
 An event page left open keeps itself current: someone else's answer changes the
 heatmap and the respondents list without a reload, and the list shows who is
-looking at the event right now. It is a **read-only server→client notification
-channel** over one WebSocket, and it is optional at two levels.
+editing the event right now. It is optional at two levels, and it is **two
+sockets**, chosen by whether the page has adopted a name.
+
+| Socket | Path | What it is |
+| ------ | ---- | ---------- |
+| browse | `GET /<slug>/ws` | a read-only server→client notification channel |
+| session | `GET /<slug>/users/<userKey>` | the **edit session** for that key: notifications down, saves up |
+
+Both never reach Express: the listener is on the HTTP server, registered by
+`serve()` in `server/app.ts`. A plain `GET` of either path is not an upgrade and
+falls through to the event-scoped catch-all as a `404`.
 
 ### The contract
 
-::: danger The socket is read-only. The REST API is the sole write path.
-No `message` listener is ever registered on an accepted socket. Bytes a client
-sends are read off the wire by the protocol layer and dropped: they reach no
-state, no handler and no storage. The only inbound traffic that means anything
-is protocol-level — pong frames answering the heartbeat, and close. **Presence
-does not bend this**: a page's name arrives once, in the handshake the
-connection is made of, so a forged `presence` frame changes nothing either.
-
-Nothing here adds a write capability or an authentication surface. Disabling
-realtime, or any WebSocket failure at all, degrades to standard REST behaviour
-with **zero feature loss**.
+::: danger The browse socket is read-only, and stays read-only.
+No `message` listener is ever registered on a `/<slug>/ws` socket. Bytes a
+client sends are read off the wire by the protocol layer and dropped: they reach
+no state, no handler and no storage. The only inbound traffic that means
+anything is protocol-level — pong frames answering the heartbeat, and close.
+**Presence does not bend this**: it comes from write sessions, which are a
+different socket at a different URL, so a forged `presence` frame on this one
+changes nothing.
 :::
 
-`GET /api/events/:idOrSlug/ws` takes the upgrade. It never reaches Express: the
-listener is on the HTTP server, registered by `serve()` in `server/app.ts`.
-A plain `GET` of that path is not an upgrade and falls through to the events
-catch-all as a `404`.
+::: warning The write session is a sanctioned exception, and only that.
+A `/<slug>/users/<userKey>` socket does accept one kind of frame. It is not a
+second write path: a `save` runs through `writeResponse`, **the same function
+the REST `PUT` calls** — same validator, same zero-record rule, same storage
+call — so "validated exactly like the PUT" is a fact about the code rather than
+a promise about it. It adds no authentication surface either: the capability URL
+is still the whole boundary, exactly as it is for the `PUT`.
 
-**Identity rides in the URL.** A page that has adopted a name connects to
-`…/ws?name=<urlencoded>`; one that is only browsing connects without the
-parameter. The name is connection metadata, validated for shape only — trimmed,
-and treated as **absent** when empty or longer than the 100-character guest-name
-limit rather than truncated. Adopting a name, switching to another, or going back
-to browsing all reconnect, because the handshake is the only place a name can be
-stated.
+The `PUT` and `DELETE` remain fully functional regardless. They are the write
+API whenever there is no session, and the fallback whenever one lets a save
+down. Disabling realtime, or any WebSocket failure at all, degrades to standard
+REST behaviour with **zero feature loss**.
+:::
+
+**Identity rides in the URL.** A page that has adopted a name connects to the
+session socket, with the key in the path and the spelling to render in
+`?name=<urlencoded>`; one that is only browsing connects to `/ws` and carries no
+identity at all. The key is re-normalized out of the path, so one person cannot
+hold two sessions by spelling their own key two ways. The display name is
+connection metadata, validated for shape only — trimmed, and falling back to the
+key when empty or longer than the 100-character guest-name limit, rather than
+truncated. Adopting a name, switching to another, or going back to browsing all
+reconnect, because the handshake is the only place identity can be stated.
 
 ### Messages
 
@@ -322,46 +438,110 @@ re-exported type-only by `server/types.ts`:
 
 ```ts
 type RealtimeMessage =
-  | { type: "event"; event: EventDoc }     // the whole document, responses inline
-  | { type: "presence"; names: string[] }  // who is looking, sorted and deduped
-  | { type: "gone" };                      // the event was deleted; terminal
+  | { type: "event"; event: EventDoc }        // the whole document, responses inline
+  | { type: "presence"; people: PresenceEntry[] }  // who is editing, sorted
+  | { type: "gone" }                          // the event was deleted; terminal
+  | { type: "saved" }                         // one save landed
+  | { type: "save-failed"; message: string }  // one save was refused
+  | { type: "replaced" };                     // this session was taken over
+
+interface PresenceEntry { key: string; displayName: string }
 ```
 
+The last three only ever go to a write session. Client to server there is
+exactly one frame, and only on a write session:
+
+```ts
+interface SaveMessage {
+  type: "save";
+  displayName: string;
+  availability: string[];
+  ifNeeded: string[];
+}
+```
+
+Anything else inbound — a stray text frame, a message type from a newer client,
+an `availability` that is not an array — is **dropped without closing the
+socket**. Closing would punish a page for speaking a word this server has not
+learned yet, and there is nothing to gain by it. A well-formed `save` that fails
+validation is different: it is answered with `save-failed` carrying the same
+message the `PUT` would have returned, because the autosave engine needs to know
+which of its saves settled and how.
+
 **Full snapshots, never deltas.** The `event` payload is byte-for-byte what
-`GET /api/events/:idOrSlug` would return, so the client has one path for "the
-event changed" rather than one per kind of change — the same path a refresh
-takes. A snapshot goes out after every successful mutation, and only after it is
+`GET /<slug>/data` would return, so the client has one path for "the event
+changed" rather than one per kind of change — the same path a refresh takes. A
+snapshot goes out after every successful mutation, and only after it is
 persisted:
 
 | Mutation | Broadcast |
 | -------- | --------- |
-| `PUT /api/events/:id/responses/:name` | snapshot — including the zero-record delete-by-empty, when it removed something |
-| `DELETE /api/events/:id/responses/:name` | snapshot |
-| `PATCH /api/events/:id` | snapshot, carrying a renamed slug if it changed |
-| `DELETE /api/events/:id` | `gone`, then the room closes |
+| `PUT /<slug>/users/<key>` | snapshot — including the zero-record delete-by-empty, when it removed something |
+| a `save` frame | the same, through the same function |
+| `DELETE /<slug>/users/<key>` | snapshot |
+| `PATCH /<slug>/settings` | snapshot, carrying a renamed slug if it changed |
+| `DELETE /<slug>/settings` | `gone`, then the room closes |
 
 A create broadcasts nothing: nobody can be subscribed to an event that did not
-exist a moment ago.
+exist a moment ago. A clear that cleared nothing broadcasts nothing either — it
+is still acknowledged, because the save did land, but no room is woken for it.
+
+### Named write sessions
+
+The session socket **is** the edit session. Claiming one, holding it and losing
+it are all properties of the connection, which is what makes the rule below
+enforceable at exactly one place.
+
+- **One live session per (event, key).** The room holds a `Map<key, socket>`,
+  and the entry *is* the claim.
+- **A second claim is refused.** The handshake is completed and the new socket
+  is then closed with **`4409 "occupied"`**. Completing the handshake first is
+  the point: a close code is readable by the browser, and an HTTP status on a
+  refused upgrade is not. The incumbent is not told and not touched.
+- **A takeover is asked for, never assumed.** The client that saw `4409` prompts
+  — "*&lt;name&gt;* is being edited in another session. Take over?" — and only a
+  confirmation reconnects with `?takeover=1`. The server then sends the
+  incumbent `{ type: "replaced" }`, closes it with **`4410`**, and admits the
+  newcomer. The evicted page explains what happened, drops to the group view,
+  and does **not** reclaim: two pages taking turns forever is worse than one
+  page saying so once.
+- **A frame from an evicted session writes nothing.** The claim is re-checked
+  when the frame is read, not when it was sent.
+- **A closed session frees the key**, so the next claim needs no takeover.
+
+::: warning Exclusivity is a property of sessions, so it needs sessions.
+With the event's live updates off, or the server-wide switch off, there are no
+sockets, no sessions, and **no exclusivity**. Two browsers answering as one
+person is then last-write-wins over the REST `PUT` — exactly the behaviour the
+app had before write sessions existed, and exactly what the warning under
+[§ API](#api) has always said about guest names.
+:::
+
+Browse sockets take no part in any of this. They claim nothing, block nothing,
+and appear in no presence list.
 
 ### Presence
 
-A room also knows who is in it, and a `presence` message goes out whenever that
-changes: somebody arrived with a name, somebody's last connection closed, or a
-named socket was terminated by the heartbeat. A newly connected page is sent the
-current list immediately — including its own name, if it gave one — so the list
+A room knows who holds a session in it, and a `presence` message goes out
+whenever that changes: somebody claimed a key, somebody's session closed, or a
+session was terminated by the heartbeat. A newly connected page is sent the
+current list immediately — including itself, if it claimed a key — so the list
 is never waiting on somebody else to move.
 
-- **Refcounted per name.** One person is routinely several connections (two tabs,
-  a phone beside a laptop, a reconnect overlapping the drop it replaces), so the
-  room holds a `Map<name, count>`. A second connection under a name already
-  present changes nothing anyone can see and broadcasts nothing; the name leaves
-  the list when its last connection does.
+- **By key, rendered by name.** Each entry carries both. Matching a presence
+  entry against a respondent, and against the visitor's own identity, is exactly
+  what a key is for; the display name is only ever printed. Where a key has both
+  a stored answer and a session, the **stored** `displayName` wins — a page
+  shouting "ada LOVELACE" must not rename the row the group knows as "Ada
+  Lovelace".
+- **One entry per key.** Exclusivity makes that automatic: a key has at most one
+  session, so there is nothing to refcount.
 - **Never persisted.** Presence lives only in the room. Nothing is written to
   disk, there is nothing to clean up after a restart, and an event document has
   no presence field.
 - **Nothing rests on it.** Names are self-asserted, exactly like the name on a
   response: anyone holding the capability URL could already write a response
-  under any name they liked — the capability URL is the trust boundary, below.
+  under any key they liked — the capability URL is the trust boundary, below.
   Presence decides which row gets a pair of dots beside it, and that is the whole
   of its authority.
 - **Off means absent, not empty.** With the event's live updates off, or the
@@ -370,12 +550,12 @@ is never waiting on somebody else to move.
 
 ### Rooms, and the two switches
 
-Rooms live in an in-memory `Map<eventId, { sockets, names }>`, keyed by the
-**uuid** and never the slug — a rename must not orphan its subscribers. A room is
-deleted when its last member leaves. The server pings every socket every 30s and
-terminates any that did not answer the previous round; the close that follows is
-the same exit any other departure takes, so a reaped socket's name leaves the
-presence list with it.
+Rooms live in an in-memory `Map<eventId, { sockets, sessions, displayNames }>`,
+keyed by the **uuid** and never the slug — a rename must not orphan its
+subscribers. A room is deleted when its last member leaves. The server pings
+every socket every 30s and terminates any that did not answer the previous
+round; the close that follows is the same exit any other departure takes, so a
+reaped session leaves the presence list — and frees its key — with it.
 
 **Per event.** `EventDoc.realtime` is the primary control, set by the owner in
 the create/edit dialog and defaulting to on ([absent means
@@ -389,10 +569,15 @@ over REST, so `gone` would be a lie.
 `TIMEFUL_REALTIME`, is a kill switch above that. Off means **no upgrade listener
 is registered at all**, whatever the individual events say.
 
+Both switches take the write sessions with them, and with the sessions goes the
+exclusivity — see the warning under
+[Named write sessions](#named-write-sessions).
+
 ### Security
 
 The capability URL remains the entire auth boundary, and subscribing is
-deliberately no cheaper to scan than fetching:
+deliberately no cheaper to scan than fetching. Both sockets are treated
+identically here:
 
 - an upgrade must resolve a uuid or slug through the same lookup the public
   `GET` uses;
@@ -406,28 +591,37 @@ deliberately no cheaper to scan than fetching:
   `403` and **no** delay. Whoever asked has already proved they hold the
   capability URL by naming an event that resolved, so it is not a scan, and
   queueing it would only punish a page that is behaving;
+- so does `4409`: being told a key is occupied costs nothing, because naming a
+  key that resolved is not a scan either. It leaks that *somebody* is editing
+  under that key, which is the same thing the presence list already says out
+  loud to every holder of the URL;
 - accounting uses `req.socket.remoteAddress`. An upgrade never reaches Express,
   so there is no `req.ip` and no trust-proxy evaluation behind it. Behind a
   reverse proxy that groups every client under the proxy's address — which costs
   a shared queue on **misses only** and never delays a real subscriber — and it
   is unspoofable in exchange;
-- inbound frames are capped at 1 KiB. Nothing a client sends is read, so this is
-  not a protocol limit, only how much of a hostile frame is buffered before the
-  connection is closed. permessage-deflate stays off.
+- inbound frames are capped at **2 MB**, the same limit `express.json` puts on
+  the `PUT` body. It used to be a kilobyte, when nothing a client sent was ever
+  read; a `save` carrying two arrays of up to 20000 ISO timestamps needs the
+  room the equivalent request has always had, and being more generous than the
+  REST route would be a hole rather than a courtesy. permessage-deflate stays
+  off.
 
 Slugs are never logged here either.
 
 ### The client
 
-`connectRealtime(eventId, { name, onEvent, onPresence, onGone })` in
-`src/lib/realtime.ts` returns a handle with `setName()` and `close()`. It is
-silent by design — there is no connection indicator anywhere in the UI, because a
-page whose socket never opened has to look exactly like one that never had a
-socket.
+`connectRealtime(eventId, options)` in `src/lib/realtime.ts` returns a handle
+with `setSession()`, `save()` and `close()`. It is silent by design — there is
+no connection indicator anywhere in the UI, because a page whose socket never
+opened has to look exactly like one that never had a socket. The two session
+dialogs are the exception that proves it: they are about somebody *else* holding
+the edit session, which is a fact about the group rather than about the network.
 
 - **Never during SSR.** No `window` means no URL to derive and no connection; a
   socket per server-rendered page would be a denial of service against
-  ourselves.
+  ourselves. The inert handle answers everything the real one does, and `save()`
+  returns null.
 - **Backoff.** Reconnects at 1s, 2s, 4s … capped at 30s, each spread over ±25%
   jitter. A restart drops every open page at the same instant, and without the
   jitter they would all come back at the same instant too.
@@ -438,13 +632,39 @@ socket.
   as it stayed open.
 - **Terminal states.** An explicit `close()` and a `gone` message both stop it
   permanently.
-- **`setName(name)`** reconnects under a new identity straight away — not on the
-  backoff schedule, since the visitor just did something deliberate — resetting
-  both counters, and does nothing when the name has not actually changed.
+- **`setSession(session, { takeover })`** reconnects under a new identity
+  straight away — not on the backoff schedule, since the visitor just did
+  something deliberate — resetting both counters, and does nothing when nothing
+  has actually changed. `takeover` is spent on exactly one attempt, so a later
+  reconnect can never quietly evict whoever holds the key by then.
+- **`4409` and `4410` are not failures.** Either drops the connector to the
+  browse socket and reconnects immediately, without spending an attempt: the
+  page keeps seeing the event while its owner decides what to do.
 - **A drop clears presence.** `onPresence([])` fires when the connection goes,
   because dots beside a name the page can no longer vouch for are worse than no
-  dots at all. A `setName` switch is not a drop and clears nothing: the new
+  dots at all. A `setSession` switch is not a drop and clears nothing: the new
   connection's own list is a moment away.
+
+#### Saving over it
+
+`handle.save(payload)` returns a promise that settles on `saved` or
+`save-failed`, and **null** when there is no session to send over. Null is not
+an error; it is the caller's signal to use the `PUT`.
+
+`createSaveTransport` (`src/lib/save-transport.ts`) is the whole of the choice,
+and the rule is one line: a **transport** failure falls through to REST, a
+**refusal** does not. A dropped connection mid-edit is something the guest should
+never have to notice, and REST will almost certainly work; a payload the server
+refused would be refused identically by REST, so it goes to the status
+indicator, where a bad answer belongs. A save that is never acknowledged times
+out after 15s and counts as a transport failure.
+
+**The sync engine is untouched by any of this.** `createSyncEngine`'s
+coalescing, retry, baselines and era counter all work off a single `save`
+promise; the transport is a wrapper around that promise, not a change to it, and
+the four indicator states mean exactly what they meant before over either pipe.
+
+#### The page
 
 `EventPage.vue` connects on mount by uuid (stable across renames) and feeds
 snapshots through `applyEvent`, the same function the edit dialog and `refresh`
@@ -452,12 +672,17 @@ use: it swaps the document, updates the title, and corrects the address bar with
 `replaceState` on a renamed slug. `gone` clears the event and shows a short
 "Event deleted" panel instead of leaving the scheduler autosaving into a 404.
 
-`EventPage.vue` also owns the presence list, because it owns the socket presence
-arrives on: `EventScheduler` reports its adopted name upwards (`@identity`, from a
-watcher on the name, so it fires *after* the flush a switch begins with) and takes
-the list back down as a prop. `RespondentsPanel` merges it with the respondents:
+It owns the socket, so it also owns the presence list and the two session
+dialogs. `EventScheduler` reports its adopted identity upwards (`@identity`,
+from a watcher, so it fires *after* the flush a switch begins with), asks for the
+session again when "My availability" is re-entered (`@claim`), and takes the
+presence list back down as a prop along with a `writer` — one method, `save`,
+and no more of the handle than that. On `4409` the page steps the scheduler back
+to the group view and asks; on `replaced` it does the same and explains.
 
-- every online name gets three CSS-animated dots and a visually hidden
+`RespondentsPanel` merges presence with the respondents, by key:
+
+- every online person gets three CSS-animated dots and a visually hidden
   " (online)", the visitor's own row included — `prefers-reduced-motion` gets the
   same three dots without the animation;
 - somebody online who has **not** answered is shown as a row of their own, with
@@ -468,8 +693,8 @@ the list back down as a prop. `RespondentsPanel` merges it with the respondents:
 
 An incoming snapshot deliberately **does not** touch a visitor's half-finished
 answer. The marks live in `EventScheduler`, which re-seeds from a new document
-only when it asked for one (`awaitingIdentityRefresh`), and the current name is
-layered back over the group's answers by the response-index override. The edit
+only when it asked for one (`awaitingIdentityRefresh`), and the current identity
+is layered back over the group's answers by the response-index override. The edit
 dialog is safe for a related reason: its form seeds from the prop once and never
 watches it.
 
@@ -521,8 +746,15 @@ try and blunts anything cheaper.
 **What triggers it** — any request whose slug or event fails to resolve:
 
 - the SSR page handler, on any HTTP method;
-- `GET` / `PUT` / `DELETE` under `/api/events/…`, and the events catch-all;
+- the public event-scoped routes — `GET /<slug>/data`, `PUT`/`DELETE
+  /<slug>/users/<key>` — and the event-scoped catch-all, on any method;
+- a WebSocket upgrade to either socket whose event does not resolve;
 - failed `POST /api/auth/setup` and `POST /api/auth/login`.
+
+The admin-only `PATCH`/`DELETE /<slug>/settings` are **not** in that list, for
+the same reason no admin route ever has been: the caller is already
+authenticated, so delaying them buys nothing and only makes the panel feel
+broken when a stale tab asks about a deleted event.
 
 **What it does** — misses enter a per-IP **serial queue**. Each waits for the
 one before it, then sleeps `MISS_DELAY_MS` (default 100 ms) before its 404. When
@@ -588,7 +820,7 @@ client or believes whatever a client claims. See
 
 ## Routing / SSR
 
-There are exactly three kinds of URL.
+There are exactly four kinds of URL.
 
 ### `/` — the admin app, client-rendered
 
@@ -597,10 +829,32 @@ strings: no `data-ssr`, no `window.__EVENT__`, the title left as `Timeful`. The
 client then shows Setup (first run) → Login → the admin panel. Any other method
 on `/` gets the 404 page, with no delay.
 
-### `/api/*` — the Express API
+### `/api/*` — the global API
 
 Described [above](#api). Unknown routes under it answer
-`404 {"error": "Not found"}` immediately.
+`404 {"error": "Not found"}` immediately — which is what every one of the old
+event-scoped paths now gets.
+
+### `/<slug>/…` — an event's own endpoints
+
+`data`, `settings`, `users` and `ws` are the reserved sub-segments. The
+event-scoped router is mounted after the static middleware (so a real file under
+`/assets/…` is still a file) and before the page handler (which owns
+single-segment paths).
+
+The first segment resolves as a uuid or a slug through `resolveEvent`, the same
+lookup the public `GET` uses. Two decisions follow, and they are independent:
+
+| | first segment resolves | does not resolve |
+| --- | --- | --- |
+| **known sub-path** | the route runs | [tarpit](#the-tarpit), then `404 {"error": "Event not found"}` |
+| **unknown sub-path** | `404`, immediately — the capability is proven, so there is nothing to punish | tarpit, then `404` |
+
+**Shape** is decided separately from delay: a reserved sub-segment is an API
+client and gets JSON; anything else is a browser following a stale or mistyped
+link and gets the 404 *page*. This router sits in front of the page handler for
+every multi-segment path, so without that distinction a mistyped link would
+answer a person with raw JSON.
 
 ### `/<anything else>` — an event slug
 
@@ -724,17 +978,31 @@ text.
 
 1. A visitor whose name is in `localStorage["timeful.guestName"]` (site-wide) is
    restored silently: no dialog, their answers loaded, the grid ready. Everyone
-   else gets the identity dialog.
+   else gets the identity dialog. A stored name that is no longer legal — one
+   with a dash, from before [user keys](#user-keys) — is dropped and asked for
+   again, once; the key the guest retypes lands on the very record the old
+   spelling pointed at.
 2. That dialog's input **always opens blank**. A stored name skips the dialog
-   entirely; it never pre-fills it. Existing respondent names for the event are
-   suggested, and typing one shows an inline hint that continuing will load and
-   overwrite that answer.
-3. "Just browsing" drops the identity and deletes the stored name, so the next
-   visit asks again.
-4. After confirming there is **no Save button**. Every grid mutation autosaves
+   entirely; it never pre-fills it. Existing respondents are suggested, and
+   typing a name that normalizes to one of their keys shows an inline hint that
+   continuing will load and overwrite that answer — whatever the spelling.
+3. Confirming adopts the **event's** spelling where there is one, so the group
+   keeps seeing the name it knows rather than having it rewritten by whoever
+   answered last. The dialog validates from the server's own rules as you type:
+   an empty name, one over 100 characters, or one containing a **dash** shows
+   the message the server would have returned and disables Continue.
+4. "Just browsing" drops the identity and deletes the stored name, so the next
+   visit asks again. It never claims a write session.
+5. After confirming there is **no Save button**. Every grid mutation autosaves
    after a short debounce, with a status indicator: syncing (spinner), saved
-   (green), or failed (red, with Retry).
-5. An admin visiting an event page sees the guest view. Event management lives
+   (green), or failed (red, with Retry). Which pipe the save took — the write
+   session or the REST `PUT` — never changes what the indicator says.
+6. With live updates on, adopting a name also claims that name's
+   [write session](#named-write-sessions). If somebody else holds it the page
+   steps back to the group view and offers to take it over; the page that had it
+   is told so and steps back too. Neither happens with live updates off, because
+   then there are no sessions.
+7. An admin visiting an event page sees the guest view. Event management lives
    in the admin panel, not on the event page.
 
 ## Packaging & CLI
