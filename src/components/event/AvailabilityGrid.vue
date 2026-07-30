@@ -84,7 +84,6 @@ import {
   isBestTime,
   placeOverlay,
   rectangleSlots,
-  revertOperations,
   scrollEdges,
   scrollStepFor,
   selectionCorners,
@@ -101,6 +100,7 @@ import {
   type SlotSnapshot,
   type SlotStance,
 } from "../../lib/grid";
+import type { HistoryCommit } from "../../lib/history";
 import { useSlotBaseColor } from "../../lib/colors";
 import { formatSlotRange } from "../../lib/dates";
 import IconChevronLeft from "../../assets/icons/chevron-left.svg";
@@ -140,6 +140,19 @@ const emit = defineEmits<{
   paint: [change: { type: "add" | "remove"; slots: number[] }];
   /** The just-painted rectangle, told what it means. */
   flip: [change: { type: AvailabilityType; slots: number[] }];
+  /**
+   * What the emits just above amounted to, and which gesture they belong to.
+   * Sent after them, so the page reading it sees the change already applied and
+   * can pair what the slots were with what they now are (`lib/history.ts`).
+   */
+  commit: [action: HistoryCommit];
+  /**
+   * Take the last action back. The chart no longer owns the way out of a
+   * selection it has just committed: the arrow on the options strip asks for the
+   * same undo the keyboard does, off the same stack, so there is one history and
+   * not two ideas of what "back" means.
+   */
+  undo: [];
   hover: [slot: number | null];
   pin: [slot: number | null];
 }>();
@@ -807,6 +820,13 @@ type MenuKind = "create" | "erase";
 
 interface MenuState {
   kind: MenuKind;
+  /**
+   * Which gesture this is, for the page's history. A selection commits over and
+   * over — a tap, then every step of a handle drag, then whatever the strip is
+   * told the rectangle means — and all of it is one thing to take back, so every
+   * commit it makes carries the same id.
+   */
+  action: number;
   /** Corners of the rectangle, so the outline outlives the drag with the menu. */
   start: Cell;
   end: Cell;
@@ -829,6 +849,8 @@ interface MenuState {
 }
 
 const menuState = ref<MenuState | null>(null);
+/** Counts gestures, so each selection's commits are told apart from the last's. */
+let actions = 0;
 /** The strip and the handle layer, so a press can be told from an outside one. */
 const menuEl = ref<HTMLElement | null>(null);
 const gripsEl = ref<HTMLElement | null>(null);
@@ -882,8 +904,10 @@ function openMenu(cell: Cell, kind: MenuKind, event: PointerEvent, handles = fal
   if (!anchor) return;
   clearTimeout(menuTimer);
   menuTimer = undefined;
+  actions += 1;
   menuState.value = {
     kind,
+    action: actions,
     start: cell,
     end: cell,
     x: anchor.x,
@@ -906,7 +930,13 @@ function followMenu(event: PointerEvent) {
   state.y = anchor.y;
 }
 
-/** The release: the preview becomes the control, without moving. */
+/**
+ * The release: the preview becomes the control, without moving.
+ *
+ * And the one place a rectangle lands, so the one place the page is told an
+ * action happened. The record goes up *after* the emits that moved the marks,
+ * because the page pairs it with what the slots hold once they have landed.
+ */
 function commitMenu(start: Cell, end: Cell, slots: number[], snapshot: SlotSnapshot) {
   const state = menuState.value;
   if (!state) return;
@@ -916,33 +946,41 @@ function commitMenu(start: Cell, end: Cell, slots: number[], snapshot: SlotSnaps
   state.snapshot = snapshot;
   state.live = true;
   holdMenu();
+  emit("commit", { id: state.action, before: snapshot });
 }
 
 function chooseType(type: AvailabilityType) {
   const state = menuState.value;
   if (!state?.live) return;
   emit("flip", { type, slots: state.slots });
+  // Still the same action. Saying what the rectangle you just drew means is the
+  // last beat of drawing it, not a second thing done to it — so the way back
+  // from both is the state before the rectangle, and one press of undo, rather
+  // than one press to un-say it and another to un-draw it.
+  if (state.snapshot) emit("commit", { id: state.action, before: state.snapshot });
   // It stays: having just changed their mind once, the visitor may change it
   // back, and the menu that let them do it should not vanish for having worked.
   holdMenu();
 }
 
 /**
- * Undo, spoken in the grid's own emits: the parent hears the same two changes it
- * hears from a drag, applies them the same way and queues the same save, so the
- * restored state reaches the server by the route every other edit takes.
+ * Undo, asked for rather than performed.
+ *
+ * It used to replay this selection's own record straight back through the
+ * emits. It no longer has to: every commit the selection made was reported
+ * upwards, so the top of the page's history *is* this rectangle, and asking for
+ * "the last action" and asking for "this one" are the same request. Routing it
+ * through the stack is what makes the arrow and cmd+Z one history — press the
+ * arrow and cmd+shift+Z brings the rectangle back, dismiss the strip and cmd+Z
+ * still takes it away.
  *
  * The menu goes with it. Unlike a flip, which invites being flipped back, this
  * has put things exactly as they were — there is nothing left for it to offer.
  */
-function revertRect() {
-  const state = menuState.value;
-  if (!state?.live || !state.snapshot) return;
-  for (const op of revertOperations(state.snapshot)) {
-    if (op.emit === "paint") emit("paint", { type: op.type, slots: op.slots });
-    else emit("flip", { type: op.type, slots: op.slots });
-  }
+function undoSelection() {
+  if (!menuState.value?.live) return;
   closeMenu();
+  emit("undo");
 }
 
 /**
@@ -1098,6 +1136,9 @@ function applyResize(cell: Cell) {
 
   state.snapshot = step.snapshot;
   state.slots = step.slots;
+  // The record has grown, so the entry it is filed under grows with it: still
+  // one action, still the state the tap interrupted, however far this has gone.
+  emit("commit", { id: state.action, before: step.snapshot });
 }
 
 function startResize(handle: "from" | "to", event: PointerEvent) {
@@ -1480,7 +1521,20 @@ const tooltip = computed(() => {
   };
 });
 
-defineExpose({ measure });
+/**
+ * Puts away whatever is on the chart, and changes nothing.
+ *
+ * For the page above, which has one reason to need it: an undo or a redo taken
+ * from the keyboard or the drawer moves the marks a live selection is drawn
+ * around, and a ring left standing over cells that no longer hold what it said
+ * they hold is a lie about them.
+ */
+function clearSelection() {
+  closeMenu();
+  endResize();
+}
+
+defineExpose({ measure, clearSelection });
 </script>
 
 <template>
@@ -1790,31 +1844,34 @@ defineExpose({ measure });
           <!-- No label: it stands beside two that carry one, and a third word
                would make the strip something to read rather than something to
                choose from. The back-arrow is the one glyph that says "put it
-               back" without one. -->
+               back" without one — and it is the same word underneath as the
+               erase strip's, because it is now the same action off the same
+               history. -->
           <button
             type="button"
             class="meaning__option meaning__option--undo meaning__option--icon"
-            aria-label="Undo this selection"
-            title="Undo this selection"
+            aria-label="Undo"
+            title="Undo"
             :tabindex="menu.live ? undefined : -1"
-            @click="revertRect"
+            @click="undoSelection"
           >
             <IconUndo aria-hidden="true" />
           </button>
         </template>
 
-        <!-- An erase has nothing to choose between, so its undo says in a word
-             what it does rather than leaving a glyph to be guessed at — the
-             same glyph either way, and the word beside it. -->
+        <!-- An erase has nothing to choose between, so it has room to say in a
+             word what the creation strip leaves to the glyph. One word for both,
+             since pressing either asks the page for the same thing. -->
         <button
           v-else
           type="button"
           class="meaning__option meaning__option--undo meaning__option--revert"
+          aria-label="Undo"
           :tabindex="menu.live ? undefined : -1"
-          @click="revertRect"
+          @click="undoSelection"
         >
           <IconUndo aria-hidden="true" />
-          Revert
+          Undo
         </button>
 
         <!-- Last, in the corner a dismissal always sits in, and about the strip

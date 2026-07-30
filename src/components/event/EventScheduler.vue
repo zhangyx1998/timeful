@@ -44,8 +44,9 @@ import {
   getScheduleTimezoneOffset,
   getTimezoneReferenceDateForEvent,
 } from "../../lib/dates";
-import { buildGrid, buildResponseIndex, maxRespondents } from "../../lib/grid";
+import { buildGrid, buildResponseIndex, maxRespondents, snapshotSlots } from "../../lib/grid";
 import type { EventDoc } from "../../lib/event";
+import { useUndoHistory } from "../../lib/history";
 import { useIsolation } from "../../lib/isolation";
 import { CLOCK_OPTIONS, useEventPreferences } from "../../lib/preferences";
 import type { PresenceEntry, RealtimeSession } from "../../lib/realtime";
@@ -175,6 +176,55 @@ const {
 // The two things only the page above can tell this component to do: it owns the
 // socket, so it is the only thing that knows a session was taken away.
 defineExpose({ leaveEditing: session.leaveEditing, resumeEditing: session.startEditing });
+
+// --- taking it back -------------------------------------------------------
+
+const chart = ref<InstanceType<typeof AvailabilityGrid> | null>(null);
+
+/**
+ * Undo and redo for the answer being written, and nothing else on the page.
+ *
+ * It is handed the same two functions the chart's own emits land in, so a
+ * keystroke and a drag are indistinguishable by the time anything is moved —
+ * same marks, same debounce, same save. What it is *not* handed is any way to
+ * write directly: `lib/history.ts` only ever hands back operations, and this is
+ * the one place that decides what running them means.
+ *
+ * The session it is tied to is "who is editing", so it empties itself on every
+ * way out of the edit view there is: the switch, browsing, a different name, and
+ * the page closing with it.
+ */
+const history = useUndoHistory({
+  session: computed(() => (editing.value ? guestKey.value : null)),
+  apply: (operations) => {
+    for (const operation of operations) {
+      if (operation.emit === "paint") {
+        session.onPaint({ type: operation.type, slots: operation.slots });
+      } else {
+        session.onFlip({ type: operation.type, slots: operation.slots });
+      }
+    }
+  },
+  read: (slots) => snapshotSlots(slots, availability, ifNeeded),
+  beforeApply: () => chart.value?.clearSelection(),
+});
+
+/**
+ * Wiping the whole answer, recorded as the one action it is.
+ *
+ * The record has to be taken before the wipe and filed after it, and `clearMine`
+ * empties both sets synchronously — everything it awaits afterwards is about the
+ * save, not the marks — so the pair either side of the call is the pair the
+ * stack wants. It gets an id of its own because it is not a chart gesture and
+ * must never be folded into whatever selection was last on screen.
+ */
+function clearEverything() {
+  const slots = [...availability, ...ifNeeded];
+  const before = snapshotSlots(slots, availability, ifNeeded);
+  const wiped = clearMine();
+  if (slots.length > 0) history.record({ id: history.nextId(), before });
+  return wiped;
+}
 
 // --- the chart's model ----------------------------------------------------
 
@@ -421,6 +471,7 @@ function onSolo(person: { key: string; displayName: string } | null) {
            person's answer instead of the sum of everybody's — so they arrive by
            the same prop. The eye is the deliberate one, and wins. -->
       <AvailabilityGrid
+        ref="chart"
         class="chart"
         :event="event"
         :model="model"
@@ -438,6 +489,8 @@ function onSolo(person: { key: string; displayName: string } | null) {
         :compact="compact"
         @paint="session.onPaint"
         @flip="session.onFlip"
+        @commit="history.record"
+        @undo="history.undo"
         @hover="onHover"
         @pin="onPin"
       >
@@ -641,9 +694,13 @@ function onSolo(person: { key: string; displayName: string } | null) {
       :mode="editing ? 'edit' : 'group'"
       :max="maxCount"
       :total="responseIndex.keys.length"
+      :can-undo="history.canUndo.value"
+      :can-redo="history.canRedo.value"
       @close="settingsOpen = false"
       @reset-timezone="resetTimezone"
       @edit="onDrawerEdit"
+      @undo="history.undo"
+      @redo="history.redo"
     />
 
     <GuestIdentityDialog
@@ -667,7 +724,7 @@ function onSolo(person: { key: string; displayName: string } | null) {
         </p>
         <div class="confirm__actions">
           <Button variant="ghost" @click="clearOpen = false">Cancel</Button>
-          <Button variant="danger" @click="clearMine">Clear my times</Button>
+          <Button variant="danger" @click="clearEverything">Clear my times</Button>
         </div>
       </div>
     </Dialog>

@@ -11,6 +11,13 @@
  * The owner's tools lead it, as they lead the desktop column, and the way in
  * for an owner who is not signed in closes it, as it closes the desktop column.
  * Same order, same reasons, different container.
+ *
+ * It carries one thing the desktop has no need of. Undo and redo are a pair of
+ * keystrokes on a keyboard, and a phone has none — so the two of them are
+ * buttons here, in the only drawer a hand can reach without leaving the chart.
+ * They are disabled rather than hidden when there is nothing to take back: a
+ * control that comes and goes is one you have to hunt for, and the pair is also
+ * how you find out that undo exists at all.
  */
 import AdminLoginLink from "./AdminLoginLink.vue";
 import AdminTools from "./AdminTools.vue";
@@ -18,6 +25,8 @@ import ColorLegend from "./ColorLegend.vue";
 import TimezoneField from "./TimezoneField.vue";
 import Dialog from "../ui/Dialog.vue";
 import Segmented from "../ui/Segmented.vue";
+import IconRedo from "../../assets/icons/redo.svg";
+import IconUndo from "../../assets/icons/undo.svg";
 import { isAdmin } from "../../lib/admin";
 import { CLOCK_OPTIONS } from "../../lib/preferences";
 import type { GridMode } from "../../lib/event";
@@ -33,12 +42,21 @@ defineProps<{
   mode: GridMode;
   max: number;
   total: number;
+  /** Whether the edit session has anything left to take back, or to put back. */
+  canUndo: boolean;
+  canRedo: boolean;
 }>();
 
 const timezone = defineModel<string>("timezone", { required: true });
 const clock = defineModel<string>("clock", { required: true });
 
-const emit = defineEmits<{ close: []; "reset-timezone": []; edit: [] }>();
+const emit = defineEmits<{
+  close: [];
+  "reset-timezone": [];
+  edit: [];
+  undo: [];
+  redo: [];
+}>();
 </script>
 
 <template>
@@ -53,6 +71,35 @@ const emit = defineEmits<{ close: []; "reset-timezone": []; edit: [] }>();
         :auto-timezone="autoTimezone"
         @reset="emit('reset-timezone')"
       />
+
+      <!-- Only while you are writing an answer: there is nothing to take back
+           from reading one, and an always-dead pair of buttons would say the
+           feature is broken rather than that it does not apply. -->
+      <div v-if="mode === 'edit'" class="setting">
+        <span class="setting__label">Your edits</span>
+        <div class="steps">
+          <button
+            type="button"
+            class="step"
+            :disabled="!canUndo"
+            aria-label="Undo"
+            title="Undo"
+            @click="emit('undo')"
+          >
+            <IconUndo aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            class="step"
+            :disabled="!canRedo"
+            aria-label="Redo"
+            title="Redo"
+            @click="emit('redo')"
+          >
+            <IconRedo aria-hidden="true" />
+          </button>
+        </div>
+      </div>
 
       <div class="setting">
         <span class="setting__label">Clock</span>
@@ -109,5 +156,55 @@ const emit = defineEmits<{ close: []; "reset-timezone": []; edit: [] }>();
 
 .setting__control {
   flex: none;
+}
+
+/* The pair reads as one control, so they sit in one bordered group the way the
+   segmented switches beside them do. */
+.steps {
+  display: flex;
+  flex: none;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+/* At the tap floor in both directions: this is a phone's only undo, and it is
+   pressed repeatedly, so it is the last thing that should ask for precision. */
+.step {
+  display: grid;
+  place-items: center;
+  width: var(--tap-min);
+  height: var(--tap-min);
+  padding: 0;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: none;
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.step + .step {
+  border-left: 1px solid var(--color-border);
+}
+
+.step svg {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
+.step:hover:not(:disabled) {
+  background: var(--color-subtle);
+}
+
+.step:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: calc(var(--focus-ring-offset) * -1);
+}
+
+/* Dimmed rather than gone: the pair stays where it was so the one that still
+   works is in the same place it was a moment ago. */
+.step:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 </style>
