@@ -131,15 +131,28 @@ export default defineConfig((commandLineArgs) => {
     },
   });
 
+  /**
+   * One vendor chunk per third-party package, first-party code in the entry.
+   * The names are deliberately un-hashed: dist/ is published wholesale and
+   * loaded by path, so a content hash would only churn every release.
+   */
+  function vendorChunk(id: string): string | undefined {
+    const match = /node_modules\/((?:@[^/]+\/)?[^/]+)/.exec(id);
+    if (!match) return undefined; // first-party: stays in cli.js
+    return match[1].replace("/", "-");
+  }
+
   return {
-    input: $("server", "cli", "index.ts"),
+    input: { cli: $("server", "cli", "index.ts") },
     output: {
       format: "esm",
-      file: outFile,
-      banner: "#!/usr/bin/env node",
+      dir: $(dst),
+      entryFileNames: "cli.js",
+      chunkFileNames: "vendor/[name].js",
+      // Only the entry is a bin; a shebang on a vendor chunk would be noise.
+      banner: (chunk) => (chunk.isEntry ? "#!/usr/bin/env node" : ""),
       sourcemap,
-      // The SSR bundle is loaded at runtime by path, not linked at build time.
-      inlineDynamicImports: true,
+      manualChunks: vendorChunk,
     },
     external,
     plugins,

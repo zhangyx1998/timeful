@@ -54,7 +54,7 @@ it needs. The `HOST` environment variable still works; the flag wins.
 ```
 index.html            SPA shell; also the SSR template for event pages
 vite.config.ts        client -> dist/client, SSR -> dist/server
-rollup.config.ts      bundles the CLI + server into dist/cli.js
+rollup.config.ts      CLI + server -> dist/cli.js + per-package vendor/ chunks
 
 src/
   app.ts              app factory shared by both entries
@@ -136,7 +136,7 @@ Three rules worth knowing before you write a new one:
 | `typecheck`    | `vue-tsc --noEmit`                                   |
 | `build:client` | `vite build` → `dist/client`                         |
 | `build:ssr`    | `vite build --ssr` → `dist/server`                   |
-| `build:cli`    | `rollup` → `dist/cli.js`                             |
+| `build:cli`    | `rollup` → `dist/cli.js` + `dist/vendor/`            |
 
 The published package is **`dist/`**, not the repository. The root
 `package.json` is `private: true` and stays that way; `npm publish` runs from
@@ -149,7 +149,8 @@ published: a bare `dist/package.json` carrying a picked set of keys from the
 root one (name, version, description, engines, license, author, repository,
 homepage, bugs, keywords) plus `type: "module"`, `bin: { timeful: "cli.js" }`
 and `publishConfig`. It deliberately emits **no `dependencies`** — everything
-runtime is bundled into `cli.js`, so there is nothing left to install. It also
+runtime is bundled at build time, into `cli.js` and the per-package chunks
+under `dist/vendor/`, so there is nothing left to install. It also
 copies `LICENSE` and `docs/npm-README.md` (as `README.md`) into `dist/`.
 
 `npm run build:debug` writes a `private: true` stub instead, so a debug `dist/`

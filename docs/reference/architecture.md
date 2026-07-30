@@ -1287,7 +1287,8 @@ The published package is **`dist/`**. The root `package.json` is
 
 ```
 dist/
-  cli.js        the CLI and the entire server, bundled, #!/usr/bin/env node, 0755
+  cli.js        the CLI and all first-party server code, #!/usr/bin/env node, 0755
+  vendor/       one chunk per bundled third-party package (express, ws, …)
   client/       the Vite client build
   server/       the Vite SSR bundle
   package.json  bare, generated
@@ -1295,12 +1296,17 @@ dist/
   README.md     from docs/npm-README.md
 ```
 
+The vendor chunk names are un-hashed on purpose: `dist/` is published
+wholesale and every file in it is loaded by path, so a content hash would only
+churn each release. `cli.js` remains the single entry and the `bin`.
+
 `rollup.config.ts`'s `packageMeta` plugin writes `dist/package.json` from a
 picked set of root keys — name, version, description, engines, license, author,
 repository, homepage, bugs, keywords — plus `type: "module"`,
 `bin: { timeful: "cli.js" }` and `publishConfig`. It emits **no
-`dependencies`**: everything runtime is bundled, so there is nothing left to
-install. Node builtins are the only externals. A debug build
+`dependencies`**: everything runtime is bundled — into `cli.js` plus the
+per-dependency chunks under `vendor/`, all inside `dist/` — so there is
+nothing left to install. Node builtins are the only externals. A debug build
 (`npm run build:debug`) emits a `private: true` stub instead, so a debug `dist/`
 cannot be published.
 
