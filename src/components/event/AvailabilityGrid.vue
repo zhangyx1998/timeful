@@ -347,13 +347,13 @@ function onScroll() {
   const wasTop = scrollTop.value;
   readScroll();
   if (gesturing.value) retrack();
-  // Everything floating over the pane is placed against a rectangle in the
-  // track — so when the track moves they move with it, and the ring, the strip
-  // that names it and the card that reads it never come apart. Only once the
-  // strip is a control: while the drag runs it is following the pointer
-  // instead, which is a stronger claim on where it should be.
-  // The card needs none of this: it is placed against the region's own box,
-  // which is read out of the track and so has already moved.
+  // The options are placed over the pane, but what they are about is a
+  // rectangle in the track — so when the track moves they move with it, and the
+  // ring and the strip that names it never come apart. Only once it is a
+  // control: while the drag runs it is following the pointer instead, which is
+  // a stronger claim on where it should be. The summary card needs none of
+  // this: it is placed against the region's own box, which is read out of the
+  // track and has therefore already moved.
   const state = menuState.value;
   if (state?.live) {
     state.x -= scrollLeft.value - wasLeft;
@@ -1063,12 +1063,9 @@ const menu = computed(() => {
 });
 
 /**
- * The rectangle the menu is talking about, ringed so there is no doubt which
- * cells it means. Drawn from the drag while the drag runs and from the menu's
- * own corners afterwards, so the ring and the options appear and vanish
- * together. Inside the track, so it travels with the columns.
+ * A rectangle's box in the track's own pixels, which is where it is drawn — and
+ * so also where anything placed against it has to be worked out from.
  */
-/** A rectangle's box in the track's own pixels, which is where it is drawn. */
 function regionBox(start: Cell, end: Cell) {
   const minCol = Math.min(start.col, end.col);
   const maxCol = Math.max(start.col, end.col);
@@ -1084,6 +1081,13 @@ function regionBox(start: Cell, end: Cell) {
   };
 }
 
+/**
+ * The rectangle the selection is about, ringed so there is no doubt which cells
+ * it means: the ones being painted, or the ones being read. Drawn from the drag
+ * while the drag runs and from the selection's own corners afterwards, so the
+ * ring and whatever names it appear and vanish together. Inside the track, so
+ * it travels with the columns.
+ */
 const region = computed(() => {
   const state = menuState.value;
   if (!state) return null;
@@ -1298,8 +1302,11 @@ function endResize() {
   window.removeEventListener("pointercancel", endResize);
   resizing.value = null;
   stopEdgeScroll();
-  // The countdown starts again from the end of the work, not from the tap.
-  if (menuState.value?.live) holdMenu();
+  // The countdown starts again from the end of the work, not from the tap —
+  // for a paint's options, which are a question waiting to be answered. A
+  // region is not on one at all, and finishing a resize must not start it.
+  const state = menuState.value;
+  if (state?.live && state.kind !== "view") holdMenu();
 }
 
 /**
@@ -1554,7 +1561,6 @@ watch(
   },
 );
 
-onBeforeUnmount(closeSummary);
 
 // --- painting -------------------------------------------------------------
 
