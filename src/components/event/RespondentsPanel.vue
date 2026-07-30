@@ -40,7 +40,7 @@
  * shape of the list — no collapsing, no rearranging — because the view it asked
  * for outlives this panel being open and a list that folded itself up would be
  * describing a state it no longer owns. What says the state is a pill over the
- * chart (`IsolationPill`); see `lib/isolation.ts` for the two rules about the
+ * chart (`ModePills`); see `lib/isolation.ts` for the two rules about the
  * edit tab.
  *
  * The eyes themselves report the state rather than the gesture: an answer that
