@@ -49,7 +49,7 @@ import {
   type RealtimeServer,
 } from "./realtime.ts";
 import { resolveEvent, writeResponse } from "./routes/events.ts";
-import { updateEvent } from "./storage.ts";
+import { readEvent, updateEvent } from "./storage.ts";
 import { missTarpit } from "./tarpit.ts";
 import type { PresenceEntry, RealtimeMessage, StoredEvent } from "./types.ts";
 
@@ -1059,5 +1059,73 @@ describe("the realtime channel", () => {
     expect(clientCount(event.id)).toBe(1);
     await put(event.id, "erin", "Erin");
     expect((await watcher.take(1))[0].type).toBe("event");
+  });
+
+  // -------------------------------------------------------------------------
+  // last-edit tracking
+  // -------------------------------------------------------------------------
+
+  /**
+   * A save over a write session is a write like any other, so it records where
+   * it came from like any other — from what the *handshake* saw, since by the
+   * time a frame arrives there is no request left to read.
+   *
+   * And the snapshot that follows it is a public copy: a browse socket is open
+   * to anyone holding the link, so the field the login wall exists for may not
+   * ride out on one.
+   */
+  describe("last-edit tracking", () => {
+    /** A write session opened with a user agent of its own to be remembered by. */
+    function sessionWithAgent(idOrSlug: string, key: string, userAgent: string) {
+      const socket = new WsClient(
+        `${wsBase}/${encodeURIComponent(idOrSlug)}/users/${encodeURIComponent(key)}?name=${key}`,
+        { headers: { "user-agent": userAgent } },
+      );
+      return new Promise<WsClient>((resolve, reject) => {
+        socket.on("open", () => resolve(socket));
+        socket.on("error", reject);
+      });
+    }
+
+    it("records the upgrade's own origin against a save frame", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      const socket = await sessionWithAgent(event.slug, "alice", "SocketAgent/9.9");
+      // The ack, not a poll: `saved` is sent after the write has been persisted.
+      const acked = new Promise<void>((resolve) => {
+        socket.on("message", (data) => {
+          if ((JSON.parse(String(data)) as { type: string }).type === "saved") resolve();
+        });
+      });
+
+      socket.send(
+        JSON.stringify({ type: "save", displayName: "alice", availability: SLOTS, ifNeeded: [] }),
+      );
+      await acked;
+
+      const stored = (await readEvent(event.id))?.responses.alice;
+      expect(stored?.lastEdit?.userAgent).toBe("SocketAgent/9.9");
+      expect(stored?.lastEdit?.ip).toMatch(/127\.0\.0\.1|::1|::ffff:127\.0\.0\.1/);
+      expect(stored?.lastEdit?.at).toBe(stored?.updatedAt);
+      socket.close();
+    });
+
+    it("strips the origin from the snapshot the room is sent", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      // A browse socket: read-only, carries no identity, and open to anybody
+      // with the link. Exactly who must not see this.
+      const watcher = await subscribe(event.slug);
+
+      expect((await put(event.id, "alice", "Alice")).status).toBe(200);
+
+      const [message] = await watcher.take(1);
+      if (message.type !== "event") throw new Error("expected a snapshot");
+      expect(message.event.responses.alice.availability).toEqual(SLOTS);
+      expect(message.event.responses.alice).not.toHaveProperty("lastEdit");
+      expect(JSON.stringify(message)).not.toContain("lastEdit");
+      // Still on disk: the strip is at the door, not at the write.
+      expect((await readEvent(event.id))?.responses.alice.lastEdit).toBeDefined();
+    });
   });
 });

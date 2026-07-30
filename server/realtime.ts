@@ -52,7 +52,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 // Runtime imports from `src/lib`, and deliberate exceptions to the type-only
 // rule in `server/types.ts`: "absent means on", what a client frame looks like,
 // and what a user key is are each a definition both halves must share exactly.
-import { realtimeAllowed } from "../src/lib/event.ts";
+import { publicEvent, realtimeAllowed } from "../src/lib/event.ts";
 import {
   CLOSE_OCCUPIED,
   CLOSE_REPLACED,
@@ -62,6 +62,7 @@ import { userKeyFromParam } from "../src/lib/user-key.ts";
 import { statusOf } from "./http.ts";
 import { missTarpit } from "./tarpit.ts";
 import type {
+  EditOrigin,
   EventDoc,
   PresenceEntry,
   RealtimeMessage,
@@ -222,7 +223,10 @@ export function broadcastEvent(event: StoredEvent): void {
   // check is here rather than at each of the call sites so there is no way to
   // add another that forgets it.
   if (!realtimeAllowed(event)) return;
-  send(event.id, { type: "event", event: event as EventDoc });
+  // "The same bytes `GET /<slug>/data` would return" includes what that route
+  // leaves out: a snapshot is a public copy of the document, and a broadcast
+  // reaches every browse socket on the event.
+  send(event.id, { type: "event", event: publicEvent(event) as EventDoc });
 }
 
 /**
@@ -288,7 +292,22 @@ export interface RealtimeOptions {
     eventId: string,
     key: string,
     input: ResponseInput,
+    origin: EditOrigin | null,
   ) => Promise<ResponseWrite>;
+  /**
+   * The address to record against a save made over this connection.
+   *
+   * Injected because resolving a forwarded chain is Express's job and an
+   * upgrade never reaches Express: `serve()` hands down a resolver built from
+   * the app's own `trust proxy` setting, and without one this falls back to
+   * the peer address, which is what the tarpit uses.
+   *
+   * Note that this is deliberately *not* what the tarpit counts by. A miss
+   * queue wants the address nobody can spoof; a log of where an answer was
+   * edited from wants the address a reverse proxy is forwarding, or every
+   * entry behind nginx reads `127.0.0.1`.
+   */
+  clientIp?: (req: IncomingMessage) => string;
   /** Ping interval. Defaults to `HEARTBEAT_MS`; tests wind it on. */
   heartbeatMs?: number;
 }
@@ -382,12 +401,27 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
       return;
     }
 
+    // Read here and carried for the life of the connection. A `save` frame
+    // arriving twenty minutes later has no request behind it — there is no
+    // header to read and no socket lookup that would say anything the
+    // handshake did not already say — so where the session came from is
+    // decided once, when it was opened.
+    const origin: EditOrigin = {
+      ip: options.clientIp?.(req) || peerAddress(req),
+      userAgent: headerValue(req, "user-agent"),
+    };
+
     wss.handleUpgrade(req, socket, head, (ws) => {
-      subscribe(ws, event.id, target);
+      subscribe(ws, event.id, target, origin);
     });
   }
 
-  function subscribe(ws: WebSocket, eventId: string, target: Upgrade): void {
+  function subscribe(
+    ws: WebSocket,
+    eventId: string,
+    target: Upgrade,
+    origin: EditOrigin,
+  ): void {
     alive.add(ws);
     ws.on("pong", () => {
       alive.add(ws);
@@ -432,7 +466,7 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
     // The one inbound path in this file, and the only one there will be: a
     // save, validated by the REST route's own validator.
     ws.on("message", (data) => {
-      void onSave(ws, eventId, target.key as string, data);
+      void onSave(ws, eventId, target.key as string, data, origin);
     });
   }
 
@@ -465,6 +499,7 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
     eventId: string,
     key: string,
     data: unknown,
+    origin: EditOrigin,
   ): Promise<void> {
     // A frame that is not a save is dropped in silence. Closing on it would
     // punish a client from a future version of this app for speaking a word
@@ -476,7 +511,12 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
     if (rooms.get(eventId)?.sessions.get(key) !== ws) return;
 
     try {
-      const { ok, event, changed } = await options.writeResponse(eventId, key, message);
+      const { ok, event, changed } = await options.writeResponse(
+        eventId,
+        key,
+        message,
+        origin,
+      );
       if (!ok) {
         sendTo(ws, { type: "save-failed", message: "Event not found" });
         return;
@@ -525,6 +565,13 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
       return new Promise<void>((resolve) => wss.close(() => resolve()));
     },
   };
+}
+
+/** One request header as a plain string, however Node handed it over. */
+function headerValue(req: IncomingMessage, name: string): string {
+  const raw = req.headers[name];
+  if (Array.isArray(raw)) return raw[0] ?? "";
+  return raw ?? "";
 }
 
 /** A `ws` message payload as text, whatever shape it arrived in. */

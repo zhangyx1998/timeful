@@ -22,9 +22,13 @@ import type {
   EventResponse,
   EventSummary,
   EventType,
+  LastEdit,
   LinksMap,
   StoredEvent,
 } from "../types.ts";
+// Runtime: what a link-holder may see is one rule, and the page the server
+// renders has to apply exactly the same one the JSON route does.
+import { publicEvent, publicResponse } from "../../src/lib/event.ts";
 // Runtime, like the slug rules: the identity dialog has to reject exactly what
 // this rejects, in the same words (src/lib/user-key.ts).
 import { guestNameProblem, userKey, userKeyFromParam } from "../../src/lib/user-key.ts";
@@ -362,7 +366,10 @@ async function patchEvent(req: Request, res: Response): Promise<void> {
   // is very much still there, and still answerable over REST. They will try to
   // reconnect, be refused, and give up.
   if (!updated.realtime) closeRoom(updated.id);
-  res.json(updated);
+  // Stripped even though the caller is the owner: the page feeds this straight
+  // back into the document it is rendering from, and there is exactly one way
+  // to read an origin — the details route.
+  res.json(publicEvent(updated));
 }
 
 // DELETE /<slug>/settings — admin. The segment may be the uuid or the slug.
@@ -406,7 +413,39 @@ async function getEventData(req: Request, res: Response): Promise<void> {
     await eventMiss(req, res);
     return;
   }
-  res.json(event);
+  res.json(publicEvent(event));
+}
+
+/**
+ * GET /<slug>/details — admin: where each answer was last written from.
+ *
+ * The login wall, and the only route that serves `lastEdit`. Everything else
+ * about an event is public to whoever holds the link, so this route exists for
+ * exactly the one field that is not — which is also why it answers `401`
+ * rather than pretending the sub-path is unknown: an owner who is signed out
+ * should be told to sign in, not told the event is missing.
+ *
+ * Not tarpitted, for the reason no admin route ever is: the caller has already
+ * authenticated, so a stale tab asking about a deleted event is a mistake
+ * rather than a scan.
+ */
+async function getEventDetails(req: Request, res: Response): Promise<void> {
+  const event = await resolveEvent(param(req.params.slug));
+  if (!event) {
+    res.status(404).json({ error: "Event not found" });
+    return;
+  }
+  const users = Object.entries(event.responses ?? {})
+    .map(([key, response]) => ({
+      key,
+      displayName: response?.displayName || key,
+      // Explicitly null rather than absent: a record written before tracking
+      // existed has no origin, and the panel has to say so rather than
+      // rendering an empty row that looks like a failure to load.
+      lastEdit: response?.lastEdit ?? null,
+    }))
+    .sort((a, b) => a.displayName.localeCompare(b.displayName) || a.key.localeCompare(b.key));
+  res.json({ users });
 }
 
 /**
@@ -439,6 +478,42 @@ export interface ResponseInput {
   ifNeeded?: unknown;
 }
 
+/**
+ * Where a save came from, as the transport that carried it saw it.
+ *
+ * Supplied by the caller rather than derived here, because the two callers see
+ * it differently: the `PUT` reads `req.ip` and the request's own headers, while
+ * a write session has no request at all by the time a frame arrives and uses
+ * what was captured when the socket was upgraded. Neither is trusted for
+ * anything — it is a note in the owner's log, not an identity.
+ */
+export interface EditOrigin {
+  ip: string;
+  userAgent: string;
+}
+
+const MAX_USER_AGENT_LENGTH = 400;
+
+/** The origin of one save, stamped with the instant it landed. */
+function lastEditFrom(origin: EditOrigin | null, at: string): LastEdit | undefined {
+  if (!origin) return undefined;
+  return {
+    ip: origin.ip,
+    // The same cap a session record puts on a user agent: a header is whatever
+    // the client felt like sending, and an event file is not a place to keep
+    // several kilobytes of it.
+    userAgent: origin.userAgent.slice(0, MAX_USER_AGENT_LENGTH),
+    at,
+  };
+}
+
+/** The header, as a plain string, however Node handed it over. */
+export function userAgentOf(headers: { "user-agent"?: string | string[] }): string {
+  const raw = headers["user-agent"];
+  if (Array.isArray(raw)) return raw[0] ?? "";
+  return raw ?? "";
+}
+
 export interface ResponseWrite {
   /** False when the event vanished between resolving it and writing. */
   ok: boolean;
@@ -463,6 +538,7 @@ export async function writeResponse(
   eventId: string,
   key: string,
   input: ResponseInput,
+  origin: EditOrigin | null = null,
 ): Promise<ResponseWrite> {
   const displayName = requireDisplayName(input.displayName, key);
   const availability = requireIsoArray(
@@ -487,7 +563,17 @@ export async function writeResponse(
   }
 
   const now = new Date().toISOString();
-  const response: EventResponse = { displayName, availability, ifNeeded, updatedAt: now };
+  // Overwritten on every write, never merged with what was there: the field
+  // says where this answer was last edited from, and a stale half of it would
+  // be a worse answer than none.
+  const lastEdit = lastEditFrom(origin, now);
+  const response: EventResponse = {
+    displayName,
+    availability,
+    ifNeeded,
+    updatedAt: now,
+    ...(lastEdit ? { lastEdit } : {}),
+  };
   const updated = await updateEvent(eventId, (current) => {
     current.responses ??= {};
     current.responses[key] = response;
@@ -518,14 +604,21 @@ export async function putResponse(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const { ok, response, event, changed } = await writeResponse(existing.id, key, body);
+  const { ok, response, event, changed } = await writeResponse(existing.id, key, body, {
+    // Trust-proxy-aware by construction: `req.ip` is the rightmost forwarded
+    // entry no trusted peer vouched for (ARCHITECTURE.md § Trusted proxies).
+    ip: req.ip ?? "",
+    userAgent: userAgentOf(req.headers),
+  });
   if (!ok) {
     await eventMiss(req, res);
     return;
   }
   // A room should only ever be woken for something that actually happened.
   if (changed && event) broadcastEvent(event);
-  res.json({ ok: true, key, response });
+  // The record goes back to the guest who just wrote it, and this route is
+  // public: the origin it was just stamped with is not theirs to read back.
+  res.json({ ok: true, key, response: response && publicResponse(response) });
 }
 
 /**
@@ -602,6 +695,7 @@ eventsRouter.post("/events", requireAdmin, createEvent);
 // Event-scoped, mounted at the root. `/<slug>` itself is the page and is not
 // here: it belongs to the SSR handler in app.ts.
 eventScopedRouter.get("/:slug/data", jsonRoute(getEventData));
+eventScopedRouter.get("/:slug/details", requireAdmin, jsonRoute(getEventDetails));
 eventScopedRouter.patch("/:slug/settings", requireAdmin, jsonRoute(patchEvent));
 eventScopedRouter.delete("/:slug/settings", requireAdmin, jsonRoute(deleteEventRoute));
 eventScopedRouter.put("/:slug/users/:userKey", jsonRoute(putResponse));

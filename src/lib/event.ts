@@ -15,6 +15,25 @@ import { legacyUserKey } from "./user-key.ts";
 export type EventType = "specific_dates" | "dow";
 
 /**
+ * Where a response was last written from.
+ *
+ * **Private.** It is the one thing in an event document that is not public to
+ * everyone holding the capability URL, and the login wall is what keeps it
+ * that way: it is stripped from `GET /<slug>/data`, from the document the page
+ * is server-rendered around, and from every realtime snapshot, and the only
+ * way to read it is `GET /<slug>/details`, which requires a session.
+ *
+ * `ip` is trust-proxy-aware, `userAgent` is whatever the client claimed, and
+ * `at` is when that write landed — which is the same instant as the record's
+ * own `updatedAt`, since it is written by the same save.
+ */
+export interface LastEdit {
+  ip: string;
+  userAgent: string;
+  at: string;
+}
+
+/**
  * One guest's answer, filed under their [user key](./user-key.ts).
  *
  * `displayName` is what they typed and the only spelling anything renders; the
@@ -26,6 +45,13 @@ export interface EventResponse {
   availability: string[];
   ifNeeded: string[];
   updatedAt: string;
+  /**
+   * Stored, never served. Present on disk from the first write a record takes
+   * after this existed, absent on every record written before it — and absent
+   * from every copy of this document that leaves the server by a public route.
+   * See `publicEvent` below, which is how that is made true in one place.
+   */
+  lastEdit?: LastEdit;
 }
 
 export interface EventDoc {
@@ -121,6 +147,45 @@ export function normalizeResponses(
   }
 
   return { responses: out, changed };
+}
+
+/**
+ * One response with its private half removed.
+ *
+ * Returns the record itself when there is nothing to remove, so the common
+ * case — every record written before last-edit tracking existed — costs
+ * nothing and the identity of the object is preserved.
+ */
+export function publicResponse(response: EventResponse): EventResponse {
+  if (response?.lastEdit === undefined) return response;
+  const { lastEdit: _private, ...rest } = response;
+  return rest;
+}
+
+/**
+ * The event document as everyone holding the link may see it.
+ *
+ * The whole document is public to a link-holder — it is inlined into the
+ * server-rendered page, byte for byte (ARCHITECTURE.md § Routing/SSR) — with
+ * exactly one exception, so the exception needs exactly one gate. Every route
+ * and every broadcast that hands an event outward goes through here, and the
+ * only caller that does not is `GET /<slug>/details`, which sits behind the
+ * login wall and exists precisely to serve what this takes out.
+ *
+ * Shallow-copied rather than mutated: the argument is the in-memory document
+ * the storage layer just read, and stripping it in place would delete the
+ * field from the next write.
+ */
+export function publicEvent<T extends Pick<EventDoc, "responses">>(event: T): T {
+  const responses: Record<string, EventResponse> = {};
+  let changed = false;
+  for (const [key, response] of Object.entries(event.responses ?? {})) {
+    const stripped = publicResponse(response);
+    if (stripped !== response) changed = true;
+    responses[key] = stripped;
+  }
+  if (!changed) return event;
+  return { ...event, responses };
 }
 
 /**

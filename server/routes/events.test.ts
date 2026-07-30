@@ -114,13 +114,18 @@ interface Call {
 async function call(
   method: string,
   path: string,
-  { body, cookie }: { body?: unknown; cookie?: string } = {},
+  {
+    body,
+    cookie,
+    headers,
+  }: { body?: unknown; cookie?: string; headers?: Record<string, string> } = {},
 ): Promise<Call> {
   const res = await fetch(`${base}${path}`, {
     method,
     headers: {
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
       ...(cookie ? { Cookie: cookie } : {}),
+      ...headers,
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
@@ -863,5 +868,191 @@ describe("legacy response files", () => {
     expect(stored.responses["ada-lovelace"].availability).toEqual(SLOTS);
     // The write that carried it may not disturb what it migrated.
     expect(stored.responses["ada-lovelace"].updatedAt).toBe("2026-01-01T00:00:00.000Z");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// last-edit tracking
+// ---------------------------------------------------------------------------
+
+/**
+ * Every response record remembers where it was last written from, and the
+ * whole point of that field is that nobody holding the link can read it.
+ *
+ * The event document is otherwise public in its entirety — it is inlined into
+ * the server-rendered page — so the two halves are asserted together: it is
+ * written on every save, and it is absent from every route a guest can reach.
+ */
+describe("last-edit tracking", () => {
+  const UA = "Mozilla/5.0 (TestBrowser) AppleWebKit/1.0";
+
+  it("records the origin of a PUT, and overwrites it on the next one", async () => {
+    const cookie = await adminCookie();
+    const event = await createEvent(cookie);
+
+    const before = Date.now();
+    await call("PUT", `/${event.id}/users/ada-lovelace`, {
+      headers: { "User-Agent": UA },
+      body: { displayName: "Ada Lovelace", availability: SLOTS },
+    });
+
+    const first = (await onDisk(event.id)).responses["ada-lovelace"].lastEdit;
+    expect(first).toBeDefined();
+    // Loopback, however this platform spells it — the point is that an address
+    // was resolved rather than which one.
+    expect(first?.ip).toMatch(/127\.0\.0\.1|::1|::ffff:127\.0\.0\.1/);
+    expect(first?.userAgent).toBe(UA);
+    expect(Date.parse(first?.at ?? "")).toBeGreaterThanOrEqual(before);
+    // One save, one instant: the origin is stamped by the write it belongs to.
+    expect(first?.at).toBe((await onDisk(event.id)).responses["ada-lovelace"].updatedAt);
+
+    await call("PUT", `/${event.id}/users/ada-lovelace`, {
+      headers: { "User-Agent": "Second/2.0" },
+      body: { displayName: "Ada Lovelace", availability: [SLOTS[0]] },
+    });
+
+    const second = (await onDisk(event.id)).responses["ada-lovelace"].lastEdit;
+    // Overwritten wholesale, not merged: a half-stale origin is worse than none.
+    expect(second?.userAgent).toBe("Second/2.0");
+    expect(second?.at).not.toBe(first?.at);
+  });
+
+  it("caps a hostile user agent rather than storing all of it", async () => {
+    const cookie = await adminCookie();
+    const event = await createEvent(cookie);
+
+    await call("PUT", `/${event.id}/users/ada-lovelace`, {
+      headers: { "User-Agent": "x".repeat(5000) },
+      body: { displayName: "Ada Lovelace", availability: SLOTS },
+    });
+
+    expect(
+      (await onDisk(event.id)).responses["ada-lovelace"].lastEdit?.userAgent.length,
+    ).toBe(400);
+  });
+
+  it("never hands the origin back to anyone holding only the link", async () => {
+    const cookie = await adminCookie();
+    const event = await createEvent(cookie);
+
+    // The PUT's own answer carries the record it just wrote.
+    const put = await call("PUT", `/${event.id}/users/ada-lovelace`, {
+      headers: { "User-Agent": UA },
+      body: { displayName: "Ada Lovelace", availability: SLOTS },
+    });
+    expect(put.status).toBe(200);
+    const written = (put.body as { response: Record<string, unknown> }).response;
+    expect(written.availability).toEqual(SLOTS);
+    expect(written).not.toHaveProperty("lastEdit");
+
+    // It is on disk regardless — the strip is at the door, not at the write.
+    expect((await onDisk(event.id)).responses["ada-lovelace"].lastEdit).toBeDefined();
+
+    // And it is gone from the public read, which is the document the page is
+    // rendered around and the bytes a realtime snapshot copies.
+    const publicDoc = await viaApi(event.slug);
+    expect(publicDoc.responses["ada-lovelace"].availability).toEqual(SLOTS);
+    expect(publicDoc.responses["ada-lovelace"]).not.toHaveProperty("lastEdit");
+    expect(JSON.stringify(publicDoc)).not.toContain("lastEdit");
+
+    // Not even to the owner by this route: there is one way to read it.
+    const asOwner = await call("GET", `/${event.slug}/data`, { cookie });
+    expect(JSON.stringify(asOwner.body)).not.toContain("lastEdit");
+  });
+
+  it("keeps the origin out of what a PATCH hands back", async () => {
+    const cookie = await adminCookie();
+    const event = await createEvent(cookie);
+    await call("PUT", `/${event.id}/users/ada-lovelace`, {
+      headers: { "User-Agent": UA },
+      body: { displayName: "Ada Lovelace", availability: SLOTS },
+    });
+
+    const patched = await call("PATCH", `/${event.id}/settings`, {
+      cookie,
+      body: { name: "Renamed" },
+    });
+    expect(patched.status).toBe(200);
+    expect(JSON.stringify(patched.body)).not.toContain("lastEdit");
+    // The strip is a copy: the field survives the write it passed over.
+    expect((await onDisk(event.id)).responses["ada-lovelace"].lastEdit).toBeDefined();
+  });
+
+  it("leaves a record written before tracking existed alone", async () => {
+    const cookie = await adminCookie();
+    const event = await createEvent(cookie);
+    await writeLegacyResponses(event.id, {
+      "Ada Lovelace": { availability: SLOTS, updatedAt: "2026-01-01T00:00:00.000Z" },
+    });
+
+    const details = await call("GET", `/${event.slug}/details`, { cookie });
+    expect(details.body).toEqual({
+      users: [{ key: "ada-lovelace", displayName: "Ada Lovelace", lastEdit: null }],
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /<slug>/details
+// ---------------------------------------------------------------------------
+
+describe("the details endpoint", () => {
+  it("is the login wall: 401 without a session, whether or not the event exists", async () => {
+    const cookie = await adminCookie();
+    const event = await createEvent(cookie);
+
+    expect(await call("GET", `/${event.slug}/details`)).toEqual({
+      status: 401,
+      body: { error: "Not authenticated" },
+    });
+    // A bad cookie is no better than none, and neither is told the event is
+    // there — the 401 comes first, so nothing about it leaks either way.
+    expect(
+      (await call("GET", `/${event.slug}/details`, { cookie: "session=nope" })).status,
+    ).toBe(401);
+    expect((await call("GET", "/no-such-event/details")).status).toBe(401);
+  });
+
+  it("lists every respondent with the origin of their last save", async () => {
+    const cookie = await adminCookie();
+    const event = await createEvent(cookie);
+
+    await call("PUT", `/${event.id}/users/grace-hopper`, {
+      headers: { "User-Agent": "Grace/1.0" },
+      body: { displayName: "Grace Hopper", availability: SLOTS },
+    });
+    await call("PUT", `/${event.id}/users/ada-lovelace`, {
+      headers: { "User-Agent": "Ada/1.0" },
+      body: { displayName: "Ada Lovelace", ifNeeded: SLOTS },
+    });
+
+    const res = await call("GET", `/${event.slug}/details`, { cookie });
+    expect(res.status).toBe(200);
+    const { users } = res.body as {
+      users: { key: string; displayName: string; lastEdit: { userAgent: string } | null }[];
+    };
+    // Ordered by the name that is read, not by who answered first.
+    expect(users.map((user) => user.key)).toEqual(["ada-lovelace", "grace-hopper"]);
+    expect(users[0].lastEdit?.userAgent).toBe("Ada/1.0");
+    expect(users[1].lastEdit?.userAgent).toBe("Grace/1.0");
+  });
+
+  it("answers 404 for an event the owner cannot name, without a delay", async () => {
+    const cookie = await adminCookie();
+    // Admin routes are never tarpitted: the caller has already authenticated,
+    // so there is nothing here to slow down.
+    const enter = vi.spyOn(missTarpit, "enter");
+    const res = await call("GET", "/no-such-event/details", { cookie });
+    expect(res).toEqual({ status: 404, body: { error: "Event not found" } });
+    expect(enter).not.toHaveBeenCalled();
+  });
+
+  it("is a reserved sub-path, so a miss under it answers in JSON", async () => {
+    const enter = vi.spyOn(missTarpit, "enter");
+    // Unauthenticated, so `requireAdmin` answers before the router's catch-all
+    // ever sees it — the reservation matters for what a *signed-in* miss looks
+    // like, which the test above pins.
+    expect((await call("GET", "/no-such-event/details")).status).toBe(401);
+    expect(enter).not.toHaveBeenCalled();
   });
 });

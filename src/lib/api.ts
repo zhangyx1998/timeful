@@ -15,7 +15,7 @@
  * The response types below describe the wire format of `server/routes/*`; the
  * server imports them back from here so the two halves cannot drift.
  */
-import type { EventType } from "./event";
+import type { EventType, LastEdit } from "./event";
 
 export class ApiError extends Error {
   status: number;
@@ -105,6 +105,17 @@ export function eventDataPath(idOrSlug: string): string {
 /** `PATCH`/`DELETE /<idOrSlug>/settings` — the owner's controls. */
 export function eventSettingsPath(idOrSlug: string): string {
   return `/${encodeURIComponent(idOrSlug)}/settings`;
+}
+
+/**
+ * `GET /<idOrSlug>/details` — where each answer was last written from.
+ *
+ * The one event-scoped route that is **not** public: it serves the only field
+ * the capability URL does not entitle you to, so it is behind the session
+ * cookie and answers `401` without one.
+ */
+export function eventDetailsPath(idOrSlug: string): string {
+  return `/${encodeURIComponent(idOrSlug)}/details`;
 }
 
 /** `PUT`/`DELETE /<idOrSlug>/users/<userKey>` — one guest's answer, public. */
@@ -214,6 +225,19 @@ export function createSlugLease(options?: CallOptions): Promise<SlugLease> {
 /** Releases a lease early. Idempotent — a lapsed lease is not an error. */
 export function releaseSlugLease(slug: string, options?: CallOptions): Promise<void> {
   return api.del<void>(`/api/slug-leases/${encodeURIComponent(slug)}`, options);
+}
+
+/** One row of `GET /<slug>/details`. */
+export interface EventDetailsUser {
+  key: string;
+  displayName: string;
+  /** Null for a record written before last-edit tracking existed. */
+  lastEdit: LastEdit | null;
+}
+
+/** `GET /<slug>/details` — admin only. */
+export interface EventDetails {
+  users: EventDetailsUser[];
 }
 
 /** A `GET /api/sessions` row. */

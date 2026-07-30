@@ -22,7 +22,8 @@ export const RESERVED_SLUGS: ReadonlySet<string> = new Set(["api", "assets"]);
 
 /**
  * The sub-segments an event's own path spends on its API: `/<slug>/data`,
- * `/<slug>/settings`, `/<slug>/users/<key>` and `/<slug>/ws`.
+ * `/<slug>/details`, `/<slug>/settings`, `/<slug>/users/<key>` and
+ * `/<slug>/ws`.
  *
  * They are **sub**-segments and constrain nothing about slugs, which are single
  * segments — `/data` is a perfectly good event page. What they decide is how a
@@ -31,6 +32,7 @@ export const RESERVED_SLUGS: ReadonlySet<string> = new Set(["api", "assets"]);
  */
 export const RESERVED_SUBPATHS: ReadonlySet<string> = new Set([
   "data",
+  "details",
   "settings",
   "users",
   "ws",

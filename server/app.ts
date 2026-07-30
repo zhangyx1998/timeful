@@ -8,12 +8,15 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { Server } from "node:http";
+import type { IncomingMessage, Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import express from "express";
 import type { Express, NextFunction, Request, Response } from "express";
 import { cookieParser } from "./auth.ts";
 import { realtimeEnabled } from "./config.ts";
+// Runtime, like the slug rules: what a link-holder may see is one definition,
+// and the SSR page applies exactly the one the JSON route applies.
+import { publicEvent } from "../src/lib/event.ts";
 import { statusOf } from "./http.ts";
 import type { AssetPaths } from "./paths.ts";
 import { describeTrustedProxies, type TrustProxySetting } from "./proxy.ts";
@@ -164,9 +167,14 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
 
   async function renderEventPage(
     template: string,
-    event: StoredEvent,
+    stored: StoredEvent,
     req: Request,
   ): Promise<string> {
+    // The whole document is inlined into the page, so the page is a public
+    // route like any other and takes the same strip. Done once, here: the
+    // markup is rendered from this copy and the `window.__EVENT__` script
+    // serialises the same one, so the two cannot disagree.
+    const event = publicEvent(stored);
     const render = await renderer.loadRender();
     const { html } = await render(req.path, { event });
     const absoluteUrl = `${req.protocol}://${req.get("host") ?? "localhost"}${req.path}`;
@@ -305,6 +313,43 @@ export interface ServeOptions extends AppOptions {
   realtime?: boolean;
 }
 
+/**
+ * The client address of a WebSocket upgrade, evaluated by the app's own
+ * `trust proxy` setting.
+ *
+ * An upgrade never reaches Express, so there is no `req.ip` to read — but the
+ * rule for deriving one is a property of the app rather than of the request,
+ * and Express keeps it on the request *prototype*. Borrowing that prototype
+ * asks the same question the `PUT` asks, with the same answer, instead of
+ * reimplementing a forwarded-chain walk that would drift from it. Nothing
+ * depends on it succeeding: the peer address is the fallback, which is what
+ * this would have been without it.
+ *
+ * The [tarpit](./tarpit.ts) deliberately does *not* use this. Counting misses
+ * wants the address a client cannot lie about; recording where an answer was
+ * edited from wants the one nginx is forwarding.
+ */
+function upgradeClientIp(app: Express, req: IncomingMessage): string {
+  try {
+    const proto = Object.create(app.request) as {
+      app: Express;
+      headers: IncomingMessage["headers"];
+      socket: IncomingMessage["socket"];
+      connection: IncomingMessage["socket"];
+      ip?: string;
+    };
+    proto.app = app;
+    proto.headers = req.headers;
+    proto.socket = req.socket;
+    proto.connection = req.socket;
+    if (typeof proto.ip === "string" && proto.ip) return proto.ip;
+  } catch {
+    // Fall through: an Express that no longer exposes this is not a reason to
+    // refuse the upgrade.
+  }
+  return req.socket.remoteAddress || "";
+}
+
 /** Builds the app and listens. Resolves once the socket is open. */
 export function serve(options: ServeOptions): Promise<Server> {
   const app = createApp(options);
@@ -314,7 +359,11 @@ export function serve(options: ServeOptions): Promise<Server> {
       // Attached to the listening server, never to the app: an upgrade is a
       // property of the HTTP connection and never reaches Express at all.
       if (realtime) {
-        const hub = attachRealtime(server, { resolveEvent, writeResponse });
+        const hub = attachRealtime(server, {
+          resolveEvent,
+          writeResponse,
+          clientIp: (req) => upgradeClientIp(app, req),
+        });
         server.on("close", () => void hub.close());
       }
       console.log(

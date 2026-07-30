@@ -7,8 +7,13 @@
  * the two halves can never drift. These imports are type-only and therefore
  * erased before Node ever sees them.
  */
-import type { EventDoc, EventResponse, EventType } from "../src/lib/event.ts";
-import type { EventSummary, SessionInfo } from "../src/lib/api.ts";
+import type {
+  EventDoc,
+  EventResponse,
+  EventType,
+  LastEdit,
+} from "../src/lib/event.ts";
+import type { EventDetails, EventSummary, SessionInfo } from "../src/lib/api.ts";
 import type {
   PresenceEntry,
   RealtimeMessage,
@@ -17,13 +22,16 @@ import type {
 // The one server-side shape re-exported *from* the server: the realtime module
 // takes the write path as an injected function and needs its signature without
 // importing the route layer it lives in.
-import type { ResponseInput, ResponseWrite } from "./routes/events.ts";
+import type { EditOrigin, ResponseInput, ResponseWrite } from "./routes/events.ts";
 
 export type {
+  EditOrigin,
+  EventDetails,
   EventDoc,
   EventResponse,
   EventType,
   EventSummary,
+  LastEdit,
   SessionInfo,
   PresenceEntry,
   RealtimeMessage,
