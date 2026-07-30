@@ -42,10 +42,11 @@ import { CliError } from "./errors.ts";
 import {
   availableTiers,
   controlService,
+  describeRunState,
   detectSystemd,
   installService,
   nodeHost,
-  probeRunState,
+  probeRun,
   refFor,
   serviceStatus,
   specFor,
@@ -387,7 +388,7 @@ async function listServices(installed: DiscoveredService[], host: ServiceHost): 
 
   console.log("Installed Timeful services:");
   for (const entry of installed) {
-    const state = await probeRunState(
+    const run = await probeRun(
       { platform: entry.platform, tier: entry.tier, id: entry.id, file: entry.file, uid: process.getuid?.() },
       host,
     );
@@ -395,7 +396,7 @@ async function listServices(installed: DiscoveredService[], host: ServiceHost): 
     const where = config ? `http://${config.host}:${config.port}` : "";
     console.log();
     console.log(`  ${entry.webroot ?? "(webroot unknown)"}`);
-    console.log(`    ${entry.tier} tier, ${state}${where ? ` — ${where}` : ""}`);
+    console.log(`    ${entry.tier} tier, ${describeRunState(run)}${where ? ` — ${where}` : ""}`);
     console.log(`    ${entry.file}`);
     if (entry.problem) console.log(`    ${entry.problem}`);
   }
@@ -485,8 +486,11 @@ async function statusFor(webroot: string, args: CliArgs, host: ServiceHost): Pro
 
   const specs = unitsForAllTiers(webroot, config).map((unit) => unit.spec);
   for (const entry of await serviceStatus(specs, host)) {
+    const state = entry.state
+      ? describeRunState({ state: entry.state, restarts: entry.restarts })
+      : "unknown";
     console.log(
-      `  ${entry.tier} tier: ${entry.installed ? `installed, ${entry.state}` : "not installed"}`,
+      `  ${entry.tier} tier: ${entry.installed ? `installed, ${state}` : "not installed"}`,
     );
     console.log(`    ${entry.id}`);
     console.log(`    ${entry.file}`);

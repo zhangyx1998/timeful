@@ -565,6 +565,8 @@ export interface ServiceStatus {
   installed: boolean;
   /** Running or not, when the unit exists and the platform will say. */
   state?: RunState;
+  /** Automatic restarts behind that state, when the platform counted them. */
+  restarts?: number;
   /** Output of the platform's status command, when the unit exists. */
   report?: string;
 }
@@ -659,46 +661,125 @@ export function controlFor(ref: ServiceRef, verb: ControlVerb): ServiceCommand[]
   );
 }
 
-/** The cheapest question the platform answers about a running service. */
+/**
+ * The cheapest question the platform answers about a running service.
+ *
+ * Linux asks `show` rather than `is-active`, because `is-active` answers a
+ * crash loop with the single word `activating` — indistinguishable from a
+ * service that is genuinely coming up, and the reason this CLI once printed
+ * "running" over a unit that had never started once. `SubState` is what tells
+ * the two apart, and `NRestarts` is what says how long it has been going on.
+ *
+ * Keyed output rather than `--value`: reading values positionally would depend
+ * on systemctl emitting properties in the order they were asked for, and
+ * `Key=value` lines need no such promise.
+ */
 export function probeFor(ref: ServiceRef): ServiceCommand {
   if (ref.platform === "darwin") return { command: "launchctl", args: ["list", ref.id] };
   if (ref.platform === "win32")
     return { command: "schtasks", args: ["/query", "/tn", ref.id, "/fo", "list"] };
-  if (ref.platform === "linux")
+  if (ref.platform === "linux") {
+    const args = ["show", "-p", "ActiveState", "-p", "SubState", "-p", "NRestarts", ref.id];
     return ref.tier === "system"
-      ? { command: "systemctl", args: ["is-active", ref.id] }
-      : { command: "systemctl", args: ["--user", "is-active", ref.id] };
+      ? { command: "systemctl", args }
+      : { command: "systemctl", args: ["--user", ...args] };
+  }
   throw new CliError(`Cannot check a service on ${ref.platform}.`);
 }
 
-export type RunState = "running" | "stopped" | "failed" | "unknown";
+export type RunState = "running" | "starting" | "stopped" | "failed" | "unknown";
 
-/** Turns a probe's output into one of four words. */
-export function readRunState(platform: NodeJS.Platform, result: RunResult): RunState {
+/** What a probe found: the word, and the evidence worth printing beside it. */
+export interface RunReport {
+  state: RunState;
+  /** Automatic restarts systemd has counted, when it was asked and answered. */
+  restarts?: number;
+}
+
+/** One `Key=value` line out of `systemctl show`. */
+function property(stdout: string, key: string): string | undefined {
+  return new RegExp(`^${key}=(.*)$`, "m").exec(stdout)?.[1].trim();
+}
+
+/**
+ * Turns a probe's output into a state, and whatever else it happened to say.
+ *
+ * The systemd half is the interesting one. `activating` is **not** running: a
+ * unit that fails at exec and is waiting out `RestartSec` before trying again
+ * spends nearly all of its life there, and calling that "running" is how a
+ * crash loop hid behind `timeful service status`. So:
+ *
+ * - `active`                       → running
+ * - `activating` + `auto-restart`  → failed; systemd is counting down to
+ *                                    another attempt, which only happens after
+ *                                    one went wrong
+ * - `activating` / `reloading`     → starting; a real start, caught in the act
+ * - `failed`                       → failed
+ * - `inactive` / `deactivating`    → stopped
+ *
+ * A bare word is still understood, so a probe run by hand — or by an older
+ * unit of this CLI — reads the same way.
+ */
+export function readRunReport(platform: NodeJS.Platform, result: RunResult): RunReport {
   if (platform === "darwin") {
     // A loaded agent is a running one: the plist carries RunAtLoad + KeepAlive.
-    return result.code === 0 ? "running" : "stopped";
+    return { state: result.code === 0 ? "running" : "stopped" };
   }
+
   if (platform === "linux") {
-    const word = result.stdout.trim().split(/\s+/)[0] ?? "";
-    if (word === "active" || word === "activating" || word === "reloading") return "running";
-    if (word === "failed") return "failed";
-    if (word === "inactive" || word === "deactivating") return "stopped";
-    return "unknown";
+    const active = property(result.stdout, "ActiveState") ?? result.stdout.trim().split(/\s+/)[0] ?? "";
+    const sub = property(result.stdout, "SubState") ?? "";
+    const counted = Number(property(result.stdout, "NRestarts"));
+    const restarts = Number.isInteger(counted) && counted >= 0 ? counted : undefined;
+
+    const state: RunState =
+      active === "active"
+        ? "running"
+        : active === "activating" || active === "reloading"
+          ? sub === "auto-restart"
+            ? "failed"
+            : "starting"
+          : active === "failed"
+            ? "failed"
+            : active === "inactive" || active === "deactivating"
+              ? "stopped"
+              : "unknown";
+    return restarts === undefined ? { state } : { state, restarts };
   }
+
   if (platform === "win32") {
     const status = /^\s*Status:\s*(\S+)/im.exec(result.stdout)?.[1]?.toLowerCase();
-    if (status === "running") return "running";
-    if (status === "ready" || status === "disabled") return "stopped";
-    return result.code === 0 ? "unknown" : "stopped";
+    if (status === "running") return { state: "running" };
+    if (status === "ready" || status === "disabled") return { state: "stopped" };
+    return { state: result.code === 0 ? "unknown" : "stopped" };
   }
-  return "unknown";
+
+  return { state: "unknown" };
+}
+
+/** Just the word, for callers that have nowhere to put the rest. */
+export function readRunState(platform: NodeJS.Platform, result: RunResult): RunState {
+  return readRunReport(platform, result).state;
+}
+
+export async function probeRun(ref: ServiceRef, host: ServiceHost): Promise<RunReport> {
+  // A dry run must not claim to know something it never asked about.
+  if (host.dryRun) return { state: "unknown" };
+  return readRunReport(ref.platform, await host.run(probeFor(ref)));
 }
 
 export async function probeRunState(ref: ServiceRef, host: ServiceHost): Promise<RunState> {
-  // A dry run must not claim to know something it never asked about.
-  if (host.dryRun) return "unknown";
-  return readRunState(ref.platform, await host.run(probeFor(ref)));
+  return (await probeRun(ref, host)).state;
+}
+
+/**
+ * The state as a status line prints it. The restart count is the part that
+ * makes a crash loop unmistakable even when the probe caught it mid-attempt.
+ */
+export function describeRunState(report: RunReport): string {
+  if (!report.restarts) return report.state;
+  const times = report.restarts === 1 ? "1 automatic restart" : `${report.restarts} automatic restarts`;
+  return `${report.state} (${times})`;
 }
 
 /**
@@ -742,7 +823,9 @@ export async function serviceStatus(
       installed,
     };
     if (installed) {
-      status.state = await probeRunState(refFor(unit), host);
+      const run = await probeRun(refFor(unit), host);
+      status.state = run.state;
+      if (run.restarts) status.restarts = run.restarts;
       const result = await host.run(unit.status[0]);
       status.report = (result.stdout + result.stderr).trim();
     }

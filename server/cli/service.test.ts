@@ -6,10 +6,12 @@ import {
   availableTiers,
   controlFor,
   controlService,
+  describeRunState,
   detectSystemd,
   formatCommand,
   installService,
   probeFor,
+  readRunReport,
   readRunState,
   refFor,
   serviceId,
@@ -522,29 +524,77 @@ describe("controlFor", () => {
 });
 
 describe("probeFor / readRunState", () => {
-  it("asks each platform the cheapest question it answers", () => {
+  it("asks each platform the cheapest question that actually answers it", () => {
+    // Not `is-active`: its one word calls a crash loop "activating", which is
+    // how a unit that never started once used to read as running.
     expect(
       formatCommand(
         probeFor({ platform: "linux", tier: "user", id: "timeful-x.service", file: "/x" }),
       ),
-    ).toBe("systemctl --user is-active timeful-x.service");
+    ).toBe("systemctl --user show -p ActiveState -p SubState -p NRestarts timeful-x.service");
     expect(
       formatCommand(
         probeFor({ platform: "linux", tier: "system", id: "timeful-x.service", file: "/x" }),
       ),
-    ).toBe("systemctl is-active timeful-x.service");
+    ).toBe("systemctl show -p ActiveState -p SubState -p NRestarts timeful-x.service");
     expect(
       formatCommand(probeFor({ platform: "darwin", tier: "user", id: "app.timeful.x", file: "/x" })),
     ).toBe("launchctl list app.timeful.x");
   });
 
-  it("turns systemd's vocabulary into four words", () => {
+  const show = (active: string, sub = "", restarts?: number) =>
+    readRunReport("linux", {
+      code: 0,
+      stdout: [
+        `ActiveState=${active}`,
+        `SubState=${sub}`,
+        ...(restarts === undefined ? [] : [`NRestarts=${restarts}`]),
+      ].join("\n"),
+      stderr: "",
+    });
+
+  it("turns systemd's vocabulary into a state", () => {
+    expect(show("active", "running").state).toBe("running");
+    expect(show("inactive", "dead").state).toBe("stopped");
+    expect(show("deactivating", "stop-sigterm").state).toBe("stopped");
+    expect(show("failed", "failed").state).toBe("failed");
+    expect(show("nonsense", "").state).toBe("unknown");
+  });
+
+  it("refuses to call a crash loop running", () => {
+    // The bug: a unit failing at exec spends nearly all of its life waiting out
+    // RestartSec, where is-active says "activating".
+    expect(show("activating", "auto-restart", 7).state).toBe("failed");
+    expect(show("activating", "auto-restart").state).toBe("failed");
+    // A genuine start caught in the act is neither running nor failed.
+    expect(show("activating", "start").state).toBe("starting");
+    expect(show("reloading", "reload").state).toBe("starting");
+  });
+
+  it("counts the restarts behind the state, so a loop shows even mid-attempt", () => {
+    expect(show("activating", "start", 12).restarts).toBe(12);
+    expect(show("active", "running", 0).restarts).toBe(0);
+    expect(show("active", "running").restarts).toBeUndefined();
+    expect(describeRunState(show("activating", "auto-restart", 12))).toBe(
+      "failed (12 automatic restarts)",
+    );
+    expect(describeRunState(show("activating", "auto-restart", 1))).toBe(
+      "failed (1 automatic restart)",
+    );
+    // Nothing to add is nothing added.
+    expect(describeRunState(show("active", "running", 0))).toBe("running");
+    expect(describeRunState({ state: "stopped" })).toBe("stopped");
+  });
+
+  it("still reads the one word `is-active` prints, by hand or from an old unit", () => {
     const state = (stdout: string, code = 0) => readRunState("linux", { code, stdout, stderr: "" });
     expect(state("active\n")).toBe("running");
-    expect(state("activating\n")).toBe("running");
     expect(state("inactive\n", 3)).toBe("stopped");
     expect(state("failed\n", 3)).toBe("failed");
     expect(state("unknown\n", 4)).toBe("unknown");
+    // Without a SubState there is no way to tell a loop from a start, and
+    // "starting" is the honest half of the two — never "running".
+    expect(state("activating\n")).toBe("starting");
   });
 
   it("treats a loaded LaunchAgent as a running one", () => {
