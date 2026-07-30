@@ -67,10 +67,11 @@ server/
   auth.ts             scrypt hashing, session tokens, requireAdmin
   slugs.ts leases.ts tarpit.ts proxy.ts config.ts http.ts not-found.ts
   realtime.ts         per-event WebSocket rooms, write sessions, the upgrade listener
-  routes/             auth, sessions, leases, events
+  registry.ts         the npm version lookup — the app's only outbound call
+  routes/             auth, sessions, leases, events, update
   cli/                the `npx timeful` CLI, bundled into dist/cli.js
     index.ts          entry: webroot detection, wizard, service subcommands
-    args.ts config.ts wizard.ts service.ts errors.ts version.ts
+    args.ts config.ts wizard.ts service.ts upgrade.ts errors.ts version.ts
 
 public/               favicon.ico (copied into dist/client)
 docs/                 this site — a standalone VitePress package
@@ -96,7 +97,7 @@ tests exercise the real Express app against a temporary `var/` directory rather
 than mocking the storage layer, so the atomic-write and queueing behaviour is
 actually under test.
 
-Two rules worth knowing before you write a new one:
+Three rules worth knowing before you write a new one:
 
 - **Never activate a real service from a test.** Everything that touches the
   machine goes through `ServiceHost` in `server/cli/service.ts`. Unit generation
@@ -104,6 +105,15 @@ Two rules worth knowing before you write a new one:
   makes the CLI print commands instead of running them.
 - **Never write outside a temp directory.** Anything that needs a `var/` makes
   one under the OS temp dir and removes it afterwards.
+- **Never reach the npm registry.** The
+  [update check](/reference/architecture#the-update-check) is the one thing in
+  the app that can, and a test that needed npm to be up is a test that fails on
+  a train. `fetchLatestVersion` takes an injected `fetchImpl` for unit tests;
+  the route test spies on the global `fetch` and passes anything that is not the
+  registry URL through to the real one, which is also how it asserts that an
+  unauthenticated caller never causes a lookup. `timeful upgrade --dry-run`
+  makes no lookup at all, so the CLI's end-to-end tests are offline by
+  construction.
 
 ## Build and packaging
 

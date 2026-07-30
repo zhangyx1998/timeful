@@ -12,6 +12,12 @@ timeful service restart      # both, in order
 timeful service uninstall    # deactivate and remove it
 ```
 
+and one verb of its own, for moving an installed service onto a new version:
+
+```sh
+npx timeful@latest upgrade   # re-pin the unit, then restart it
+```
+
 The service records the webroot as its working directory, so it serves the same
 config and the same data as the interactive run you just tried. The first-run
 wizard offers to do this for you at the end.
@@ -40,7 +46,52 @@ Every verb acts on one webroot, and works it out in this order:
 timeful service restart -A
 ```
 
-`install` does not take it: installing needs one concrete directory.
+`install` does not take it: installing needs one concrete directory. `upgrade`
+resolves its webroot by the same four rules and takes `-A` too.
+
+## Upgrading an installed service
+
+```sh
+cd /srv/scheduling && npx timeful@latest upgrade
+```
+
+A unit pins the absolute path of the CLI it execs, and for an npx install that
+path lives in npm's `_npx` cache. So `npx timeful@latest` on its own upgrades
+the copy in your terminal and leaves the service exactly where it was.
+`upgrade` fixes that, and it is the only thing it does: npx has already fetched
+the new version by the time the verb runs, so it re-points the unit at the code
+running it and restarts the service.
+
+```
+$ npx timeful@latest upgrade
+/srv/scheduling
+  user tier: timeful-9f2c1ab340.service
+    was /home/ada/.npm/_npx/2f7e7bff16d1c534/node_modules/timeful/cli.js
+    now /home/ada/.npm/_npx/9ed06546b0653f96/node_modules/timeful/cli.js
+```
+
+It prints both paths, then the new unit and every command, before any of them
+run — the same rule `install` follows, and `--dry-run` and `-A` work here as
+they do everywhere else. The hardened system tier still needs `sudo`, and asks
+for it in exactly the way `install` and `restart` already do.
+
+Running it twice in a row is a no-op that says so. `var/` and
+`timeful.config.json` are never touched. A webroot with no service installed is
+not an error: it is told how a serve-only setup upgrades, which is by being
+started again from the new version.
+
+A **global** install (`npm i -g timeful`) has a path that does not move, so
+there is nothing to re-pin. `upgrade` says so, checks whether anything newer
+has been published, and prints the two commands that would take it:
+
+```sh
+npm i -g timeful@latest
+timeful service restart
+```
+
+It never runs a package manager for you. That is a machine-wide change, it may
+need a privilege you did not give this command, and you may be pinned to a
+version on purpose.
 
 ## What is installed here?
 

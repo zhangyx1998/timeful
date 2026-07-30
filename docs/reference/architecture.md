@@ -48,9 +48,10 @@ server/
   config.ts     env-only runtime knobs
   http.ts       small helpers
   types.ts      type-only re-exports from src/lib (see below)
-  routes/       auth.ts, sessions.ts, leases.ts, events.ts
+  registry.ts   the npm lookup — the app's only outbound call
+  routes/       auth.ts, sessions.ts, leases.ts, events.ts, update.ts
   cli/          index.ts, args.ts, config.ts, wizard.ts, tui.ts,
-                service.ts, discover.ts, errors.ts, version.ts
+                service.ts, discover.ts, upgrade.ts, errors.ts, version.ts
 ```
 
 `server/types.ts` re-exports the event document and the API shapes from
@@ -268,9 +269,10 @@ their answer disappears from it entirely.
 
 Everything is JSON, in **two namespaces**.
 
-`/api/*` is **global only**: status, auth, sessions, slug leases, and the event
-*list* and *create*. Routers mount in the order `auth` → `sessions` → `leases` →
-`events`, then a catch-all `404 {"error": "Not found"}`.
+`/api/*` is **global only**: status, auth, sessions, slug leases, the update
+check, and the event *list* and *create*. Routers mount in the order `auth` →
+`sessions` → `leases` → `events` → `update`, then a catch-all
+`404 {"error": "Not found"}`.
 
 Everything addressed **to one event** hangs off that event's own path —
 `/<slug>/data`, `/<slug>/settings`, `/<slug>/users/<userKey>`, `/<slug>/ws` —
@@ -321,6 +323,42 @@ All admin-only.
 | `GET /api/sessions` | `{ token, createdAt, lastSeenAt, userAgent, persistent, current }[]`, newest-seen first |
 | `DELETE /api/sessions` | `{ ok: true, deleted: n }` — everything except the current session |
 | `DELETE /api/sessions/:token` | `{ ok: true, deleted: 1 }`; `404` if unknown; clears the cookie if it was the caller's |
+
+### The update check
+
+| Route | Auth | Response |
+| ----- | ---- | -------- |
+| `GET /api/update-check` | admin | `{ current, latest, updateAvailable, problem?, webroot, development }` |
+
+**This is the only outbound network call in the entire application**, and it is
+worth stating what that costs and why it is acceptable.
+
+- It is **admin-triggered and nothing else**. There is no interval, no check on
+  page load, no probe at startup. The handler runs when the owner presses
+  "Check for updates" in Settings, and at no other moment. An unauthenticated
+  caller cannot make this server talk to npm at all — `requireAdmin` is in front
+  of the fetch, not after it.
+- It runs **server-side** because the registry sets no CORS headers a page could
+  use, and because a guest's browser has no business talking to npm on the
+  server's behalf.
+- It **fails soft**. `https://registry.npmjs.org/timeful/latest`, a 5s
+  `AbortController` timeout, and any failure at all — DNS, TLS, timeout, a
+  non-2xx, a body with no version — answers `200` with `latest: null` and a
+  `problem` sentence. Never a `500`, never a stack trace, and never anything
+  taken from the request that asked. An air-gapped box is a supported way to run
+  Timeful, not an error condition.
+- `current` is the same `VERSION` the CLI reports, so a source checkout answers
+  `0.0.0-dev` with `development: true` — and `updateAvailable` is then `false`,
+  because a checkout is not behind a release, it is off the release line.
+- `webroot` is `process.cwd()`, which for an installed copy *is* the operator's
+  webroot ([assets resolve from the module, data from the CWD](#static-assets)).
+  It is there so the panel can print the exact command to paste. **No event slug
+  ever appears in this response**, and the only path in it is the admin's own.
+
+`updateAvailable` is computed server-side rather than in the browser, so the
+panel and `timeful upgrade` cannot disagree about what counts as newer. The
+comparison (`server/registry.ts`) is the release triple numerically, with a
+prerelease sorting before its release; anything unparseable is never "newer".
 
 ### Slug leases
 
@@ -1173,7 +1211,7 @@ Because the package declares no dependencies, the SSR build sets
 
 ### The CLI
 
-Three actions, and bare `timeful` decides between the first two by looking at
+Four actions, and bare `timeful` decides between the first two by looking at
 the directory:
 
 | Command | What it does |
@@ -1182,14 +1220,16 @@ the directory:
 | `timeful init` | the wizard, explicitly. **Already a webroot → error and exit 1**, never a second config. `init --yes` writes the config and stops there — it does not serve |
 | `timeful serve` | serve. **Not a webroot → error and exit 1**, never the wizard |
 | `timeful service [verb] [webroot]` | see [Services](#services) |
+| `timeful upgrade [webroot \| -A]` | see [Upgrading](#upgrading) |
 
 Flags: `--port`, `--host`, `--var-dir`, `--trusted-proxy` (each accepting
 `--flag value` or `--flag=value`), and the switches `-y/--yes`, `-A/--all`,
 `--dry-run`, `-h/--help`, `-v/--version`, `--user`, `--system`. Anything
 unrecognised exits 1.
 
-`timeful init` and `timeful serve` take no positional argument; only
-`timeful service` does. `-A/--all` means something only there, and never for
+`timeful init` and `timeful serve` take no positional argument;
+`timeful service` takes a verb and a webroot, and `timeful upgrade` takes a
+webroot. `-A/--all` means something only for those two, and never for
 `install`.
 
 Precedence, lowest first: built-in defaults → `timeful.config.json` → `PORT` /
@@ -1316,7 +1356,67 @@ and the host is what writes and executes. Rules:
   turn a `ServiceRef` — platform, tier, id, file, uid — into commands without
   touching anything, which is what lets a service found by scanning be started
   and stopped without recovering its whole spec.
+- `ServiceHost.readFile` is the exception to the dry-run rule, and only because
+  a read is not a change: `upgrade --dry-run` has to be able to say what the
+  installed unit execs today.
 - **Never activate a real service from a test or a dev session.** Stub the host.
+
+#### Upgrading
+
+```
+timeful upgrade [webroot | -A]
+```
+
+Built on one property of npx: by the time `npx timeful@latest upgrade` reaches
+our code, npx has already fetched and unpacked the new version, so **the running
+process is the new Timeful**. Upgrading therefore never downloads anything and
+never replaces anything in place. It re-points the service at the bits already
+running.
+
+That matters because a unit pins an absolute `cliPath`, and for an npx install
+that path is inside npm's `_npx` cache. Installing a service from `npx timeful`
+and running `npx timeful@latest` a year later upgrades the terminal's copy and
+leaves the service on the old one indefinitely. Re-pinning is the fix and the
+whole job.
+
+Per webroot, in the same target order the service verbs use (a named path, the
+working directory, the only installed one, then a picker or an error):
+
+1. the units that exist are regenerated through the ordinary `specFor`/`unitFor`
+   path, which pins the current `process.execPath` and `CLI_PATH`;
+2. the old pinned path is read back out of the installed unit — a fourth parser
+   in `discover.ts` mirroring the same three generators — and both are printed,
+   `was …` / `now …`;
+3. `installService` writes the new unit over the old one (install is already
+   idempotent per webroot) and `controlService(…, "restart")` restarts it,
+   because `enable --now` does not bounce a unit that is already up.
+
+Rules that fall out of it:
+
+- **The polite no-op.** If the unit already execs this exact path *and* the
+  `package.json` beside that path carries the running version, nothing is
+  written and nothing is restarted. It says so — and adds the one case the
+  comparison cannot see, a package replaced in place under a running service,
+  for which the answer is `timeful service restart`.
+- **No service is not an error.** A named webroot gets an explanation of how a
+  serve-only setup upgrades (start the new version); one swept up by `-A` gets
+  a line.
+- **A stable path is reported, never acted on.** `installKind` calls the running
+  CLI `npx` when its path contains an `_npx` *segment* and `stable` otherwise —
+  deliberately conservative, since the cost of guessing wrong is which of two
+  accurate paragraphs is printed. For a stable path the rewrite is a no-op, so
+  the registry is consulted and, if something newer exists, `npm i -g
+  timeful@latest` + `timeful service restart` are **printed**. Running a package
+  manager on the operator's behalf is not this command's business.
+- **It works offline.** The registry is best-effort: unreachable is a sentence,
+  not a failure, and the `@latest` form never needed the network to begin with.
+  `--dry-run` does not contact it at all — the contract is that a dry run
+  touches nothing, and that includes the network.
+- **The hardened tier escalates exactly as it already did**, through
+  `installService`'s `confirmPrivileged` and the `sudo systemctl` commands
+  `controlFor` already generates. There is no second escalation path.
+- **`var/` and `timeful.config.json` are never touched.** There are no
+  migrations to run (see [Storage](#storage)), so there is nothing to convert.
 
 ## Scope
 

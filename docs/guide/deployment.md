@@ -14,6 +14,68 @@ npx timeful --yes            # webroot with defaults, now serving 127.0.0.1:3000
 timeful service install      # and it comes back after a reboot
 ```
 
+## Updating
+
+One command, run in the webroot:
+
+```sh
+cd /srv/scheduling && npx timeful@latest upgrade
+```
+
+That looks like it downloads and then upgrades. It does not, and the order is
+the whole trick: by the time `upgrade` runs, npx has **already** fetched and
+unpacked the new version, so the process executing the verb *is* the new
+Timeful. There is nothing left to install. All it does is point the service at
+the code that is running it, and restart.
+
+::: tip Why the verb has to exist
+A service unit pins an absolute path — `ExecStart=<node> <cli> serve`, or the
+LaunchAgent and `schtasks` equivalents — and for an npx install that path is a
+directory inside npm's `_npx` cache. Install a service from `npx timeful`, run
+`npx timeful@latest` a year later, and you have upgraded the copy in your
+terminal while the service goes on running the old one, silently, forever.
+`upgrade` rewrites the pin. That is the bug it exists to close.
+:::
+
+It prints the old path and the new one for each webroot it touches, then the
+unit and every command, before running any of them. `--dry-run` stops it just
+short of doing so.
+
+**What it never touches:** `var/`, `timeful.config.json`, and anything else in
+the webroot. There are no migrations and no schema version — an old event
+document is simply read as it stands, and rewritten in the new shape the next
+time somebody saves it — so an upgrade has nothing to convert and no state to
+get wrong. Downgrading is `npx timeful@1.2.3 upgrade`, and it works for the
+same reason.
+
+Two variants:
+
+- **No service** — you start Timeful by hand, or from your own supervisor.
+  There is no pin to rewrite, so upgrading is just starting the new version:
+  `cd /srv/scheduling && npx timeful@latest`. Running `upgrade` there says so
+  rather than pretending to do something.
+- **Installed globally** (`npm i -g timeful`) — the path in the unit is stable,
+  so rewriting it changes nothing. Replace what lives at that path and restart:
+
+  ```sh
+  npm i -g timeful@latest
+  timeful service restart
+  ```
+
+  `upgrade` recognises this case, checks the registry, and prints those two
+  lines rather than running a package manager on your behalf.
+
+Several webroots on one box upgrade together with `-A`:
+
+```sh
+npx timeful@latest upgrade -A
+```
+
+The admin panel's **Settings → Software update** section will tell you when
+there is a new version and hand you the exact command for your webroot. It only
+looks when you press the button; see
+[the update check](/reference/architecture#the-update-check).
+
 ## The nginx block
 
 ```nginx
