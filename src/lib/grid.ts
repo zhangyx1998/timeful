@@ -397,6 +397,11 @@ export function snapshotSlots(
   return snapshot;
 }
 
+/** Every slot a record covers, whatever it says about them. */
+export function snapshotSlotList(snapshot: SlotSnapshot): number[] {
+  return [...snapshot.available, ...snapshot.ifNeeded, ...snapshot.empty];
+}
+
 /**
  * A revert expressed in the grid's own two emits, rather than as a private
  * channel back to the parent. `paint` clears, `flip` marks, and the parent's
@@ -756,13 +761,20 @@ export function buildResponseIndex(
 }
 
 // ---------------------------------------------------------------------------
-// one slot, per person
+// one region, per person
 // ---------------------------------------------------------------------------
 //
 // The respondents list answers "who is free here?" beside the chart. On a phone
 // it is behind a drawer, which is the wrong place for the answer to the question
 // a tap on a cell *is* — so the same reading is composed here and shown over the
 // chart, and this is the part of it that is not markup.
+//
+// A cell is the small case of a region, and the question a region asks is the
+// same one in the plural: not "who is free at some point in here" but "who can
+// make the whole of it". So a person's stance over a region is the *worst* thing
+// they said anywhere inside it — one clash rules them out however free they are
+// either side of it, and an if-needed anywhere makes the whole span an if-needed
+// for them. Only somebody available in every cell is available for the region.
 
 export type SlotStance = "available" | "if_needed" | "unavailable";
 
@@ -790,36 +802,69 @@ export interface SlotDigest {
 }
 
 /**
- * What every respondent said about one slot, in as many names as will fit.
- *
- * The cap is not a truncation of one list but a choice between two readings.
- * Under it, the digest names everybody — and "who cannot make it" is worth
- * reading when it is three people. Over it, naming an arbitrary six of sixteen
- * crosses says nothing at all, so it names only the people who *can* make it and
- * counts the rest: that is the question a tap on a cell asks, and the fraction
- * beside the names already reports the other side of it.
- *
- * Presence never enters this. Somebody who is merely on the page has marked
- * nothing, and "unavailable" would be a lie about them — the same rule the
- * respondents list follows.
+ * What every respondent said about one slot, in as many names as will fit. The
+ * one-cell case of `regionDigest`, and the whole of what a tooltip or a pinned
+ * cell reports.
  */
 export function slotDigest(
   slot: number,
   index: ResponseIndex,
   options: { cap?: number } = {},
 ): SlotDigest {
+  return regionDigest([slot], index, options);
+}
+
+/**
+ * What every respondent said about a whole rectangle of cells, aggregated to one
+ * stance each.
+ *
+ * The aggregation is a floor, not a vote: `unavailable` the moment a person
+ * misses a single cell, `if_needed` when they are free throughout but qualified
+ * it somewhere, and `available` only when every cell is an unqualified yes. The
+ * count beside the names reads the same way, so "4 of 9 free" over a two-hour
+ * block means four people can make *all* of it rather than some of it.
+ *
+ * A one-cell region is the ordinary slot reading, which is why `slotDigest` is
+ * this function with one slot in it: there is one definition of what a chip
+ * says, and the card cannot drift from the tooltip as the selection grows. A
+ * region with no live cells in it at all asks nothing of anybody, so everyone
+ * clears it vacuously — the same answer the loop below gives for free.
+ *
+ * The cap is not a truncation of one list but a choice between two readings.
+ * Under it, the digest names everybody — and "who cannot make it" is worth
+ * reading when it is three people. Over it, naming an arbitrary six of sixteen
+ * crosses says nothing at all, so it names only the people who *can* make it and
+ * counts the rest: that is the question the selection asks, and the fraction
+ * beside the names already reports the other side of it.
+ *
+ * Presence never enters this. Somebody who is merely on the page has marked
+ * nothing, and "unavailable" would be a lie about them — the same rule the
+ * respondents list follows.
+ */
+export function regionDigest(
+  slots: Iterable<number>,
+  index: ResponseIndex,
+  options: { cap?: number } = {},
+): SlotDigest {
   const { cap } = options;
-  const available = index.available.get(slot);
-  const needed = index.ifNeeded.get(slot);
+  const cells = [...new Set(slots)];
 
   const yes: SlotOpinion[] = [];
   const maybe: SlotOpinion[] = [];
   const no: SlotOpinion[] = [];
   for (const key of index.keys) {
     const label = index.labels.get(key) ?? key;
-    if (!available?.has(key)) no.push({ key, label, stance: "unavailable" });
-    else if (needed?.has(key)) maybe.push({ key, label, stance: "if_needed" });
-    else yes.push({ key, label, stance: "available" });
+    let stance: SlotStance = "available";
+    for (const slot of cells) {
+      if (!index.available.get(slot)?.has(key)) {
+        stance = "unavailable";
+        break;
+      }
+      if (index.ifNeeded.get(slot)?.has(key)) stance = "if_needed";
+    }
+    if (stance === "unavailable") no.push({ key, label, stance });
+    else if (stance === "if_needed") maybe.push({ key, label, stance });
+    else yes.push({ key, label, stance });
   }
 
   const total = index.keys.length;

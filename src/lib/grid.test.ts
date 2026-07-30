@@ -20,6 +20,7 @@ import {
   perViewFor,
   placeOverlay,
   rectangleSlots,
+  regionDigest,
   revertOperations,
   scrollEdges,
   scrollStepFor,
@@ -1080,6 +1081,137 @@ describe("slotDigest", () => {
     expect(digest.total).toBe(4);
     expect(digest.free).toBe(3);
     expect(digest.people.map((p) => p.label)).toEqual(["Ada", "Zed", "Bo", "Cy"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// what a whole region says about everybody
+// ---------------------------------------------------------------------------
+
+describe("regionDigest", () => {
+  const at = (hour: number) => iso(`2026-08-01T${String(hour).padStart(2, "0")}:00:00.000Z`);
+  const [nine, ten, eleven] = [at(16), at(17), at(18)];
+
+  /**
+   * Three hours, and one person for each way an answer can fall across them:
+   * free throughout, free but qualified in the middle, and missing the last
+   * hour entirely.
+   */
+  const event = makeEvent({
+    duration: 3,
+    timeIncrement: 60,
+    responses: {
+      ada: {
+        displayName: "Ada",
+        availability: [
+          "2026-08-01T16:00:00.000Z",
+          "2026-08-01T17:00:00.000Z",
+          "2026-08-01T18:00:00.000Z",
+        ],
+        ifNeeded: [],
+        updatedAt: "",
+      },
+      bo: {
+        displayName: "Bo",
+        availability: ["2026-08-01T16:00:00.000Z", "2026-08-01T18:00:00.000Z"],
+        ifNeeded: ["2026-08-01T17:00:00.000Z"],
+        updatedAt: "",
+      },
+      cy: {
+        displayName: "Cy",
+        availability: ["2026-08-01T16:00:00.000Z", "2026-08-01T17:00:00.000Z"],
+        ifNeeded: [],
+        updatedAt: "",
+      },
+    },
+  });
+  const index = buildResponseIndex(event);
+
+  it("takes the worst thing each person said anywhere in the region", () => {
+    const digest = regionDigest([nine, ten, eleven], index);
+    expect(digest.people).toEqual([
+      { key: "ada", label: "Ada", stance: "available" },
+      { key: "bo", label: "Bo", stance: "if_needed" },
+      { key: "cy", label: "Cy", stance: "unavailable" },
+    ]);
+    // Two of three can make the whole block; Cy can make two thirds of it and
+    // that is not what the region asked.
+    expect(digest.free).toBe(2);
+    expect(digest.total).toBe(3);
+  });
+
+  it("keeps somebody available only when every cell is an unqualified yes", () => {
+    // Cy is available across the first two hours and so counts as available.
+    expect(regionDigest([nine, ten], index).people).toEqual([
+      { key: "ada", label: "Ada", stance: "available" },
+      { key: "cy", label: "Cy", stance: "available" },
+      { key: "bo", label: "Bo", stance: "if_needed" },
+    ]);
+  });
+
+  it("lets one unavailable cell outweigh any number of if-needed ones", () => {
+    const digest = regionDigest([ten, eleven], index);
+    const bo = digest.people.find((person) => person.key === "bo");
+    const cy = digest.people.find((person) => person.key === "cy");
+    expect(bo?.stance).toBe("if_needed");
+    expect(cy?.stance).toBe("unavailable");
+  });
+
+  it("degenerates to the single-slot reading", () => {
+    for (const slotMs of [nine, ten, eleven, at(19)]) {
+      expect(regionDigest([slotMs], index)).toEqual(slotDigest(slotMs, index));
+    }
+    expect(regionDigest([ten], index).people).toEqual([
+      { key: "ada", label: "Ada", stance: "available" },
+      { key: "cy", label: "Cy", stance: "available" },
+      { key: "bo", label: "Bo", stance: "if_needed" },
+    ]);
+  });
+
+  it("ignores a repeated cell, since a region is a set of them", () => {
+    expect(regionDigest([nine, nine, ten, nine], index)).toEqual(
+      regionDigest([nine, ten], index),
+    );
+  });
+
+  it("rules everybody out of a region containing an hour nobody marked", () => {
+    const digest = regionDigest([nine, at(19)], index);
+    expect(digest.free).toBe(0);
+    expect(digest.people.every((person) => person.stance === "unavailable")).toBe(true);
+  });
+
+  it("excludes people who are only present, having nothing to aggregate", () => {
+    // Presence never reaches the response index, so a region cannot invent an
+    // opinion for somebody who has marked nothing.
+    expect(regionDigest([nine, ten], index).total).toBe(3);
+    expect(
+      regionDigest([nine], buildResponseIndex(makeEvent({ responses: {} }))),
+    ).toEqual({ people: [], hidden: 0, free: 0, total: 0 });
+  });
+
+  it("names the people who can make all of it once it cannot name everybody", () => {
+    const digest = regionDigest([nine, ten, eleven], index, { cap: 1 });
+    expect(digest.people).toEqual([{ key: "ada", label: "Ada", stance: "available" }]);
+    expect(digest.hidden).toBe(2);
+    expect(digest.free).toBe(2);
+  });
+
+  it("clears everybody vacuously when the region holds no live cells", () => {
+    const digest = regionDigest([], index);
+    expect(digest.free).toBe(3);
+    expect(digest.people.every((person) => person.stance === "available")).toBe(true);
+  });
+
+  it("reads the guest's own unsaved marks across the region too", () => {
+    const withMine = buildResponseIndex(event, {
+      key: "zed",
+      displayName: "Zed",
+      availability: new Set([nine]),
+      ifNeeded: new Set([ten]),
+    });
+    const digest = regionDigest([nine, ten], withMine);
+    expect(digest.people.find((person) => person.key === "zed")?.stance).toBe("if_needed");
+    expect(digest.total).toBe(4);
   });
 });
 
