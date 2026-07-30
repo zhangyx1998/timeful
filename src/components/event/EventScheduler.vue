@@ -1,18 +1,34 @@
 <script setup lang="ts">
 /**
- * The interactive half of the event page: identity, grid state and autosave.
+ * The interactive half of the event page: the chart, and everything arranged
+ * around it.
  *
  * Mounted client-side only, so it can read localStorage and the browser's
  * timezone without risking an SSR hydration mismatch.
+ *
+ * What is left here is the arrangement. The four things it arranges are each a
+ * concern of their own and live next door:
+ *
+ * | `lib/response-session.ts` | who you are, what you marked, and the autosave |
+ * | `lib/preferences.ts`      | zone, clock, best-times — this visitor's, kept |
+ * | `lib/viewport.ts`         | phone or desktop, and how many columns fit     |
+ * | `lib/isolation.ts`        | showing one person's answer instead of the sum |
+ *
+ * The two layouts share this one component rather than splitting into a phone
+ * shell and a desktop shell, because they are not two layouts of *different*
+ * things: the same chart, the same identity, the same respondents and the same
+ * settings, with the phone putting three of them behind drawers. A split would
+ * have duplicated every prop of every one of them to say so.
  */
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import AdminLoginLink from "./AdminLoginLink.vue";
 import AdminTools from "./AdminTools.vue";
 import AvailabilityGrid from "./AvailabilityGrid.vue";
 import ColorLegend from "./ColorLegend.vue";
-import IsolationPill from "./IsolationPill.vue";
+import EventSettingsDrawer from "./EventSettingsDrawer.vue";
 import GuestIdentityDialog from "./GuestIdentityDialog.vue";
 import IdentityCard from "./IdentityCard.vue";
+import IsolationPill from "./IsolationPill.vue";
 import RespondentsPanel from "./RespondentsPanel.vue";
 import TimezoneField from "./TimezoneField.vue";
 import Button from "../ui/Button.vue";
@@ -23,42 +39,20 @@ import IconPerson from "../../assets/icons/person.svg";
 import IconGear from "../../assets/icons/gear.svg";
 import IconTrash from "../../assets/icons/trash.svg";
 import { isAdmin } from "../../lib/admin";
-import { api, apiError } from "../../lib/api";
 import {
   formatSlotRange,
-  getLocalTimezone,
   getScheduleTimezoneOffset,
   getTimezoneReferenceDateForEvent,
-  listTimezones,
-  prefers12Hour,
 } from "../../lib/dates";
-import {
-  buildGrid,
-  buildResponseIndex,
-  COMPACT_MAX_WIDTH,
-  maxRespondents,
-  perViewFor,
-} from "../../lib/grid";
-import { toAvailabilitySets, toIsoArray, type AvailabilityType, type EventDoc } from "../../lib/event";
+import { buildGrid, buildResponseIndex, maxRespondents } from "../../lib/grid";
+import type { EventDoc } from "../../lib/event";
 import { useIsolation } from "../../lib/isolation";
-import type { PresenceEntry, RealtimeSession, SavePayload } from "../../lib/realtime";
-import { createSaveTransport } from "../../lib/save-transport";
-import { adoptDisplayName, guestNameProblem, userKey } from "../../lib/user-key";
-import { userPath } from "../../lib/api";
-import { createSyncEngine, type SyncBaseline } from "../../lib/sync";
+import { CLOCK_OPTIONS, useEventPreferences } from "../../lib/preferences";
+import type { PresenceEntry, RealtimeSession } from "../../lib/realtime";
+import { useResponseSession, type RealtimeWriter } from "../../lib/response-session";
+import { useViewport } from "../../lib/viewport";
 
-/**
- * The half of the realtime handle this component uses: one method that either
- * takes a save or says it cannot.
- *
- * Narrow on purpose. The socket belongs to the page above — it is one
- * connection for the whole event, and presence arrives on it — but the saves
- * belong here, so the page passes down the ability to send one and nothing
- * else.
- */
-export interface RealtimeWriter {
-  save(payload: SavePayload): Promise<void> | null;
-}
+export type { RealtimeWriter };
 
 const props = withDefaults(
   defineProps<{
@@ -98,127 +92,91 @@ const emit = defineEmits<{
   edit: [];
 }>();
 
-const STORAGE = {
-  timezone: "timeful.timezone",
-  guestName: "timeful.guestName",
-  hour12: "timeful.hour12",
-  bestTimes: "timeful.bestTimes",
-};
+// --- how this visitor reads a chart ---------------------------------------
 
-function readStorage(key: string): string | null {
-  try {
-    return window.localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
+const {
+  autoTimezone,
+  timezone,
+  hour12,
+  showBestTimes,
+  timezones,
+  clock,
+  resetTimezone,
+} = useEventPreferences();
 
-function writeStorage(key: string, value: string) {
-  try {
-    window.localStorage.setItem(key, value);
-  } catch {
-    // Private browsing: preferences simply do not persist.
-  }
-}
+// --- phone or desktop -----------------------------------------------------
 
-function clearStorage(key: string) {
-  try {
-    window.localStorage.removeItem(key);
-  } catch {
-    // Private browsing: there was nothing stored to remove.
-  }
-}
+const { compact, perView } = useViewport();
 
-// --- preferences ----------------------------------------------------------
-
-const storedHour12 = readStorage(STORAGE.hour12);
-
-/**
- * The zone the browser reports, read once. Everything about the timezone
- * control is relative to it: it is the value the page falls back to, the option
- * marked "(auto)", and the thing "overridden" is measured against.
- */
-const autoTimezone = getLocalTimezone();
-
-const timezone = ref(readStorage(STORAGE.timezone) || autoTimezone);
-const hour12 = ref(storedHour12 === null ? prefers12Hour() : storedHour12 === "true");
-const showBestTimes = ref(readStorage(STORAGE.bestTimes) === "true");
-
-/**
- * Only an override is worth remembering. Landing back on the browser's own zone
- * — by the reset button, or by picking it out of the list — is not a preference
- * to carry to the next visit, it is the absence of one, so the stored value is
- * dropped rather than rewritten. That is also what makes the reset honest: a
- * reload afterwards derives the zone again instead of replaying a decision.
- */
-watch(timezone, (value) => {
-  if (value === autoTimezone) clearStorage(STORAGE.timezone);
-  else writeStorage(STORAGE.timezone, value);
-});
-
-/** Gives the zone back to the browser; the grid re-renders off the same ref. */
-function resetTimezone() {
-  clearStorage(STORAGE.timezone);
-  timezone.value = autoTimezone;
-}
-watch(hour12, (value) => writeStorage(STORAGE.hour12, String(value)));
-watch(showBestTimes, (value) => writeStorage(STORAGE.bestTimes, String(value)));
-
-const CLOCK_OPTIONS = [
-  { value: "12", label: "12h" },
-  { value: "24", label: "24h" },
-];
-
-/** Segmented options are strings; the model behind this one is a boolean. */
-const clock = computed<string>({
-  get: () => (hour12.value ? "12" : "24"),
-  set: (value) => {
-    hour12.value = value === "12";
-  },
-});
-
-const timezones = computed(() => {
-  const zones = listTimezones();
-  return zones.includes(timezone.value) ? zones : [timezone.value, ...zones];
-});
-
-// --- grid state -----------------------------------------------------------
-
-const availability = reactive(new Set<number>());
-const ifNeeded = reactive(new Set<number>());
-/**
- * Who this page is answering as: the key it files under and the name it shows.
- *
- * One ref for both halves rather than two, because they are one fact and the
- * two must never disagree — a key without its spelling cannot render a row, and
- * a spelling without its key cannot match one.
- */
-const identity = ref<RealtimeSession | null>(null);
-/**
- * True while somebody *else* holds this identity's write session.
- *
- * The page still knows who it is — the name is remembered, and "My
- * availability" can ask for the session back — but it is not the one writing as
- * that person, so nothing it is holding locally has any authority. It shows the
- * document instead.
- */
-const surrendered = ref(false);
-const guestKey = computed(() => identity.value?.key ?? null);
-const guestName = computed(() => identity.value?.displayName ?? null);
-const editing = ref(false);
-const identityOpen = ref(false);
-/** Day columns a viewport of the chart holds; the rest is scrolled to. */
-const perView = ref(7);
-/** The phone layout: a viewport-locked chart with its controls in drawers. */
-const compact = ref(false);
 const peopleOpen = ref(false);
 const settingsOpen = ref(false);
+
+// Widening past the phone layout takes the drawers with it: what they hold is
+// on the page again, and a sheet left open over it would be a second copy.
+watch(compact, (on) => {
+  if (on) return;
+  peopleOpen.value = false;
+  settingsOpen.value = false;
+});
+
+// --- what the chart is pointing at ----------------------------------------
+
 const hoveredSlot = ref<number | null>(null);
 const pinnedSlot = ref<number | null>(null);
 const highlight = ref<string | null>(null);
-/** Set when the guest paints; blocks a background refresh from clobbering edits. */
-const dirtySinceConfirm = ref(false);
-let awaitingIdentityRefresh: string | null = null;
+
+/**
+ * Drops whatever the chart was pointing at.
+ *
+ * Every change of who you are does this: a pinned slot is a question about the
+ * group's answer at one time, and the answer it was asked about has just been
+ * replaced. The session below calls it rather than reaching into the chart's
+ * own state, which is not its to know about.
+ */
+function resetFocus() {
+  pinnedSlot.value = null;
+  highlight.value = null;
+}
+
+// --- who you are, and what you marked -------------------------------------
+
+const session = useResponseSession({
+  event: computed(() => props.event),
+  writer: computed(() => props.writer),
+  onRefresh: () => emit("refresh"),
+  onClaim: () => emit("claim"),
+  onIdentity: (identity) => emit("identity", identity),
+  resetFocus,
+});
+
+const {
+  availability,
+  ifNeeded,
+  guestKey,
+  guestName,
+  editing,
+  identityOpen,
+  clearOpen,
+  deletingKey,
+  deleteError,
+  hasMarks,
+  syncStatus,
+  syncError,
+  existingPeople,
+  confirmIdentity,
+  browseOnly,
+  clearMine,
+  removeRespondent,
+  startEditing,
+  stopEditing,
+  changeName,
+} = session;
+
+// The two things only the page above can tell this component to do: it owns the
+// socket, so it is the only thing that knows a session was taken away.
+defineExpose({ leaveEditing: session.leaveEditing, resumeEditing: session.startEditing });
+
+// --- the chart's model ----------------------------------------------------
 
 const referenceDate = computed(() => getTimezoneReferenceDateForEvent(props.event));
 const timezoneOffset = computed(() =>
@@ -229,27 +187,9 @@ const model = computed(() =>
   buildGrid(props.event, { timezoneOffset: timezoneOffset.value, hour12: hour12.value }),
 );
 
-/**
- * The visitor's own unsaved edits, layered over the group's answers so a drag
- * shows up in the heatmap before it has been saved.
- *
- * Null once the session has been surrendered, which is the whole of what makes
- * a replaced page honest: it has no unsaved edits to show, and the marks under
- * that key belong to whoever holds the session now. Without this the page would
- * keep painting its own last state over the top of theirs.
- */
-const override = computed(() =>
-  identity.value && !surrendered.value
-    ? {
-        key: identity.value.key,
-        displayName: identity.value.displayName,
-        availability,
-        ifNeeded,
-      }
-    : null,
+const responseIndex = computed(() =>
+  buildResponseIndex(props.event, session.override.value),
 );
-
-const responseIndex = computed(() => buildResponseIndex(props.event, override.value));
 const maxCount = computed(() => maxRespondents(model.value, responseIndex.value));
 
 const activeSlot = computed(() => pinnedSlot.value ?? hoveredSlot.value);
@@ -279,317 +219,31 @@ const slotLabel = computed(() => {
   );
 });
 
-/**
- * Everyone who has already answered, as the identity dialog needs them: the key
- * to match on, the name to offer. Ordered by the name, which is what is read.
- */
-const existingPeople = computed(() =>
-  Object.entries(props.event.responses ?? {})
-    .map(([key, response]) => ({ key, displayName: response?.displayName || key }))
-    .sort((a, b) => a.displayName.localeCompare(b.displayName)),
-);
+function onHover(slot: number | null) {
+  if (pinnedSlot.value !== null) return;
+  hoveredSlot.value = slot;
+}
 
 /**
- * Announces the identity upwards so the realtime connection can carry it.
+ * A tap or click on a cell pins the slot it landed on, and pins it off again
+ * when it is the one already pinned.
  *
- * A watcher rather than a call in each of the three places an identity is taken
- * up or given up: it fires after the synchronous work of the switch — including
- * `engine.flush()`, which has to reach the server as the person being stepped
- * out of — so reconnecting cannot get ahead of the autosave it follows.
+ * Null is the grid asking for the pin to be dropped outright, which is what
+ * dismissing the phone's slot card does: the card and the pin go up together on
+ * a tap, so they come down together too. The hover goes with it — on touch there
+ * is no pointer left over the chart to justify an outline.
  */
-watch(identity, (session) => emit("identity", session));
-
-// --- autosave -------------------------------------------------------------
-
-/**
- * Whose answer the queued payload is. Not `identity`: switching person while an
- * edit is still queued must not post that edit under the person being switched
- * *to*. It is set where the payload is built and left alone thereafter, so a
- * flush during the switch still lands under the person who made the edit.
- */
-let savingAs: RealtimeSession | null = null;
-
-/**
- * One save, over whichever pipe is open — the write session when this page
- * holds one, the REST `PUT` otherwise and whenever the socket lets it down.
- * The rule lives in `save-transport.ts`; this only says who is saving.
- *
- * The sync engine above it is untouched by any of it: coalescing, the era
- * counter, the baselines and the retry all work off one `save` promise, and
- * this is that promise however it was kept.
- */
-const saveResponse = createSaveTransport({
-  overSocket: (payload) => props.writer?.save(payload) ?? null,
-  overRest: (payload) => {
-    const session = savingAs;
-    if (!session) return Promise.resolve();
-    return api.put(userPath(props.event.id, session.key), {
-      displayName: session.displayName,
-      ...payload,
-    });
-  },
-});
-
-const engine = createSyncEngine({
-  save: async (payload) => {
-    if (!savingAs) return;
-    await saveResponse(payload);
-  },
-});
-
-const syncStatus = engine.status;
-const syncError = engine.error;
-
-function queueSave() {
-  if (!identity.value) return;
-  savingAs = identity.value;
-  engine.schedule({
-    availability: toIsoArray(availability),
-    ifNeeded: toIsoArray(ifNeeded),
-  });
-}
-
-/** Move a set of slots into one of the two marks, or out of both. */
-function mark(slots: number[], as: AvailabilityType | null) {
-  for (const slot of slots) {
-    if (as === "available") {
-      availability.add(slot);
-      ifNeeded.delete(slot);
-    } else if (as === "if_needed") {
-      ifNeeded.add(slot);
-      availability.delete(slot);
-    } else {
-      availability.delete(slot);
-      ifNeeded.delete(slot);
-    }
-  }
-  dirtySinceConfirm.value = true;
-  queueSave();
-}
-
-/** Every drag paints an available time; the menu that follows may refine it. */
-function onPaint(change: { type: "add" | "remove"; slots: number[] }) {
-  mark(change.slots, change.type === "add" ? "available" : null);
-}
-
-function onFlip(change: { type: AvailabilityType; slots: number[] }) {
-  mark(change.slots, change.type);
-}
-
-onBeforeUnmount(() => {
-  engine.flush();
-  engine.dispose();
-});
-
-// --- identity -------------------------------------------------------------
-
-/**
- * Adopts a name's stored answer, and tells the autosave engine which of its two
- * resting states that leaves it in.
- *
- * The distinction is the whole point of the two quiet indicator states: a name
- * that came back with marks is already saved on the server ("Up to date"),
- * while a name nobody has answered under yet has nothing behind it at all ("No
- * selection"). The zero-record invariant (ARCHITECTURE.md § API) makes the two
- * the same question — a stored response always has at least one mark, so an
- * empty grid after loading means there is no response.
- */
-function loadResponseFor(key: string) {
-  const sets = toAvailabilitySets(props.event.responses?.[key]);
-  availability.clear();
-  for (const slot of sets.availability) availability.add(slot);
-  ifNeeded.clear();
-  for (const slot of sets.ifNeeded) ifNeeded.add(slot);
-  const baseline: SyncBaseline =
-    availability.size > 0 || ifNeeded.size > 0 ? "current" : "empty";
-  engine.reset(baseline);
-}
-
-function confirmIdentity(person: RealtimeSession) {
-  // Whatever the person being stepped out of had queued goes to the server
-  // before the grid is re-seeded under someone else; `loadResponseFor` drops
-  // the queue, and an unsaved edit is not this new person's to carry.
-  engine.flush();
-  identity.value = person;
-  // A fresh claim, whatever the last one ended as.
-  surrendered.value = false;
-  writeStorage(STORAGE.guestName, person.displayName);
-  identityOpen.value = false;
-  dirtySinceConfirm.value = false;
-  loadResponseFor(person.key);
-  editing.value = true;
-  pinnedSlot.value = null;
-  highlight.value = null;
-  // Pull the freshest copy: someone may have answered since this page loaded.
-  awaitingIdentityRefresh = person.key;
-  emit("refresh");
-}
-
-/**
- * "Just browsing": the visitor declined to be anyone, so the page must stop
- * treating them as someone. Dropping the name is what actually stops the
- * autosave — `queueSave` is a no-op without one — and the marks go with it,
- * since they belong to the name that was just given up. Anything already typed
- * under that name is flushed first rather than lost.
- *
- * The stored name goes too. It exists for one job — skipping the dialog for a
- * visitor who already said who they are — and someone who just declined to be
- * anyone has withdrawn exactly that. Leaving it behind meant the next refresh
- * silently put them back under the name they had stepped out of. The response
- * on the server is untouched; they can pick the name again and edit it.
- */
-function browseOnly() {
-  engine.flush();
-  clearStorage(STORAGE.guestName);
-  identityOpen.value = false;
-  awaitingIdentityRefresh = null;
-  identity.value = null;
-  surrendered.value = false;
-  availability.clear();
-  ifNeeded.clear();
-  engine.reset("empty");
-  editing.value = false;
-  dirtySinceConfirm.value = false;
-  pinnedSlot.value = null;
-}
-
-// A refresh triggered by confirming identity re-seeds the grid, unless the
-// guest has already started editing.
-watch(
-  () => props.event,
-  () => {
-    const key = awaitingIdentityRefresh;
-    awaitingIdentityRefresh = null;
-    if (!key || dirtySinceConfirm.value || engine.pending.value) return;
-    loadResponseFor(key);
-  },
-);
-
-// --- clearing your own answer --------------------------------------------
-
-const clearOpen = ref(false);
-
-/** Nothing to clear means no button: the confirm would have no work to do. */
-const hasMarks = computed(() => availability.size > 0 || ifNeeded.size > 0);
-
-/**
- * Wipes the guest's own answer. The empty state goes out through the normal
- * autosave path — the server turns an empty PUT into a delete (zero-record
- * invariant, ARCHITECTURE.md § API), so the guest leaves the respondents list
- * instead of staying on it with nothing marked. Flushed rather than debounced
- * so the indicator confirms the wipe straight away.
- */
-async function clearMine() {
-  clearOpen.value = false;
-  if (!identity.value) return;
-  availability.clear();
-  ifNeeded.clear();
-  pinnedSlot.value = null;
-  dirtySinceConfirm.value = true;
-  queueSave();
-  engine.flush();
-  await engine.settled();
-  // Drop the stale copy of the response the page is still holding, so coming
-  // back through the switch-person button cannot reload what was just deleted.
-  // Only once the save actually landed — after a failure the retry still needs
-  // the old view, and the error has to stay on screen to be retried from.
-  if (syncStatus.value !== "saved") return;
-  emit("refresh");
-  // "Saved" would be the wrong thing to leave behind: what the server holds is
-  // now nothing at all, which is exactly the state a name with no answer is in.
-  // The grid is empty, the name is off the respondents list, and the indicator
-  // says so rather than claiming an answer is stored.
-  engine.reset("empty");
-}
-
-// --- removing a response --------------------------------------------------
-
-/**
- * Anyone holding the link may remove a response — the endpoint is public and
- * the URL is the trust boundary (ARCHITECTURE.md § API/§ Security). The panel
- * confirms first; this only runs the delete and reports what came back.
- */
-const deletingName = ref<string | null>(null);
-const deleteError = ref<string | null>(null);
-
-async function removeRespondent(key: string) {
-  if (deletingName.value) return;
-  deletingName.value = key;
-  deleteError.value = null;
-  try {
-    await api.del(userPath(props.event.id, key));
-    // Their own answer is held locally as well; drop it so the override cannot
-    // put the row straight back.
-    if (guestKey.value === key) {
-      availability.clear();
-      ifNeeded.clear();
-      engine.reset("empty");
-    }
-    emit("refresh");
-  } catch (err) {
-    deleteError.value = apiError(err, "Could not remove that response").message;
-  } finally {
-    deletingName.value = null;
-  }
-}
-
-function startEditing() {
-  if (identity.value) {
-    // Coming back after a takeover: the grid has been showing the document, so
-    // re-seed from it before letting anyone paint on it again.
-    if (surrendered.value) {
-      surrendered.value = false;
-      loadResponseFor(identity.value.key);
-    }
-    editing.value = true;
+function onPin(slot: number | null) {
+  if (slot === null) {
     pinnedSlot.value = null;
-    // The session may have been refused, or taken away, since this identity was
-    // adopted. Asking again here is what makes "My availability" the place a
-    // takeover is offered from.
-    emit("claim");
+    hoveredSlot.value = null;
     return;
   }
-  identityOpen.value = true;
+  pinnedSlot.value = pinnedSlot.value === slot ? null : slot;
+  hoveredSlot.value = slot;
 }
 
-/**
- * Somebody else took this key's write session. Step back to the group view: the
- * page is no longer the one editing as this person, and leaving the grid live
- * would invite marks that have nowhere to go. The identity itself is kept, so
- * "My availability" can ask for the session back.
- */
-function leaveEditing() {
-  engine.flush();
-  editing.value = false;
-  pinnedSlot.value = null;
-  surrendered.value = true;
-}
-
-defineExpose({ leaveEditing, resumeEditing: startEditing });
-
-function stopEditing() {
-  engine.flush();
-  editing.value = false;
-}
-
-function changeName() {
-  identityOpen.value = true;
-}
-
-/** The respondents list's add row: the same dialog, from a third entry point.
- *  The people drawer closes first — both teleport to <body>, and the dialog's
- *  anchor was appended before the drawer's, so left open the drawer would sit
- *  on top of the prompt it just asked for. */
-function addRespondent() {
-  closePeople();
-  identityOpen.value = true;
-}
-
-/** Same reason as `addRespondent`: the drawer would sit over the dialog. */
-function onDrawerEdit() {
-  settingsOpen.value = false;
-  emit("edit");
-}
+// --- the two views --------------------------------------------------------
 
 /**
  * The view switch is a segmented control over the same two entry points. On a
@@ -619,81 +273,8 @@ const viewMode = computed<string>({
   },
 });
 
-// --- responsive -----------------------------------------------------------
-//
-// One breakpoint decides two things: whether the page is the desktop one or the
-// phone one, and — through it — how many columns a viewport of the chart holds.
-//
-// The desktop shows a week. The phone used to show three columns under 520px
-// and five under 900, which was a guess made once and then read as a rule: on
-// a 360px screen it spent 90 pixels on a column whose heading needs 35, and a
-// fortnight took five swipes to read. It now divides the width by what a
-// heading actually wants (`perViewFor`), so the number of columns follows the
-// screen rather than a bracket it happens to fall in.
+// --- the drawers ----------------------------------------------------------
 
-function updateLayout() {
-  const width = window.innerWidth;
-  compact.value = width <= COMPACT_MAX_WIDTH;
-  perView.value = perViewFor(width, compact.value);
-  if (!compact.value) {
-    peopleOpen.value = false;
-    settingsOpen.value = false;
-  }
-}
-
-onMounted(() => {
-  updateLayout();
-  window.addEventListener("resize", updateLayout);
-
-  const stored = readStorage(STORAGE.guestName)?.trim() ?? "";
-  // A name stored before dashes were illegal cannot be saved under, so it is
-  // not a name this page can be. Dropping it asks once, and the key the guest
-  // retypes lands on the very record the old spelling pointed at.
-  if (stored && guestNameProblem(stored) === null) {
-    // A returning guest is not interrupted: their answer is loaded and the grid
-    // opens ready to edit.
-    identity.value = adopt(stored);
-    loadResponseFor(identity.value.key);
-    editing.value = true;
-  } else {
-    if (stored) clearStorage(STORAGE.guestName);
-    identityOpen.value = true;
-  }
-});
-
-/**
- * The identity for a typed name, snapped to the spelling already on the event.
- *
- * Two people who type the same name differently are one person — that is what
- * the key decides — and the group should keep seeing the spelling it already
- * knows rather than having it rewritten by whoever answered last. A stored
- * spelling that is itself no longer legal (a legacy name with a dash in it) is
- * the exception: it cannot be written back, so the new one replaces it.
- */
-function adopt(displayName: string): RealtimeSession {
-  const key = userKey(displayName);
-  return {
-    key,
-    displayName: adoptDisplayName(displayName, props.event.responses?.[key]?.displayName),
-  };
-}
-
-onBeforeUnmount(() => window.removeEventListener("resize", updateLayout));
-
-function onHover(slot: number | null) {
-  if (pinnedSlot.value !== null) return;
-  hoveredSlot.value = slot;
-}
-
-/**
- * A tap or click on a cell pins the slot it landed on, and pins it off again
- * when it is the one already pinned.
- *
- * Null is the grid asking for the pin to be dropped outright, which is what
- * dismissing the phone's slot card does: the card and the pin go up together on
- * a tap, so they come down together too. The hover goes with it — on touch there
- * is no pointer left over the chart to justify an outline.
- */
 /**
  * Closes the respondents drawer.
  *
@@ -705,6 +286,21 @@ function closePeople() {
   peopleOpen.value = false;
   // The rows the pointer was over have just gone; nothing is left to hover.
   highlight.value = null;
+}
+
+/** The respondents list's add row: the same dialog, from a third entry point.
+ *  The people drawer closes first — both teleport to <body>, and the dialog's
+ *  anchor was appended before the drawer's, so left open the drawer would sit
+ *  on top of the prompt it just asked for. */
+function addRespondent() {
+  closePeople();
+  identityOpen.value = true;
+}
+
+/** Same reason as `addRespondent`: the drawer would sit over the dialog. */
+function onDrawerEdit() {
+  settingsOpen.value = false;
+  emit("edit");
 }
 
 // --- showing one person ---------------------------------------------------
@@ -757,16 +353,6 @@ function onSolo(person: { key: string; displayName: string } | null) {
   }
   askedFor.value = person.displayName;
   showOnly(person.key);
-}
-
-function onPin(slot: number | null) {
-  if (slot === null) {
-    pinnedSlot.value = null;
-    hoveredSlot.value = null;
-    return;
-  }
-  pinnedSlot.value = pinnedSlot.value === slot ? null : slot;
-  hoveredSlot.value = slot;
 }
 </script>
 
@@ -850,8 +436,8 @@ function onPin(slot: number | null) {
         :active-slot="activeSlot"
         :hour12="hour12"
         :compact="compact"
-        @paint="onPaint"
-        @flip="onFlip"
+        @paint="session.onPaint"
+        @flip="session.onFlip"
         @hover="onHover"
         @pin="onPin"
       >
@@ -957,7 +543,7 @@ function onPin(slot: number | null) {
           :clearing="clearOpen"
           @change="changeName"
           @pick="startEditing"
-          @retry="engine.retry()"
+          @retry="session.retry()"
           @clear="clearOpen = true"
         />
 
@@ -974,7 +560,7 @@ function onPin(slot: number | null) {
           :highlight="editing || isolated ? null : highlight"
           :solo="isolated"
           :current-key="guestKey"
-          :deleting="deletingName"
+          :deleting="deletingKey"
           :delete-error="deleteError"
           @highlight="highlight = $event"
           @unpin="pinnedSlot = null"
@@ -1029,7 +615,7 @@ function onPin(slot: number | null) {
         :highlight="editing || isolated ? null : highlight"
         :solo="isolated"
         :current-key="guestKey"
-        :deleting="deletingName"
+        :deleting="deletingKey"
         :delete-error="deleteError"
         @highlight="highlight = $event"
         @unpin="pinnedSlot = null"
@@ -1040,55 +626,25 @@ function onPin(slot: number | null) {
       />
     </Dialog>
 
-    <Dialog
+    <!-- The one thing the phone does not merely reflow: what the desktop keeps
+         in a column goes behind a gear here, because a fixed pane spends grid
+         on every row of chrome. -->
+    <EventSettingsDrawer
       v-if="compact"
-      variant="sheet"
+      v-model:timezone="timezone"
+      v-model:clock="clock"
       :open="settingsOpen"
-      title="View settings"
+      :event-id="event.id"
+      :timezones="timezones"
+      :reference-date="referenceDate"
+      :auto-timezone="autoTimezone"
+      :mode="editing ? 'edit' : 'group'"
+      :max="maxCount"
+      :total="responseIndex.keys.length"
       @close="settingsOpen = false"
-    >
-      <!-- The phone's version of the column the desktop keeps beside the
-           chart: everything that says how the chart is *read* rather than what
-           it says. The clock and the legend moved in here from the foot,
-           because the foot is a row of a fixed pane and every pixel it spends
-           comes off the grid — and neither of them is something you change
-           while you are painting. -->
-      <div class="sheet-stack">
-        <AdminTools v-if="isAdmin" :event-id="event.id" @edit="onDrawerEdit" />
-
-        <TimezoneField
-          v-model="timezone"
-          :timezones="timezones"
-          :reference-date="referenceDate"
-          :auto-timezone="autoTimezone"
-          @reset="resetTimezone"
-        />
-
-        <div class="setting">
-          <span class="setting__label">Clock</span>
-          <Segmented
-            v-model="clock"
-            class="setting__control"
-            label="Clock format"
-            :options="CLOCK_OPTIONS"
-            size="sm"
-          />
-        </div>
-
-        <!-- Room to say what the colours mean, which is exactly what the foot
-             did not have. -->
-        <div class="setting setting--stacked">
-          <span class="setting__label">Colours</span>
-          <ColorLegend
-            :mode="editing ? 'edit' : 'group'"
-            :max="maxCount"
-            :total="responseIndex.keys.length"
-          />
-        </div>
-
-        <AdminLoginLink v-if="!isAdmin" />
-      </div>
-    </Dialog>
+      @reset-timezone="resetTimezone"
+      @edit="onDrawerEdit"
+    />
 
     <GuestIdentityDialog
       :open="identityOpen"
@@ -1297,41 +853,6 @@ function onPin(slot: number | null) {
   flex: 0 0 14rem;
   flex-direction: column;
   gap: 0.6rem;
-}
-
-/* --- the drawers --------------------------------------------------------- */
-
-.sheet-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  padding-top: 0.35rem;
-}
-
-/* One setting per row: the name of it at the left, the control at the right,
-   the way the timezone field above them already reads. */
-.setting {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-}
-
-/* Except where the control is a paragraph of swatches rather than a widget. */
-.setting--stacked {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.4rem;
-}
-
-.setting__label {
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--color-text);
-}
-
-.setting__control {
-  flex: none;
 }
 
 /* --- the phone layout ---------------------------------------------------- */
