@@ -23,6 +23,7 @@
  */
 import SyncIndicator from "./SyncIndicator.vue";
 import Button from "../ui/Button.vue";
+import IconButton from "../ui/IconButton.vue";
 import IconPersonFilled from "../../assets/icons/person-filled.svg";
 import IconPerson from "../../assets/icons/person.svg";
 import IconSwitchUser from "../../assets/icons/switch-user.svg";
@@ -78,32 +79,25 @@ const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
           <!-- Before the switch, because it is about the person the row
                already names and the switch is about leaving them: destructive
                first, then the way out. -->
-          <button
+          <IconButton
             v-if="canClear"
-            type="button"
             class="swap clear"
             :class="{ 'clear--armed': clearing }"
-            aria-label="Clear my response"
-            title="Clear my response"
+            size="xxs"
+            label="Clear my response"
             @click="emit('clear')"
           >
             <IconTrash aria-hidden="true" />
-          </button>
+          </IconButton>
 
           <!-- A glyph rather than the words it replaces: on a phone this rides
                the end of a row the name is already competing for, and two
                figures trading places says "someone else" in a fraction of the
                width. The label lives on the button for anyone who needs it —
                as its accessible name, and as its tooltip. -->
-          <button
-            type="button"
-            class="swap"
-            aria-label="Switch person"
-            title="Switch person"
-            @click="emit('change')"
-          >
+          <IconButton class="swap" size="xxs" label="Switch person" @click="emit('change')">
             <IconSwitchUser aria-hidden="true" />
-          </button>
+          </IconButton>
         </div>
       </template>
 
@@ -217,62 +211,24 @@ const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
   font-size: 0.75rem;
 }
 
+/* IconButton's `xxs` box; only the glyph size is this card's own. */
 .swap {
-  display: inline-grid;
-  flex: none;
-  place-items: center;
-  width: 1.75rem;
-  height: 1.75rem;
-  padding: 0;
-  color: var(--color-text-muted);
-  background: none;
-  border: none;
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  transition: color var(--transition-fast), background var(--transition-fast);
-}
-
-.swap:hover {
-  color: var(--color-text);
-  background: var(--color-subtle);
-}
-
-.swap:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: calc(var(--focus-ring-offset) * -1);
-}
-
-.swap svg {
-  width: 1.05rem;
-  height: 1.05rem;
+  --icon-button-glyph: 1.05rem;
 }
 
 /* The bin takes the swap's box — same row, same target — and the colour of the
-   thing it does. Armed while its confirm is open, so the dialog and the button
-   that raised it are visibly the same act. */
-.clear:hover,
-.clear--armed {
+   thing it does, told to IconButton through its hover properties. Armed while
+   its confirm is open, so the dialog and the button that raised it are visibly
+   the same act. */
+.clear {
+  --icon-button-glyph: 1rem;
+  --icon-button-hover-color: var(--color-danger);
+  --icon-button-hover-bg: var(--color-danger-soft);
+}
+
+.clear.clear--armed {
   color: var(--color-danger);
   background: var(--color-danger-soft);
-}
-
-.clear svg {
-  width: 1rem;
-  height: 1rem;
-}
-
-/* What a finger can hit grows to the floor; what it draws does not. */
-@media (pointer: coarse) {
-  .swap {
-    width: var(--tap-min);
-    height: var(--tap-min);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .swap {
-    transition: none;
-  }
 }
 
 /* --- the bar, under the grid --------------------------------------------

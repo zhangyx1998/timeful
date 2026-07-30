@@ -35,6 +35,7 @@
  * peeks simply are not there — the same track, with nothing spare to spend.
  */
 import { computed, ref } from "vue";
+import IconButton from "../ui/IconButton.vue";
 import { dayKey } from "../../lib/event-form";
 import { WEEKDAY_LABELS } from "../../lib/dates";
 
@@ -173,47 +174,23 @@ function toggle(key: string): void {
          directions and tabs through in the order it is drawn. -->
     <div class="calendar__header">
       <div class="calendar__nav-group">
-        <button
-          class="calendar__nav"
-          type="button"
-          aria-label="Previous year"
-          title="Previous year"
-          @click="shiftYear(-1)"
-        >
+        <IconButton class="calendar__nav" size="xs" label="Previous year" @click="shiftYear(-1)">
           &#171;
-        </button>
-        <button
-          class="calendar__nav"
-          type="button"
-          aria-label="Previous month"
-          title="Previous month"
-          @click="shiftMonth(-1)"
-        >
+        </IconButton>
+        <IconButton class="calendar__nav" size="xs" label="Previous month" @click="shiftMonth(-1)">
           &#8249;
-        </button>
+        </IconButton>
       </div>
 
       <div class="calendar__month" aria-live="polite">{{ monthLabel }}</div>
 
       <div class="calendar__nav-group">
-        <button
-          class="calendar__nav"
-          type="button"
-          aria-label="Next month"
-          title="Next month"
-          @click="shiftMonth(1)"
-        >
+        <IconButton class="calendar__nav" size="xs" label="Next month" @click="shiftMonth(1)">
           &#8250;
-        </button>
-        <button
-          class="calendar__nav"
-          type="button"
-          aria-label="Next year"
-          title="Next year"
-          @click="shiftYear(1)"
-        >
+        </IconButton>
+        <IconButton class="calendar__nav" size="xs" label="Next year" @click="shiftYear(1)">
           &#187;
-        </button>
+        </IconButton>
       </div>
     </div>
 
@@ -332,36 +309,13 @@ function toggle(key: string): void {
   color: var(--color-text);
 }
 
+/* The arrows are text glyphs in IconButton's box, not icons: they render in
+   the font the button inherits (the global reset's `font: inherit` keeps
+   WebKit off the UA button font), sized here because the component's glyph
+   sizing only reaches slotted `svg`. */
 .calendar__nav {
-  display: grid;
-  place-items: center;
-  width: 2rem;
-  height: 2rem;
-  font: inherit;
   font-size: 1rem;
   line-height: 1;
-  color: var(--color-text-muted);
-  background: none;
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-
-.calendar__nav:hover {
-  color: var(--color-text);
-  background: var(--color-subtle);
-}
-
-.calendar__nav:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: calc(var(--focus-ring-offset) * -1);
-}
-
-@media (pointer: coarse) {
-  .calendar__nav {
-    width: var(--tap-min);
-    height: var(--tap-min);
-  }
 }
 
 /* Only the month on screen gets its letters named; the peeks are read as
@@ -437,6 +391,8 @@ function toggle(key: string): void {
 }
 
 .calendar__peek-hit {
+  --focus-ring-inset: calc(var(--focus-ring-offset) * -1);
+
   position: absolute;
   inset: 0;
   padding: 0;
@@ -450,11 +406,6 @@ function toggle(key: string): void {
   background: var(--color-subtle);
 }
 
-.calendar__peek-hit:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: calc(var(--focus-ring-offset) * -1);
-}
-
 .calendar__grid {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
@@ -466,6 +417,8 @@ function toggle(key: string): void {
    44px *width* floor, and 7 of those plus gaps overflow a 360px screen. Cells
    stay tap-sized vertically and take whatever width the row gives them. */
 .calendar__day {
+  --focus-ring-inset: calc(var(--focus-ring-offset) * -1);
+
   padding: 0;
   font: inherit;
   font-size: 0.8125rem;
@@ -479,11 +432,6 @@ function toggle(key: string): void {
 
 .calendar__day:hover {
   background: var(--color-subtle);
-}
-
-.calendar__day:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: calc(var(--focus-ring-offset) * -1);
 }
 
 .calendar__day--selected {
@@ -520,16 +468,6 @@ function toggle(key: string): void {
 @media (min-width: 40rem) {
   .calendar {
     padding: 1rem;
-  }
-}
-
-/* The change is the slide; without it the months are simply exchanged, which
-   is the same navigation with nothing moving. */
-@media (prefers-reduced-motion: reduce) {
-  .calendar__day,
-  .calendar__page,
-  .calendar__track--animating {
-    transition: none;
   }
 }
 </style>

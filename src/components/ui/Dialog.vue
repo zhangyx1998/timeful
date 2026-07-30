@@ -15,6 +15,7 @@
  * `align-items`.
  */
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
+import IconButton from "./IconButton.vue";
 import IconClose from "../../assets/icons/close-sm.svg";
 
 const props = withDefaults(
@@ -189,16 +190,19 @@ onBeforeUnmount(() => {
               </span>
               <h2 class="panel__title">{{ title }}</h2>
             </div>
-            <button
+            <!-- No tooltip: a close cross reads as its own name, and a bubble
+                 saying "Close" over it would be chrome on chrome. -->
+            <IconButton
               v-if="dismissible"
-              type="button"
               class="panel__close"
-              aria-label="Close"
+              size="xs"
+              label="Close"
+              :tooltip="false"
               :disabled="locked"
               @click="dismiss"
             >
               <IconClose aria-hidden="true" />
-            </button>
+            </IconButton>
           </header>
           <div class="panel__body">
             <slot />
@@ -342,46 +346,13 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
 }
 
+/* Everything else about the close — the box, the hover, the disabled hold,
+   the tap-floor growth — is IconButton's. Kept here: its bite into the
+   header's padding, and the glyph size. */
 .panel__close {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 2rem;
-  height: 2rem;
+  --icon-button-glyph: 16px;
+
   margin: -0.25rem -0.4rem 0 0;
-  color: var(--color-text-muted);
-  background: none;
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-
-.panel__close svg {
-  width: 16px;
-  height: 16px;
-}
-
-.panel__close:hover:not(:disabled) {
-  color: var(--color-text);
-  background: var(--color-subtle);
-}
-
-/* Held, not taken away: the dialog is closing itself in a moment and a control
-   that vanished for that moment would reflow the header on the way out. */
-.panel__close:disabled {
-  cursor: default;
-}
-
-.panel__close:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: calc(var(--focus-ring-offset) * -1);
-}
-
-@media (pointer: coarse) {
-  .panel__close {
-    width: var(--tap-min);
-    height: var(--tap-min);
-  }
 }
 
 .panel__body {
@@ -418,18 +389,10 @@ onBeforeUnmount(() => {
   transform: translateY(100%);
 }
 
+/* The global reduced-motion rule zeroes the durations; the *start offset* is
+   not a transition property, so it is neutralised here or the panel would
+   still paint one frame displaced before snapping into place. */
 @media (prefers-reduced-motion: reduce) {
-  .backdrop {
-    transition: none;
-  }
-
-  .dialog-enter-active,
-  .dialog-leave-active,
-  .dialog-enter-active .panel,
-  .dialog-leave-active .panel {
-    transition: none;
-  }
-
   .dialog-enter-from .panel,
   .dialog-leave-to .panel {
     transform: none;
