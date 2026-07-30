@@ -1109,6 +1109,15 @@ text.
   wears the struck-through one, and with nobody isolated everybody is on the
   chart and so every eye is open. Isolating is therefore one row keeping its eye
   while the rest close theirs, and the accent fill says which row asked.
+  On a phone the list is a sheet *over* the chart it filters, so an eye pressed
+  there gets `useHoldThenClose`: the change lands at once, the drawer refuses
+  every dismissal — backdrop, Escape and its own close button, via `Dialog`'s
+  `locked` — for `ISOLATION_HOLD_MS` (500 ms) so the toggle is seen to move, and
+  then takes itself down. A second eye inside that window restarts the timer
+  rather than queueing a second dismissal, and the scope that owns the timer is
+  the component, so an unmount or a widening past 820px drops it. The pause is
+  not gated on `prefers-reduced-motion`: it is comprehension time, not motion,
+  and the sheet's own travel is what that setting already governs.
 - The heatmap tints each cell with the `--color-slot-available` green at an
   alpha scaled by respondent-count over the maximum, and a separate tone for
   if-needed. Because the token is declared with `light-dark()`, the actual

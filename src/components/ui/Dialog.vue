@@ -30,6 +30,20 @@ const props = withDefaults(
     /** `sheet` rises from the bottom edge, full width. */
     variant?: "modal" | "sheet";
     /**
+     * Every way out, refused for a moment.
+     *
+     * Not the same as `dismissible: false`, which is about a dialog that has no
+     * way out *at all* and so renders no close button. This is a dialog that
+     * has one and is about to use it itself: the respondents drawer holds
+     * still for half a second after an eye is pressed, so the toggle is seen to
+     * move before the sheet goes down to reveal what it changed. A backdrop
+     * tap, an Escape or the close button landing inside that window would
+     * race the dismissal that is already coming, so all three do nothing —
+     * and the button stays where it is, disabled rather than removed, because
+     * a header that reflowed mid-transition would be its own glitch.
+     */
+    locked?: boolean;
+    /**
      * Whether the page behind is veiled. A dialog is normally the only thing
      * being attended to, and the dim says so. A drawer that has just changed
      * what the page above it *shows* is the exception: veiling the thing it was
@@ -38,7 +52,7 @@ const props = withDefaults(
      */
     dim?: boolean;
   }>(),
-  { dismissible: true, size: "sm", variant: "modal", dim: true },
+  { dismissible: true, size: "sm", variant: "modal", dim: true, locked: false },
 );
 
 const emit = defineEmits<{ close: [] }>();
@@ -85,7 +99,7 @@ function unlockPage() {
 }
 
 function dismiss() {
-  if (props.dismissible) emit("close");
+  if (props.dismissible && !props.locked) emit("close");
 }
 
 function onKeydown(event: KeyboardEvent) {
@@ -161,7 +175,8 @@ onBeforeUnmount(() => {
               type="button"
               class="panel__close"
               aria-label="Close"
-              @click="emit('close')"
+              :disabled="locked"
+              @click="dismiss"
             >
               <IconClose aria-hidden="true" />
             </button>
@@ -317,9 +332,15 @@ onBeforeUnmount(() => {
   height: 16px;
 }
 
-.panel__close:hover {
+.panel__close:hover:not(:disabled) {
   color: var(--color-text);
   background: var(--color-subtle);
+}
+
+/* Held, not taken away: the dialog is closing itself in a moment and a control
+   that vanished for that moment would reflow the header on the way out. */
+.panel__close:disabled {
+  cursor: default;
 }
 
 .panel__close:focus-visible {

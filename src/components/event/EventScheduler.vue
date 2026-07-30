@@ -47,7 +47,7 @@ import {
 import { buildGrid, buildResponseIndex, maxRespondents, snapshotSlots } from "../../lib/grid";
 import type { EventDoc } from "../../lib/event";
 import { useUndoHistory } from "../../lib/history";
-import { useIsolation } from "../../lib/isolation";
+import { useHoldThenClose, useIsolation } from "../../lib/isolation";
 import { CLOCK_OPTIONS, useEventPreferences } from "../../lib/preferences";
 import type { PresenceEntry, RealtimeSession } from "../../lib/realtime";
 import { useResponseSession, type RealtimeWriter } from "../../lib/response-session";
@@ -116,6 +116,9 @@ const settingsOpen = ref(false);
 // on the page again, and a sheet left open over it would be a second copy.
 watch(compact, (on) => {
   if (on) return;
+  // Including a dismissal that was mid-flight: the drawer it was going to close
+  // is already gone, and the list is back on the page beside the chart.
+  holdThenClose.cancel();
   peopleOpen.value = false;
   settingsOpen.value = false;
 });
@@ -330,13 +333,23 @@ const viewMode = computed<string>({
  *
  * It used to take the isolated view down with it, back when the two were one
  * thing. They are not: closing the drawer is now how you *look* at what an eye
- * asked for (`lib/isolation.ts`).
+ * asked for (`lib/isolation.ts`) — and on a phone the drawer does that itself,
+ * a beat after the eye is pressed, rather than waiting to be asked.
  */
 function closePeople() {
+  // Whatever brought us here — a tap on the backdrop, the sheet's own timer, or
+  // widening past the phone layout — there is no drawer left to close.
+  holdThenClose.cancel();
   peopleOpen.value = false;
   // The rows the pointer was over have just gone; nothing is left to hover.
   highlight.value = null;
 }
+
+/**
+ * The half-second between an eye being pressed inside the drawer and the drawer
+ * getting out of the way of what it changed. See `lib/isolation.ts`.
+ */
+const holdThenClose = useHoldThenClose(closePeople);
 
 /** The respondents list's add row: the same dialog, from a third entry point.
  *  The people drawer closes first — both teleport to <body>, and the dialog's
@@ -387,16 +400,20 @@ const isolatedEmpty = computed(
 /**
  * A row's eye. Null is the "show everyone" an eye already on sends.
  *
- * The drawer stays exactly as it is: what changed is behind it, and closing it
- * is how you look at that.
+ * On a desktop the list is beside the chart, so the change is visible where it
+ * was asked for and nothing else has to happen. Inside the phone's drawer the
+ * list is *over* the chart it just filtered, so the sheet gives the eye half a
+ * second to be seen moving and then takes itself down — refusing every
+ * dismissal in between, so a stray backdrop tap cannot race it.
  */
 function onSolo(person: { key: string; displayName: string } | null) {
   if (person === null) {
     showEveryone();
-    return;
+  } else {
+    askedFor.value = person.displayName;
+    showOnly(person.key);
   }
-  askedFor.value = person.displayName;
-  showOnly(person.key);
+  if (compact.value && peopleOpen.value) holdThenClose.begin();
 }
 </script>
 
@@ -640,12 +657,15 @@ function onSolo(person: { key: string; displayName: string } | null) {
       </p>
     </div>
 
-    <!-- An eye in here changes nothing about the sheet: what it changes is
-         behind the sheet, and closing this is how you look at it. -->
+    <!-- An eye in here changes what is *behind* the sheet, so the sheet holds
+         still long enough for the toggle to be seen moving and then gets out of
+         the way of its own accord. `locked` is that half second: every way out
+         is refused while a dismissal is already on its way. -->
     <Dialog
       v-if="compact"
       variant="sheet"
       :open="peopleOpen"
+      :locked="holdThenClose.holding.value"
       title="Respondents"
       @close="closePeople"
     >

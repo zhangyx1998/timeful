@@ -26,7 +26,84 @@
  *   you are still in — is a button that does nothing you can see. So it steps
  *   out of edit mode and isolates in the same gesture.
  */
-import { ref, watch, type Ref } from "vue";
+import { onScopeDispose, ref, watch, type Ref } from "vue";
+
+/**
+ * How long a drawer stays up after an eye inside it is pressed.
+ *
+ * Comprehension time rather than decoration: the tap has already landed, the
+ * chart behind the sheet has already changed, and this is the beat in which the
+ * eye is seen to move before the sheet that holds it goes away. Half a second
+ * is long enough to read a glyph flipping and short enough that nobody waits
+ * for it. It is deliberately **not** gated on `prefers-reduced-motion` — what
+ * that setting asks for is less movement, and the pause is the opposite of
+ * movement; the sheet's own travel is what respects it, in `Dialog`.
+ */
+export const ISOLATION_HOLD_MS = 500;
+
+/** A drawer that will close itself shortly, and refuses to be closed until it does. */
+export interface HoldThenClose {
+  /**
+   * True from the moment the hold starts until it fires. While it is up the
+   * drawer takes no dismissal from anybody — see `Dialog`'s `locked` — because
+   * a backdrop tap racing the close that is already coming is the one way this
+   * can be made to glitch.
+   */
+  holding: Ref<boolean>;
+  /**
+   * Start the hold, or restart it. A second press inside the window replaces
+   * the first rather than queueing behind it, so however many times the eyes
+   * are tapped the drawer goes down once, showing whatever the last tap asked
+   * for.
+   */
+  begin(): void;
+  /** Drop a pending hold without closing. */
+  cancel(): void;
+}
+
+/**
+ * Apply now, show for a beat, then get out of the way.
+ *
+ * A phone's respondents list is a sheet over the chart it filters, so an eye
+ * pressed there changes something nobody can see. Closing the drawer on the tap
+ * hides the toggle before it has visibly moved and reads as the sheet having
+ * been dismissed by accident; leaving it open means the visitor has to know to
+ * close it. Neither is what was asked for, which was "show me this person".
+ *
+ * The timer is owned by the scope that created it, so a component unmounting —
+ * or a layout that stops being a phone — takes it with it rather than closing a
+ * drawer that is no longer there.
+ */
+export function useHoldThenClose(
+  close: () => void,
+  delay: number = ISOLATION_HOLD_MS,
+): HoldThenClose {
+  const holding = ref(false);
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  function cancel(): void {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+    holding.value = false;
+  }
+
+  function begin(): void {
+    if (timer !== null) clearTimeout(timer);
+    holding.value = true;
+    timer = setTimeout(() => {
+      // Cleared before the callback, so a `close` that cancels this on its way
+      // through — which it does, being the drawer's own close — finds nothing
+      // left to clear rather than a handle for a timer that has already fired.
+      timer = null;
+      holding.value = false;
+      close();
+    }, delay);
+  }
+
+  onScopeDispose(cancel);
+
+  return { holding, begin, cancel };
+}
 
 export interface Isolation {
   /** Whose answer is on the chart alone, by user key, or null for the group. */
