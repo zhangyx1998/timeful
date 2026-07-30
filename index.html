@@ -22,6 +22,20 @@
       content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=overlays-content"
     />
     <meta name="color-scheme" content="light dark" />
+    <!-- What the browser tints its own chrome with. Both values are
+         `--color-surface` from src/styles/tokens.css — the colour of the app
+         header and of the phone's identity bar, which are what sit against the
+         top and bottom chrome — and there is a note beside the token saying so.
+         Without them iOS Safari samples the page behind its bottom toolbar and
+         picks up the page background, which is a shade darker than the bar
+         above it and reads as a seam across the screen.
+
+         The script below drops the `media` from whichever of these matches an
+         explicit override, and src/lib/theme-color.ts prepends a third that
+         tracks the token at runtime. Both work off these values rather than
+         restating them. -->
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#202127" media="(prefers-color-scheme: dark)" />
     <link rel="icon" href="/favicon.ico" />
     <title>Timeful</title>
     <script>
@@ -35,6 +49,16 @@
           var stored = window.localStorage.getItem("timeful.theme");
           if (stored === "light" || stored === "dark") {
             document.documentElement.setAttribute("data-theme", stored);
+            // The theme-color pair above is keyed off prefers-color-scheme, so
+            // an override would leave the browser tinting its chrome for the
+            // theme the page is no longer in. Rather than restate a colour
+            // here — which could drift from the tokens — keep the one that
+            // matches and make it unconditional.
+            var metas = document.querySelectorAll("meta[name=theme-color][media]");
+            for (var i = 0; i < metas.length; i++) {
+              if (metas[i].media.indexOf(stored) === -1) metas[i].remove();
+              else metas[i].removeAttribute("media");
+            }
           }
         } catch (error) {
           /* keep the system default */

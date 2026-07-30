@@ -28,6 +28,10 @@
   /* bg: the page. surface: cards/inputs/headers. raised: menus & dialogs.
      subtle: hover fills and inert chips. */
   --color-bg: light-dark(#fafafa, #1b1b1f);
+  /* Both values are restated as the `theme-color` meta pair in index.html —
+     the browser tints its own chrome with that, and the bars this colour
+     paints are what sit against it. Change one, change the other; the standalone
+     404 page carries the `--color-bg` pair for the same reason. */
   --color-surface: light-dark(#ffffff, #202127);
   --color-raised: light-dark(#ffffff, #26262c);
   --color-subtle: light-dark(#f4f4f5, #2a2b31);

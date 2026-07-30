@@ -87,6 +87,12 @@ export function resolveTokenColor(name: string): Rgb | null {
   return parseCssColor(resolved);
 }
 
+/** `#rrggbb`, for the few places that need a colour as a string. */
+export function rgbToHex({ r, g, b }: Rgb): string {
+  const pair = (value: number) => clampChannel(value).toString(16).padStart(2, "0");
+  return `#${pair(r)}${pair(g)}${pair(b)}`;
+}
+
 /**
  * The heatmap base for the theme currently on screen. Recomputes whenever the
  * theme flips, because `useTheme().theme` is a dependency — and `setTheme()`

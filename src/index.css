@@ -94,4 +94,22 @@ summary,
        end of an inner scroller, so it does nothing rather than bouncing. */
     overscroll-behavior: none;
   }
+
+  /* The canvas colour, which is what shows in the strip the browser's own
+     chrome sits over.
+
+     `viewport-fit=cover` means the document extends under Safari's bottom
+     toolbar, and `100dvh` stops the app shell at the top of it — so what is
+     behind the toolbar is the canvas, and the canvas takes `--color-bg` from
+     the rule further down this file. That is a shade darker than the identity
+     bar directly above it, which is `--color-surface`, and the seam reads as
+     the app being cut off from the browser rather than running into it.
+
+     So on this layout the canvas is the bar's own surface. Nothing inside the
+     page changes: the shell still paints `--color-bg` over its whole box, and
+     this is only ever seen in the strip beyond it. Scoped to the phone's event
+     page — a scrolling document has no bar against that edge to match. */
+  html:has(.event-page) {
+    background: var(--color-surface);
+  }
 }

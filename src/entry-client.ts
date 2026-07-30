@@ -1,10 +1,16 @@
 import { createApp } from "./app";
 import { installKeyboardInset } from "./lib/keyboard";
 import { initTheme } from "./lib/theme";
+import { installThemeColor } from "./lib/theme-color";
 
 // Sync the reactive theme state with whatever the inline head script applied,
 // before anything renders.
 initTheme();
+
+// A theme toggled after load cannot be seen by the media-keyed `theme-color`
+// pair in the head, so the browser's chrome would keep the colour it started
+// with. This tracks the token instead.
+installThemeColor();
 
 // The keyboard no longer resizes the page (index.html), so something has to say
 // how much of it is covered. One installation for the document, before anything

@@ -6,7 +6,9 @@
  * template being present. Colors are inlined copies of the light/dark pairs in
  * src/styles/tokens.css (bg, text, text-muted, accent); `color-scheme: light
  * dark` + `light-dark()` follows the system, and the `data-theme` rules let the
- * same stored override the app uses win over it.
+ * same stored override the app uses win over it. The `theme-color` pair is the
+ * same two values again, so the browser's own chrome matches the page rather
+ * than sampling it and landing a shade off.
  *
  * It lives in its own module rather than in `app.ts` because the event-scoped
  * router needs it too — a mistyped `/<slug>/typo` is a person with a bad link,
@@ -21,6 +23,12 @@ export const NOT_FOUND_HTML = `<!DOCTYPE html>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="robots" content="noindex" />
+    <!-- Same idea as index.html: the browser tints its chrome with this, and
+         without it Safari samples the page and lands a shade off. These two
+         are this page's own background, which is the --color-bg pair inlined
+         below. -->
+    <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1b1b1f" media="(prefers-color-scheme: dark)" />
     <link rel="icon" href="/favicon.ico" />
     <title>Not found · Timeful</title>
     <style>
@@ -43,6 +51,11 @@ export const NOT_FOUND_HTML = `<!DOCTYPE html>
           var stored = window.localStorage.getItem("timeful.theme");
           if (stored === "light" || stored === "dark") {
             document.documentElement.setAttribute("data-theme", stored);
+            var metas = document.querySelectorAll("meta[name=theme-color][media]");
+            for (var i = 0; i < metas.length; i++) {
+              if (metas[i].media.indexOf(stored) === -1) metas[i].remove();
+              else metas[i].removeAttribute("media");
+            }
           }
         } catch (error) {
           /* keep the system default */
