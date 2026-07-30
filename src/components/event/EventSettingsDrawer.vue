@@ -12,10 +12,9 @@
  * not any more: they are not settings — they act on the event, or leave it —
  * and behind a gear they were a surprise waiting for whichever visitor happened
  * to be signed in. They have a sheet of their own now, opened from the shield
- * in the navbar (`AdminDrawer`). What stays is the way *in* for an owner who is
- * not signed in yet, at the foot, as it closes the desktop column: it is the
- * one admin thing on the page a guest is allowed to find, and there is nowhere
- * else on a phone to put it.
+ * in the navbar (`AdminDrawer`). What stays is the page's footer
+ * (`EventFooter`) at the foot, as it closes the desktop column — the colophon,
+ * and the way *in* for an owner who is not signed in yet.
  *
  * The three ways of reading the chart are all here — the zone, the clock, the
  * colours — and the best-times filter joined them when the phone's chart foot
@@ -29,19 +28,20 @@
  * control that comes and goes is one you have to hunt for, and the pair is also
  * how you find out that undo exists at all.
  */
-import AdminLoginLink from "./AdminLoginLink.vue";
 import ColorLegend from "./ColorLegend.vue";
+import EventFooter from "./EventFooter.vue";
 import TimezoneField from "./TimezoneField.vue";
 import Dialog from "../ui/Dialog.vue";
 import Segmented from "../ui/Segmented.vue";
 import IconRedo from "../../assets/icons/redo.svg";
 import IconUndo from "../../assets/icons/undo.svg";
-import { isAdmin } from "../../lib/admin";
 import { CLOCK_OPTIONS } from "../../lib/preferences";
 import type { GridMode } from "../../lib/event";
 
 defineProps<{
   open: boolean;
+  /** The footer's warning: live updates expected, connection stayed down. */
+  realtimeDown: boolean;
   timezones: string[];
   referenceDate: Date;
   autoTimezone: string;
@@ -134,7 +134,12 @@ const emit = defineEmits<{
         <ColorLegend :mode="mode" :max="max" :total="total" />
       </div>
 
-      <AdminLoginLink v-if="!isAdmin" />
+      <!-- The same footer that closes the desktop sidebar, closing the drawer
+           that stands in for it: the colophon, and the sign-in for the owner
+           who is not signed in yet — the one admin thing on the page a guest
+           is allowed to find, and there is nowhere else on a phone to put
+           it. -->
+      <EventFooter :realtime-down="realtimeDown" />
     </div>
   </Dialog>
 </template>

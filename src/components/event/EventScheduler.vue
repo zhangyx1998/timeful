@@ -21,10 +21,10 @@
  * have duplicated every prop of every one of them to say so.
  */
 import { computed, ref, watch } from "vue";
-import AdminLoginLink from "./AdminLoginLink.vue";
 import AdminTools from "./AdminTools.vue";
 import AvailabilityGrid from "./AvailabilityGrid.vue";
 import ColorLegend from "./ColorLegend.vue";
+import EventFooter from "./EventFooter.vue";
 import EventSettingsDrawer from "./EventSettingsDrawer.vue";
 import GuestIdentityDialog from "./GuestIdentityDialog.vue";
 import IdentityCard from "./IdentityCard.vue";
@@ -72,8 +72,14 @@ const props = withDefaults(
      * they always did.
      */
     writer?: RealtimeWriter | null;
+    /**
+     * Live updates were expected on this event and the connection has stayed
+     * down. Decided by the page — it owns the socket — and only carried
+     * through here to the footer's two mounts.
+     */
+    realtimeDown?: boolean;
   }>(),
-  { present: () => [], writer: null },
+  { present: () => [], writer: null, realtimeDown: false },
 );
 
 const emit = defineEmits<{
@@ -629,10 +635,11 @@ function onSolo(person: { key: string; displayName: string } | null) {
           @solo="onSolo"
         />
 
-        <!-- Last, and quiet. The column is about the event; this is the one
-             thing on it that is about leaving the event, and only the person
-             who already knows it is here needs to find it. -->
-        <AdminLoginLink v-if="!isAdmin && !compact" />
+        <!-- Last, and quiet. The column is about the event; the footer is the
+             one thing on it that is about the page itself — what is running,
+             where it lives, and the sign-in for the person who already knows
+             it is here. Its phone twin is the settings drawer's last row. -->
+        <EventFooter v-if="!compact" :realtime-down="realtimeDown" />
       </div>
     </div>
 
@@ -703,6 +710,7 @@ function onSolo(person: { key: string; displayName: string } | null) {
       v-model:clock="clock"
       v-model:best-times="showBestTimes"
       :open="settingsOpen"
+      :realtime-down="realtimeDown"
       :timezones="timezones"
       :reference-date="referenceDate"
       :auto-timezone="autoTimezone"
