@@ -21,6 +21,7 @@ import IconPencil from "../../assets/icons/pencil.svg";
 import IconHome from "../../assets/icons/home.svg";
 import IconClock from "../../assets/icons/clock.svg";
 import IconSignOut from "../../assets/icons/sign-out.svg";
+import IconShield from "../../assets/icons/shield-half.svg";
 import { adminLogout } from "../../lib/admin";
 import { api, apiError, eventDetailsPath } from "../../lib/api";
 import { formatDateTime } from "../../lib/dates";
@@ -72,7 +73,14 @@ async function signOut(): Promise<void> {
 
 <template>
   <section class="tools" aria-labelledby="admin-tools-title">
-    <h2 id="admin-tools-title" class="tools__title">Admin</h2>
+    <!-- The half-solid shield is the app's one admin mark: the same glyph is on
+         the navbar button that opens the phone's admin drawer, on that drawer's
+         own header, and on the way back in at the foot of the column. Wherever
+         it appears, it means "this belongs to whoever is signed in". -->
+    <h2 id="admin-tools-title" class="tools__title">
+      <IconShield class="tools__mark" aria-hidden="true" />
+      Admin
+    </h2>
 
     <div class="tools__actions">
       <Button class="tool" variant="ghost" size="sm" @click="emit('edit')">
@@ -170,12 +178,23 @@ async function signOut(): Promise<void> {
 }
 
 .tools__title {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
   margin-bottom: 0.25rem;
   font-size: 0.6875rem;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--color-text-muted);
+}
+
+/* A shade over the cap height of the word beside it: a badge on a label, not a
+   second heading. */
+.tools__mark {
+  flex: none;
+  width: 0.8rem;
+  height: 0.8rem;
 }
 
 .tools__actions {

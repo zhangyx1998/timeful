@@ -43,6 +43,13 @@ const props = withDefaults(
 
 const emit = defineEmits<{ close: [] }>();
 
+defineSlots<{
+  /** The dialog's contents. */
+  default?: () => unknown;
+  /** A glyph beside the title. See the note in the template. */
+  icon?: () => unknown;
+}>();
+
 const panel = ref<HTMLElement | null>(null);
 
 /**
@@ -138,7 +145,17 @@ onBeforeUnmount(() => {
         >
           <span v-if="variant === 'sheet'" class="panel__grip" aria-hidden="true" />
           <header class="panel__head">
-            <h2 class="panel__title">{{ title }}</h2>
+            <div class="panel__lead">
+              <!-- A glyph before the title, for a dialog whose *kind* is worth
+                   saying twice: the owner's tools and the way into them both
+                   wear the half-solid shield, so a sheet that rose from an
+                   unlabelled navbar button still says whose it is. Absent for
+                   every other dialog, which needs no such badge. -->
+              <span v-if="$slots.icon" class="panel__icon" aria-hidden="true">
+                <slot name="icon" />
+              </span>
+              <h2 class="panel__title">{{ title }}</h2>
+            </div>
             <button
               v-if="dismissible"
               type="button"
@@ -241,6 +258,31 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 1rem;
   padding: 1rem 1.25rem 0.5rem;
+}
+
+/* Icon and title read as one heading, so they travel together and give up room
+   together when the close button takes its own. */
+.panel__lead {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+/* Sized off the title beside it rather than off the tap grid: it is a badge on
+   a heading, not a control. Muted, like every other place the same mark
+   appears — what identifies it is the half-solid shape, not a colour. */
+.panel__icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  color: var(--color-text-muted);
+}
+
+.panel__icon :slotted(svg) {
+  width: 1.05rem;
+  height: 1.05rem;
 }
 
 /* Titles are prose and wrap like prose — "Switch to Ada?" reading over two

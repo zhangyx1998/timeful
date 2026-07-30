@@ -16,6 +16,7 @@
 import { ref } from "vue";
 import Dialog from "../ui/Dialog.vue";
 import LoginForm from "../admin/LoginForm.vue";
+import IconShield from "../../assets/icons/shield-half.svg";
 import { refreshAdmin } from "../../lib/admin";
 
 const open = ref(false);
@@ -32,9 +33,15 @@ async function onAuthed(): Promise<void> {
 </script>
 
 <template>
-  <button type="button" class="link" @click="open = true">Administrator Login</button>
+  <!-- The same half-solid shield the owner's own tools wear, so the door and
+       what is behind it are marked with one glyph rather than two. -->
+  <button type="button" class="link" @click="open = true">
+    <IconShield class="link__mark" aria-hidden="true" />
+    <span class="link__text">Administrator Login</span>
+  </button>
 
   <Dialog :open="open" title="Administrator sign-in" @close="open = false">
+    <template #icon><IconShield /></template>
     <LoginForm id-prefix="event-login" autofocus @authed="onAuthed" />
   </Dialog>
 </template>
@@ -43,19 +50,33 @@ async function onAuthed(): Promise<void> {
 /* Grey and set as text: it is a way out of this page for somebody who already
    knows they want it, not an offer being made to everyone who lands here. */
 .link {
+  display: inline-flex;
   align-self: center;
+  align-items: center;
+  gap: 0.35rem;
   padding: 0.35rem 0.5rem;
   font: inherit;
   font-size: 0.75rem;
   color: var(--color-text-muted);
-  text-decoration: underline;
-  text-decoration-color: var(--color-border-strong);
-  text-underline-offset: 0.2em;
   background: none;
   border: none;
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition: color var(--transition-fast);
+}
+
+/* The mark sits outside the rule: an underline running under a shield reads as
+   a glyph struck through rather than as a link with a badge on it. */
+.link__mark {
+  flex: none;
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.link__text {
+  text-decoration: underline;
+  text-decoration-color: var(--color-border-strong);
+  text-underline-offset: 0.2em;
 }
 
 .link:hover {
