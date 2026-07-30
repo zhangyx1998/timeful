@@ -3,10 +3,10 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { requireAdmin } from "../auth.ts";
 import { asRecord, BadRequest, jsonRoute, param } from "../http.ts";
-import { consumeLease, isLeased } from "../leases.ts";
+import { claimSlug, releaseSlug } from "../links.ts";
 import { broadcastEvent, broadcastGone, closeRoom } from "../realtime.ts";
 import { sendNotFoundPage } from "../not-found.ts";
-import { randomSlug, slugProblem } from "../slugs.ts";
+import { slugProblem } from "../slugs.ts";
 import {
   deleteEvent,
   isUuid,
@@ -14,7 +14,6 @@ import {
   readEvent,
   readLinks,
   updateEvent,
-  updateLinks,
   writeEvent,
 } from "../storage.ts";
 import { tarpitMiss } from "../tarpit.ts";
@@ -23,7 +22,6 @@ import type {
   EventSummary,
   EventType,
   LastEdit,
-  LinksMap,
   StoredEvent,
 } from "../types.ts";
 // Runtime: what a link-holder may see is one rule, and the page the server
@@ -56,25 +54,6 @@ export const eventScopedRouter = Router();
 const MAX_NAME_LENGTH = 200;
 const MAX_DATES = 366;
 const MAX_SLOTS = 20000;
-
-// ---------------------------------------------------------------------------
-// slugs
-// ---------------------------------------------------------------------------
-
-/** True when the slug is spoken for: a stored link, or a live lease. */
-export function slugTaken(slug: string, links: LinksMap): boolean {
-  return Boolean(links[slug]) || isLeased(slug);
-}
-
-/** A random capability slug that collides with neither links nor leases. */
-function freeRandomSlug(links: LinksMap): string {
-  for (let attempt = 0; attempt < 32; attempt += 1) {
-    const candidate = randomSlug();
-    if (!slugTaken(candidate, links)) return candidate;
-  }
-  // 62^SLUG_LENGTH candidates: only a broken RNG gets here.
-  throw new BadRequest("Could not allocate a free slug", 503);
-}
 
 // ---------------------------------------------------------------------------
 // validation
@@ -217,6 +196,91 @@ function summarize(event: StoredEvent): EventSummary {
 }
 
 // ---------------------------------------------------------------------------
+// route wrappers — the route table below says which misses are tarpitted
+// ---------------------------------------------------------------------------
+
+/** 404 for a public route whose event did not resolve — tarpitted. */
+function eventMiss(req: Request, res: Response): Promise<void> {
+  return tarpitMiss(req, res, () => {
+    res.status(404).json({ error: "Event not found" });
+  });
+}
+
+/** A handler that runs once `/:slug` has resolved to a stored event. */
+type EventHandler = (
+  req: Request,
+  res: Response,
+  event: StoredEvent,
+) => Promise<void>;
+
+/**
+ * A public event route: mark it JSON, resolve `/:slug`, tarpit the miss.
+ *
+ * `jsonRoute` is the outermost layer on purpose, so `res.locals.jsonRoute` is
+ * set synchronously on entry: a throw out of `resolveEvent` (a corrupt
+ * `links.json`, say) must still answer JSON, not plain text — the error
+ * middleware in app.ts reads that mark.
+ */
+function publicEventRoute(handler: EventHandler) {
+  return jsonRoute(async (req: Request, res: Response): Promise<void> => {
+    const event = await resolveEvent(param(req.params.slug));
+    if (!event) {
+      await eventMiss(req, res);
+      return;
+    }
+    await handler(req, res, event);
+  });
+}
+
+/**
+ * An admin event route: the same resolution, but a miss answers immediately.
+ *
+ * Never tarpitted, for the reason no admin route ever is: the caller has
+ * already authenticated, so a stale tab asking about a deleted event is a
+ * mistake rather than a scan. `requireAdmin` stays a separate entry in the
+ * route table, so an unauthenticated call on a known slug still answers 401
+ * without revealing whether the event exists.
+ */
+function adminEventRoute(handler: EventHandler) {
+  return jsonRoute(async (req: Request, res: Response): Promise<void> => {
+    const event = await resolveEvent(param(req.params.slug));
+    if (!event) {
+      res.status(404).json({ error: "Event not found" });
+      return;
+    }
+    await handler(req, res, event);
+  });
+}
+
+/**
+ * A public route addressed to one guest record: `/:slug/users/:userKey`.
+ *
+ * The key validates BEFORE the slug resolves, and that order is load-bearing:
+ * an illegal key is a fast 400 on the request's own merits. Resolve first and
+ * an illegal key under an unknown slug turns into a tarpitted 404, while one
+ * under a valid slug costs a links and event read before being refused.
+ * Pinned by `user-key-order.test.ts`.
+ */
+function publicUserRoute(
+  handler: (
+    req: Request,
+    res: Response,
+    event: StoredEvent,
+    key: string,
+  ) => Promise<void>,
+) {
+  return jsonRoute(async (req: Request, res: Response): Promise<void> => {
+    const key = requireUserKey(req.params.userKey);
+    const event = await resolveEvent(param(req.params.slug));
+    if (!event) {
+      await eventMiss(req, res);
+      return;
+    }
+    await handler(req, res, event, key);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // admin routes
 // ---------------------------------------------------------------------------
 
@@ -246,31 +310,16 @@ async function createEvent(req: Request, res: Response): Promise<void> {
   const explicitSlug =
     body.slug !== undefined && body.slug !== null && body.slug !== "";
   // No custom path means a capability URL: SLUG_LENGTH random base62 chars.
-  let slug = explicitSlug ? String(body.slug).trim() : "";
-  if (explicitSlug) {
-    const problem = slugProblem(slug);
+  const desired = explicitSlug ? String(body.slug).trim() : null;
+  if (desired !== null) {
+    const problem = slugProblem(desired);
     if (problem) throw new BadRequest(problem);
   }
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
 
-  // Claim the slug under the links lock so two concurrent creates cannot
-  // both win the same path.
-  let conflict = false;
-  await updateLinks((links) => {
-    if (!explicitSlug) slug = freeRandomSlug(links);
-    if (links[slug]) {
-      conflict = true;
-      return undefined;
-    }
-    // A live lease on this exact slug is this admin's own reservation:
-    // creating the event consumes it.
-    consumeLease(slug);
-    links[slug] = id;
-    return links;
-  });
-  if (conflict) throw new BadRequest("Slug is already taken", 409);
+  const slug = await claimSlug(desired, id);
 
   const event: StoredEvent = {
     id,
@@ -290,11 +339,7 @@ async function createEvent(req: Request, res: Response): Promise<void> {
   try {
     await writeEvent(event);
   } catch (err) {
-    await updateLinks((links) => {
-      if (links[slug] !== id) return undefined;
-      delete links[slug];
-      return links;
-    });
+    await releaseSlug(slug, id);
     throw err;
   }
 
@@ -302,12 +347,11 @@ async function createEvent(req: Request, res: Response): Promise<void> {
 }
 
 // PATCH /<slug>/settings — admin. The segment may be the uuid or the slug.
-async function patchEvent(req: Request, res: Response): Promise<void> {
-  const existing = await resolveEvent(param(req.params.slug));
-  if (!existing) {
-    res.status(404).json({ error: "Event not found" });
-    return;
-  }
+async function patchEvent(
+  req: Request,
+  res: Response,
+  existing: StoredEvent,
+): Promise<void> {
   const body = asRecord(req.body);
   const patch: Partial<StoredEvent> = {};
 
@@ -328,24 +372,11 @@ async function patchEvent(req: Request, res: Response): Promise<void> {
     if (problem) throw new BadRequest(problem);
   }
 
+  // Only when the slug actually changes: a PATCH that merely flips a setting
+  // must not take the links lock, rewrite links.json through the serialised
+  // atomic write, or consume a lease on its own unchanged slug.
   if (nextSlug !== existing.slug) {
-    let conflict = false;
-    await updateLinks((links) => {
-      if (links[nextSlug] && links[nextSlug] !== existing.id) {
-        conflict = true;
-        return undefined;
-      }
-      // A live lease on this exact slug is this admin's own reservation, and a
-      // rename claims it the same way a create does. Blocking on it instead was
-      // an asymmetry with no reason behind it: the edit form can now reserve a
-      // fresh random link too, so the only lease a rename ever meets is the one
-      // the form took a moment ago for this very rename.
-      consumeLease(nextSlug);
-      if (links[existing.slug] === existing.id) delete links[existing.slug];
-      links[nextSlug] = existing.id;
-      return links;
-    });
-    if (conflict) throw new BadRequest("Slug is already taken", 409);
+    await claimSlug(nextSlug, existing.id, existing.slug);
     patch.slug = nextSlug;
   }
 
@@ -373,17 +404,12 @@ async function patchEvent(req: Request, res: Response): Promise<void> {
 }
 
 // DELETE /<slug>/settings — admin. The segment may be the uuid or the slug.
-async function deleteEventRoute(req: Request, res: Response): Promise<void> {
-  const existing = await resolveEvent(param(req.params.slug));
-  if (!existing) {
-    res.status(404).json({ error: "Event not found" });
-    return;
-  }
-  await updateLinks((links) => {
-    if (links[existing.slug] !== existing.id) return undefined;
-    delete links[existing.slug];
-    return links;
-  });
+async function deleteEventRoute(
+  _req: Request,
+  res: Response,
+  existing: StoredEvent,
+): Promise<void> {
+  await releaseSlug(existing.slug, existing.id);
   await deleteEvent(existing.id);
   // Only once it is actually gone from disk; the room is closed with it.
   broadcastGone(existing.id);
@@ -394,25 +420,17 @@ async function deleteEventRoute(req: Request, res: Response): Promise<void> {
 // public routes
 // ---------------------------------------------------------------------------
 
-/** 404 for a public route whose event did not resolve — tarpitted. */
-function eventMiss(req: Request, res: Response): Promise<void> {
-  return tarpitMiss(req, res, () => {
-    res.status(404).json({ error: "Event not found" });
-  });
-}
-
 /**
  * GET /<slug>/data — public: the whole event document.
  *
  * This is what the event page reads, and what a realtime snapshot is a copy
  * of. The segment may be the uuid or the slug.
  */
-async function getEventData(req: Request, res: Response): Promise<void> {
-  const event = await resolveEvent(param(req.params.slug));
-  if (!event) {
-    await eventMiss(req, res);
-    return;
-  }
+async function getEventData(
+  _req: Request,
+  res: Response,
+  event: StoredEvent,
+): Promise<void> {
   res.json(publicEvent(event));
 }
 
@@ -429,12 +447,11 @@ async function getEventData(req: Request, res: Response): Promise<void> {
  * authenticated, so a stale tab asking about a deleted event is a mistake
  * rather than a scan.
  */
-async function getEventDetails(req: Request, res: Response): Promise<void> {
-  const event = await resolveEvent(param(req.params.slug));
-  if (!event) {
-    res.status(404).json({ error: "Event not found" });
-    return;
-  }
+async function getEventDetails(
+  _req: Request,
+  res: Response,
+  event: StoredEvent,
+): Promise<void> {
   const users = Object.entries(event.responses ?? {})
     .map(([key, response]) => ({
       key,
@@ -594,16 +611,13 @@ export async function writeResponse(
  * Public by contract (ARCHITECTURE.md § API): the capability URL is the auth
  * boundary, so anyone who can read the event can already answer it.
  */
-export async function putResponse(req: Request, res: Response): Promise<void> {
-  const key = requireUserKey(req.params.userKey);
+async function putResponse(
+  req: Request,
+  res: Response,
+  existing: StoredEvent,
+  key: string,
+): Promise<void> {
   const body = asRecord(req.body);
-
-  const existing = await resolveEvent(param(req.params.slug));
-  if (!existing) {
-    await eventMiss(req, res);
-    return;
-  }
-
   const { ok, response, event, changed } = await writeResponse(existing.id, key, body, {
     // Trust-proxy-aware by construction: `req.ip` is the rightmost forwarded
     // entry no trusted peer vouched for (ARCHITECTURE.md § Trusted proxies).
@@ -627,13 +641,12 @@ export async function putResponse(req: Request, res: Response): Promise<void> {
  * The admin's per-respondent delete on the event page uses this same endpoint;
  * gating it would only hide a door already open to everyone holding the link.
  */
-export async function deleteResponse(req: Request, res: Response): Promise<void> {
-  const key = requireUserKey(req.params.userKey);
-  const existing = await resolveEvent(param(req.params.slug));
-  if (!existing) {
-    await eventMiss(req, res);
-    return;
-  }
+async function deleteResponse(
+  req: Request,
+  res: Response,
+  existing: StoredEvent,
+  key: string,
+): Promise<void> {
   const { ok, removed, event } = await dropResponse(existing.id, key);
   if (!ok) {
     await eventMiss(req, res);
@@ -693,13 +706,15 @@ eventsRouter.get("/events", requireAdmin, listEvents);
 eventsRouter.post("/events", requireAdmin, createEvent);
 
 // Event-scoped, mounted at the root. `/<slug>` itself is the page and is not
-// here: it belongs to the SSR handler in app.ts.
-eventScopedRouter.get("/:slug/data", jsonRoute(getEventData));
-eventScopedRouter.get("/:slug/details", requireAdmin, jsonRoute(getEventDetails));
-eventScopedRouter.patch("/:slug/settings", requireAdmin, jsonRoute(patchEvent));
-eventScopedRouter.delete("/:slug/settings", requireAdmin, jsonRoute(deleteEventRoute));
-eventScopedRouter.put("/:slug/users/:userKey", jsonRoute(putResponse));
-eventScopedRouter.delete("/:slug/users/:userKey", jsonRoute(deleteResponse));
+// here: it belongs to the SSR handler in app.ts. The wrapper names say who a
+// miss answers to: `publicEventRoute`/`publicUserRoute` tarpit it,
+// `adminEventRoute` (always behind `requireAdmin`) answers at once.
+eventScopedRouter.get("/:slug/data", publicEventRoute(getEventData));
+eventScopedRouter.get("/:slug/details", requireAdmin, adminEventRoute(getEventDetails));
+eventScopedRouter.patch("/:slug/settings", requireAdmin, adminEventRoute(patchEvent));
+eventScopedRouter.delete("/:slug/settings", requireAdmin, adminEventRoute(deleteEventRoute));
+eventScopedRouter.put("/:slug/users/:userKey", publicUserRoute(putResponse));
+eventScopedRouter.delete("/:slug/users/:userKey", publicUserRoute(deleteResponse));
 // Not wrapped in `jsonRoute`: it decides for itself, because most of what
 // reaches it is a browser rather than an API client.
 eventScopedRouter.all("/:slug/{*rest}", eventScopedCatchAll);
