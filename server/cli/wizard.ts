@@ -10,9 +10,6 @@
 import type { Overrides } from "./args.ts";
 import {
   CONFIG_FILE,
-  DEFAULT_HOST,
-  DEFAULT_PORT,
-  DEFAULT_VAR_DIR,
   mergeConfig,
   parseTrustedProxyChoice,
   type ResolvedConfig,
@@ -63,14 +60,20 @@ export async function runWizard(options: WizardOptions): Promise<WizardResult | 
     }
     say(io);
 
-    const port = await askPort(io, defaults.port ?? DEFAULT_PORT);
+    // The built-in defaults, resolved once, so the questions need not restate
+    // them. `varDirRaw`, not `varDir`: the wizard proposes "./var", not an
+    // absolute path. The command-line values stay raw on purpose — a typo in
+    // `--trusted-proxy` is prefilled below for fixing, never thrown over.
+    const fallback = mergeConfig({ cwd });
+
+    const port = await askPort(io, defaults.port ?? fallback.port);
     const host = await text(io, {
       message: "Bind address",
-      default: defaults.host ?? DEFAULT_HOST,
+      default: defaults.host ?? fallback.host,
     });
     const varDir = await text(io, {
       message: "Data directory",
-      default: defaults.varDir ?? DEFAULT_VAR_DIR,
+      default: defaults.varDir ?? fallback.varDirRaw,
     });
     const trustedProxy = await askTrustedProxy(io, defaults.trustedProxy ?? "loopback");
 

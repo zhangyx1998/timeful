@@ -87,7 +87,8 @@ function envFlag(raw: string): boolean {
   );
 }
 
-function readPort(value: unknown, source: string): number {
+/** A port out of anything an operator can type; `source` names the culprit. */
+export function readPort(value: unknown, source: string): number {
   const port = Number(value);
   if (!Number.isInteger(port) || port < 1 || port > 65535)
     throw new CliError(

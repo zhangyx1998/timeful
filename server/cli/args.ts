@@ -6,6 +6,7 @@
  * the point of the packaging (see the architecture reference, § Packaging &
  * CLI).
  */
+import { readPort } from "./config.ts";
 import { CliError } from "./errors.ts";
 
 /**
@@ -101,13 +102,6 @@ const VALUE_FLAGS: Record<string, StringOverride | "port"> = {
   "--trusted-proxy": "trustedProxy",
 };
 
-function parsePort(raw: string): number {
-  const port = Number(raw);
-  if (!Number.isInteger(port) || port < 1 || port > 65535)
-    throw new CliError(`--port must be an integer between 1 and 65535, got '${raw}'`);
-  return port;
-}
-
 export function parseArgs(argv: readonly string[]): CliArgs {
   const args: CliArgs = {
     command: "auto",
@@ -160,7 +154,7 @@ export function parseArgs(argv: readonly string[]): CliArgs {
       }
       if (value === "") throw new CliError(`${name} requires a value.`);
 
-      if (key === "port") args.overrides.port = parsePort(value);
+      if (key === "port") args.overrides.port = readPort(value, name);
       else args.overrides[key] = value;
       continue;
     }
