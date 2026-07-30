@@ -325,9 +325,9 @@ const askedFor = ref("");
 const isolatedLabel = computed(() =>
   isolated.value === null
     ? ""
-    : responseIndex.value.labels.get(isolated.value) ??
-      props.present.find((person) => person.key === isolated.value)?.displayName ??
-      askedFor.value ??
+    : responseIndex.value.labels.get(isolated.value) ||
+      props.present.find((person) => person.key === isolated.value)?.displayName ||
+      askedFor.value ||
       isolated.value,
 );
 
