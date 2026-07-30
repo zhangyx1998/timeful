@@ -761,6 +761,41 @@ describe("selectionPress", () => {
       selectionPress({ selection: flipped, ...inside, cell: { row: 5, col: 2 } }),
     ).toBe("deselect");
   });
+
+  // The group view draws regions of its own now, and the rule that says what
+  // the next press means does not change for them: they are read rather than
+  // painted, but they are still something on the chart that a press elsewhere
+  // has to be able to put away without also starting something new.
+  describe("a region in the group view", () => {
+    it("gives a press on the summary card to the selection", () => {
+      // The card is the region's control the way the strip is a paint's: it
+      // carries the dismissal, and pressing it must not first deselect.
+      expect(
+        selectionPress({ selection, onControls: true, onCells: false, cell: null }),
+      ).toBe("use");
+    });
+
+    it("puts the region away on a press anywhere else on the chart", () => {
+      expect(selectionPress(onCell({ row: 0, col: 0 }))).toBe("deselect");
+      expect(
+        selectionPress({ selection, onControls: false, onCells: false, cell: null }),
+      ).toBe("deselect");
+    });
+
+    it("lets a press inside it start a fresh one", () => {
+      expect(selectionPress(onCell({ row: 3, col: 2 }))).toBe("select");
+    });
+
+    it("leaves a chart with no region alone, which is where the pin lives", () => {
+      // No selection to protect means every press on the cells is the click
+      // that pins a slot, exactly as it was before regions existed.
+      for (const cell of [{ row: 0, col: 0 }, { row: 3, col: 2 }, { row: 9, col: 9 }]) {
+        expect(
+          selectionPress({ selection: null, onControls: false, onCells: true, cell }),
+        ).toBe("select");
+      }
+    });
+  });
 });
 
 describe("responses and heatmap", () => {

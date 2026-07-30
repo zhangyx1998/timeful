@@ -84,13 +84,13 @@ import {
   isBestTime,
   placeOverlay,
   rectangleSlots,
+  regionDigest,
   scrollEdges,
   scrollStepFor,
   selectionCorners,
   selectionPress,
   selectionStep,
   slotAt,
-  slotDigest,
   snapshotSlots,
   type Cell,
   type EdgeDirection,
@@ -102,7 +102,7 @@ import {
 } from "../../lib/grid";
 import type { HistoryCommit } from "../../lib/history";
 import { useSlotBaseColor } from "../../lib/colors";
-import { formatSlotRange } from "../../lib/dates";
+import { formatSlotRange, timeNumToTimeText } from "../../lib/dates";
 import IconChevronLeft from "../../assets/icons/chevron-left.svg";
 import IconChevronRight from "../../assets/icons/chevron-right.svg";
 import IconCheck from "../../assets/icons/check.svg";
@@ -128,12 +128,6 @@ const props = defineProps<{
   /** Hovered or pinned slot, outlined in the grid. */
   activeSlot: number | null;
   hour12: boolean;
-  /**
-   * The phone layout: the chart is a fixed pane and the respondents list is
-   * behind a drawer, so a tap on a cell has to answer "who is free here?" over
-   * the chart itself rather than beside it.
-   */
-  compact: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -353,13 +347,13 @@ function onScroll() {
   const wasTop = scrollTop.value;
   readScroll();
   if (gesturing.value) retrack();
-  // The card names a cell, and the chart has just moved out from under it.
-  if (summaryState.value) dismissSummary();
-  // The options are placed over the pane, but what they are about is a rectangle
-  // in the track — so when the track moves they move with it, and the ring and
-  // the strip that names it never come apart. Only once it is a control: while
-  // the drag runs it is following the pointer instead, which is a stronger claim
-  // on where it should be.
+  // Everything floating over the pane is placed against a rectangle in the
+  // track — so when the track moves they move with it, and the ring, the strip
+  // that names it and the card that reads it never come apart. Only once the
+  // strip is a control: while the drag runs it is following the pointer
+  // instead, which is a stronger claim on where it should be.
+  // The card needs none of this: it is placed against the region's own box,
+  // which is read out of the track and so has already moved.
   const state = menuState.value;
   if (state?.live) {
     state.x -= scrollLeft.value - wasLeft;
@@ -455,8 +449,12 @@ function endPan() {
 function onViewportPointerDown(event: PointerEvent) {
   if (event.button !== 0 && event.pointerType === "mouse") return;
   if (!event.isPrimary) return;
-  // Over the paint surface while editing, the drag belongs to the paint.
-  if (props.editable && body.value?.contains(event.target as Node)) return;
+  // Over the cells the drag belongs to the cells, in either mode. It used to be
+  // the pan's everywhere in the group view, back when a drag there meant
+  // nothing; it now draws the region the summary card reads, and a gesture
+  // cannot be both. What is left for the pan is what it has while editing: the
+  // headings and the gutter, which say nothing about any one cell.
+  if (body.value?.contains(event.target as Node)) return;
   startPan(event);
 }
 
@@ -633,6 +631,11 @@ function onPointerDown(event: PointerEvent) {
   if (event.button !== 0 && event.pointerType === "mouse") return;
   if (!event.isPrimary) return;
   const touch = event.pointerType !== "mouse";
+  // A press on the cells is not a pan, whatever the last press was. The flag
+  // belongs to the pan gesture and only `startPan` clears it, and the pan can
+  // no longer start from here — so without this a single drag of the headings
+  // would leave every later press on the cells looking like the tail of it.
+  panMoved = false;
   // Whatever the last paint was about, this press is about something else.
   // Except on touch, where a press may still turn out to be a scroll, and
   // scrolling past a selection is not a reason to lose it — `onScroll` takes it
@@ -643,7 +646,6 @@ function onPointerDown(event: PointerEvent) {
   pressCell.value = cell;
   lastPointer = { x: event.clientX, y: event.clientY };
 
-  if (!props.editable) return;
   const slot = slotFor(cell);
   if (slot === null) return;
 
@@ -652,6 +654,22 @@ function onPointerDown(event: PointerEvent) {
     // it. Nothing is captured and nothing is prevented, so a swipe scrolls the
     // pane as it does anywhere else on the phone.
     touchPress = { cell, x: event.clientX, y: event.clientY };
+    return;
+  }
+
+  if (!props.editable) {
+    // A mouse drag over the group's answers draws a region to read, the way one
+    // over your own draws a region to paint. Nothing is decided yet: the ring
+    // follows the pointer, and only a release on a *different* cell makes a
+    // region of it — a press and release on one cell is the click that has
+    // always pinned a slot, and it still is.
+    dragging.value = true;
+    dragStart.value = cell;
+    dragCur.value = cell;
+    openMenu(cell, "view", event);
+    body.value?.setPointerCapture?.(event.pointerId);
+    window.addEventListener("pointerup", endDrag);
+    event.preventDefault();
     return;
   }
 
@@ -685,6 +703,10 @@ function onPointerMove(event: PointerEvent) {
     return;
   }
   if (event.pointerType !== "mouse" || panning.value) return;
+  // A region is the reading the chart is currently offering, and the card
+  // beside it says so in full. A bubble following the cursor across it would be
+  // a second, smaller answer to a question already answered.
+  if (viewSelection.value) return;
   setHover(cell);
 }
 
@@ -725,10 +747,12 @@ function endDrag(event?: PointerEvent) {
   stopEdgeScroll();
 
   let committed = false;
-  if (props.editable && touchPress && event) {
-    committed = commitTap(touchPress, event);
+  if (touchPress && event) {
+    committed = props.editable
+      ? commitTap(touchPress, event)
+      : commitViewTap(touchPress, event);
     touchPress = null;
-  } else if (dragging.value && dragStart.value && dragCur.value) {
+  } else if (props.editable && dragging.value && dragStart.value && dragCur.value) {
     const slots = rectangleSlots(props.model, dragStart.value, dragCur.value);
     if (slots.length > 0) {
       // Read before the emit, and so the state the press started from: nothing
@@ -738,19 +762,8 @@ function endDrag(event?: PointerEvent) {
       commitMenu(dragStart.value, dragCur.value, slots, snapshot);
       committed = true;
     }
-  } else if (!props.editable && pressCell.value && event && !panMoved) {
-    // A tap or click in the group view pins the slot under the pointer — unless
-    // the press turned out to be a pan, which is a different gesture entirely.
-    const cell = cellFromEvent(event) ?? pressCell.value;
-    if (cell.row === pressCell.value.row && cell.col === pressCell.value.col) {
-      const slot = slotFor(cell);
-      hoverCell.value = cell;
-      if (slot !== null) emit("pin", slot);
-      // On a phone the pin is also the only way to read who is free, so the
-      // card comes with it. Told the same slot twice it closes, exactly as the
-      // pin unpins.
-      if (slot !== null && props.compact) toggleSummary(slot, event.clientX, event.clientY);
-    }
+  } else if (!props.editable && dragging.value && dragStart.value && dragCur.value) {
+    committed = commitViewDrag(dragStart.value, dragCur.value, event);
   }
   // A drag that landed on nothing leaves no rectangle behind, and so nothing
   // for the preview that followed it to become.
@@ -816,7 +829,13 @@ watch(
 // cross stood for the first of them there was no button for the second at all,
 // only the two things a visitor has to be told: wait, or press elsewhere.
 
-type MenuKind = "create" | "erase";
+/**
+ * What a selection on the chart is for. Two of them paint — a rectangle being
+ * marked, a rectangle being wiped — and the third does not: `view` is a region
+ * drawn over the group's answers to read them, and it carries no options strip,
+ * no countdown and no record, because there is nothing it changed.
+ */
+type MenuKind = "create" | "erase" | "view";
 
 interface MenuState {
   kind: MenuKind;
@@ -856,10 +875,13 @@ const menuEl = ref<HTMLElement | null>(null);
 const gripsEl = ref<HTMLElement | null>(null);
 let menuTimer: ReturnType<typeof setTimeout> | undefined;
 
+/** Takes away whatever is on the chart: the strip, the ring, and the card with
+ *  them, since the card is only ever a reading of a region. */
 function closeMenu() {
   clearTimeout(menuTimer);
   menuTimer = undefined;
   menuState.value = null;
+  closeSummary();
 }
 
 /** Restarted on every use: a spell of *inattention*, not of existence. */
@@ -1001,7 +1023,7 @@ function dismissMenu() {
 
 // A finger's menu is bigger in both directions, and both numbers are what its
 // placement is worked out against.
-function menuWidthFor(kind: MenuKind): number {
+function menuWidthFor(kind: "create" | "erase"): number {
   return (coarsePointer.value ? MENU_WIDTH_TOUCH : MENU_WIDTH)[kind];
 }
 const menuHeight = computed(() => (coarsePointer.value ? MENU_HEIGHT_TOUCH : MENU_HEIGHT));
@@ -1015,6 +1037,9 @@ const menuHeight = computed(() => (coarsePointer.value ? MENU_HEIGHT_TOUCH : MEN
 const menu = computed(() => {
   const state = menuState.value;
   if (!state || !props.editable) return null;
+  // A region over the group's answers has no options: it changed nothing, so
+  // there is nothing to tell it it meant and nothing to take back.
+  if (state.kind === "view") return null;
 
   const { left, top } = placeOverlay(
     { width: menuWidthFor(state.kind), height: menuHeight.value },
@@ -1043,27 +1068,29 @@ const menu = computed(() => {
  * own corners afterwards, so the ring and the options appear and vanish
  * together. Inside the track, so it travels with the columns.
  */
-const region = computed(() => {
-  const state = menuState.value;
-  if (!props.editable || !state) return null;
-  const start = dragging.value ? dragStart.value : state.start;
-  const end = dragging.value ? dragCur.value : state.end;
-  if (!start || !end) return null;
-
+/** A rectangle's box in the track's own pixels, which is where it is drawn. */
+function regionBox(start: Cell, end: Cell) {
   const minCol = Math.min(start.col, end.col);
   const maxCol = Math.max(start.col, end.col);
   const minRow = Math.min(start.row, end.row);
   const maxRow = Math.max(start.row, end.row);
   const left = offsets.value[minCol] ?? 0;
   const top = rowTop(minRow);
-
   return {
     left,
     top,
     width: (offsets.value[maxCol] ?? left) + colWidth.value - left,
     height: rowTop(maxRow) + rowHeight.value - top,
-    kind: state.kind,
   };
+}
+
+const region = computed(() => {
+  const state = menuState.value;
+  if (!state) return null;
+  const start = dragging.value ? dragStart.value : state.start;
+  const end = dragging.value ? dragCur.value : state.end;
+  if (!start || !end) return null;
+  return { ...regionBox(start, end), kind: state.kind };
 });
 
 // --- the handles ----------------------------------------------------------
@@ -1081,7 +1108,7 @@ const region = computed(() => {
 /** Where the two handles sit, in the track's own pixels. */
 const handles = computed(() => {
   const state = menuState.value;
-  if (!state || !props.editable || !state.handles || !state.live) return null;
+  if (!state || !state.handles || !state.live) return null;
 
   const { moving: first } = selectionCorners(state.start, state.end, "from");
   const { moving: last } = selectionCorners(state.start, state.end, "to");
@@ -1105,8 +1132,19 @@ const handles = computed(() => {
  */
 function applyResize(cell: Cell) {
   const state = menuState.value;
-  if (!state?.live || !state.snapshot) return;
+  if (!state?.live) return;
   if (state.start.row === cell.row && state.start.col === cell.col) return;
+
+  // A region on the group's answers has nothing to paint and nothing to
+  // remember: growing it only changes which cells the card is reading.
+  if (state.kind === "view") {
+    state.start = cell;
+    state.slots = rectangleSlots(props.model, state.start, state.end);
+    // Past one cell the pin no longer names what is selected.
+    if (state.slots.length > 1) emit("pin", null);
+    return;
+  }
+  if (!state.snapshot) return;
 
   // What the selection currently means, read off the answer itself — the same
   // way the options strip reads it — before any of this step's emits move it.
@@ -1174,6 +1212,86 @@ function onResizeMove(event: PointerEvent) {
   event.preventDefault();
 }
 
+/**
+ * The release of a mouse drag over the group's answers.
+ *
+ * Two gestures share the press, and the release is what tells them apart. One
+ * cell is the click the group view has always answered with a pin — the
+ * respondents list beside the chart is the reading of a single slot, and it has
+ * not stopped being one. More than one cell is a region, which asks a question
+ * a pin cannot: not who is free at a time, but who is free through a span of
+ * them.
+ */
+function commitViewDrag(start: Cell, end: Cell, event?: PointerEvent): boolean {
+  if (!event || panMoved) return false;
+  if (start.row === end.row && start.col === end.col) {
+    const slot = slotFor(start);
+    hoverCell.value = start;
+    if (slot !== null) emit("pin", slot);
+    return false;
+  }
+
+  const slots = rectangleSlots(props.model, start, end);
+  if (slots.length === 0) return false;
+  // A pin names one cell, and the question is no longer about one cell. The
+  // hover goes with it: a bubble chasing the cursor over the region would be a
+  // second answer to a question already answered beside it.
+  emit("pin", null);
+  hoverCell.value = null;
+  commitRegion(start, end, slots);
+  return true;
+}
+
+/**
+ * A tap on the group's answers, which is where a phone's region begins: one
+ * cell, with handles to grow it by, exactly as a tap on your own answer marks
+ * one cell and leaves handles on it.
+ *
+ * Tapping the single cell the region already is takes it away again, because
+ * that is what tapping a pinned cell has always done and the card is the pin
+ * read a second way.
+ */
+function commitViewTap(press: { cell: Cell }, event: PointerEvent): boolean {
+  const { cell } = press;
+  const slot = slotFor(cell);
+  if (slot === null) return false;
+
+  const state = menuState.value;
+  const sameCell =
+    state?.live && state.kind === "view" && state.slots.length === 1 && state.slots[0] === slot;
+  if (sameCell) {
+    dismissRegion();
+    return false;
+  }
+
+  emit("pin", slot);
+  openMenu(cell, "view", event, true);
+  commitRegion(cell, cell, [slot]);
+  return true;
+}
+
+/**
+ * A region has landed: the ring stays on the cells and the card opens over
+ * them.
+ *
+ * Deliberately not `commitMenu`. That one starts a countdown and reports the
+ * action to the page's history, and a region is neither — nothing was painted,
+ * so there is nothing to undo, and nothing was asked, so there is nothing to
+ * time out. It goes when it is dismissed or replaced, and not before.
+ */
+function commitRegion(start: Cell, end: Cell, slots: number[]) {
+  const state = menuState.value;
+  if (!state) return;
+  state.start = start;
+  state.end = end;
+  state.slots = slots;
+  state.live = true;
+  clearTimeout(menuTimer);
+  menuTimer = undefined;
+  // The card follows from the region existing; the watcher below measures and
+  // places it.
+}
+
 function endResize() {
   window.removeEventListener("pointermove", onResizeMove);
   window.removeEventListener("pointerup", endResize);
@@ -1206,27 +1324,45 @@ function onChartPress(event: PointerEvent) {
   const target = event.target as Node;
   const onCells = Boolean(body.value?.contains(target));
   const verdict = selectionPress({
-    selection: state?.live && state.handles ? { start: state.start, end: state.end } : null,
-    onControls: Boolean(menuEl.value?.contains(target) || gripsEl.value?.contains(target)),
+    selection: armed.value && state ? { start: state.start, end: state.end } : null,
+    onControls: Boolean(
+      menuEl.value?.contains(target) ||
+        gripsEl.value?.contains(target) ||
+        summaryEl.value?.contains(target),
+    ),
     onCells,
     cell: onCells ? cellFromEvent(event) : null,
   });
   if (verdict !== "deselect") return;
-  closeMenu();
+  if (state?.kind === "view") dismissRegion();
+  else closeMenu();
   // Spent. Nothing downstream may read it as the start of anything — not the
   // paint, not the pan, not the pin. Propagation only: a `preventDefault` here
   // would also take away the scroll this press may yet turn out to be.
   if (onCells) event.stopPropagation();
 }
 
-watch(
-  () => Boolean(menuState.value?.live && menuState.value.handles),
-  (armed) => {
-    if (typeof window === "undefined") return;
-    if (armed) window.addEventListener("pointerdown", onChartPress, true);
-    else window.removeEventListener("pointerdown", onChartPress, true);
-  },
-);
+/**
+ * Whether there is a selection on the chart that a press elsewhere should put
+ * away rather than paint through.
+ *
+ * While editing that means a selection with handles: a drag's options are a
+ * label on something just done and go by themselves, but handles are a thing
+ * left on the chart to be used later. A region in the group view is the same
+ * kind of thing whether or not it has handles — a mouse drew it and a mouse has
+ * to be able to be rid of it.
+ */
+const armed = computed(() => {
+  const state = menuState.value;
+  if (!state?.live) return false;
+  return state.kind === "view" || state.handles;
+});
+
+watch(armed, (on) => {
+  if (typeof window === "undefined") return;
+  if (on) window.addEventListener("pointerdown", onChartPress, true);
+  else window.removeEventListener("pointerdown", onChartPress, true);
+});
 
 onBeforeUnmount(() => {
   closeMenu();
@@ -1243,11 +1379,15 @@ onBeforeUnmount(() => {
 // a drawer is the wrong place for the answer to the question a tap on a cell
 // *is*: by the time it is open the cell is under it. So the same reading — the
 // time, the fraction, and each person's own mark in the glyph the list uses for
-// it — is composed over the chart, beside the cell that was tapped.
+// it — is composed over the chart, beside the cells it is about.
 //
-// The pin is untouched underneath: a tap still pins, so the drawer, the outline
-// and the desktop column all say the same thing about the same slot. This is a
-// second view of the pinned slot, not a second kind of selection.
+// It answers for a region now rather than for a cell, and so it is on the
+// desktop too. The column beside the chart reads one slot and cannot be asked
+// about a span of them; a region can, and the answer is a different one —
+// `regionDigest` gives each person the worst thing they said anywhere inside it,
+// so "4 of 9 free" over an afternoon means four people can make the *whole*
+// afternoon. A one-cell region is the old reading exactly, which is what keeps
+// the phone's tap doing what it always did.
 
 /**
  * How many people the card will name. Eight chips run two or three to a line, so
@@ -1256,8 +1396,8 @@ onBeforeUnmount(() => {
  * (`slotDigest`); the drawer holds the full list either way.
  */
 const SUMMARY_CAP = 8;
-/** Clearance from the tapped point, and from the chart's own edges. */
-const SUMMARY_CLEARANCE = 22;
+/** Clearance from the region it is about, and from the chart's own edges. */
+const SUMMARY_CLEARANCE = 12;
 const SUMMARY_GAP = 8;
 /** What each glyph says, for anyone who is not looking at it. */
 const STANCE_LABELS: Record<SlotStance, string> = {
@@ -1266,7 +1406,6 @@ const STANCE_LABELS: Record<SlotStance, string> = {
   unavailable: "Unavailable",
 };
 
-const summaryState = ref<{ slot: number; x: number; y: number } | null>(null);
 const summaryEl = ref<HTMLElement | null>(null);
 /**
  * The card's measured box. It is sized by its own content — a name may be long,
@@ -1278,7 +1417,6 @@ const summaryEl = ref<HTMLElement | null>(null);
 const summarySize = ref<{ width: number; height: number } | null>(null);
 
 function closeSummary() {
-  summaryState.value = null;
   summarySize.value = null;
 }
 
@@ -1288,52 +1426,93 @@ function measureSummary() {
   summarySize.value = { width: element.offsetWidth, height: element.offsetHeight };
 }
 
+/** The live region the card is about, or null when the chart carries none. */
+const viewSelection = computed(() => {
+  const state = menuState.value;
+  if (props.editable || !state?.live || state.kind !== "view") return null;
+  return state;
+});
+
 /**
- * Opens the card on a slot, or closes it when that slot is the one it is already
- * showing — the same toggle the pin itself does, so the two cannot disagree.
- * Returns whether the slot ends up pinned.
+ * What a region is called: the cells' own span, in the two readings a rectangle
+ * has. A single cell keeps the wording the tooltip and the respondents list use
+ * for it, since it is the same slot said the same way.
  */
-function toggleSummary(slot: number, clientX: number, clientY: number): boolean {
-  if (summaryState.value?.slot === slot) {
-    closeSummary();
-    return false;
+function regionLabel(start: Cell, end: Cell): string {
+  const minRow = Math.min(start.row, end.row);
+  const maxRow = Math.max(start.row, end.row);
+  const minCol = Math.min(start.col, end.col);
+  const maxCol = Math.max(start.col, end.col);
+
+  const single = minRow === maxRow && minCol === maxCol;
+  const slot = single ? slotAt(props.model, minRow, minCol) : null;
+  if (slot !== null) {
+    return formatSlotRange(
+      slot,
+      props.model.slotMinutes,
+      props.model.timezoneOffset,
+      props.hour12,
+      {
+        withDate: props.model.showDates,
+        dowDates: props.event.type === "dow" ? props.event.dates : undefined,
+        startOnMonday: props.event.startOnMonday,
+      },
+    );
   }
-  const anchor = anchorFromPoint(clientX, clientY);
-  if (!anchor) return false;
-  summarySize.value = null;
-  summaryState.value = { slot, x: anchor.x, y: anchor.y };
-  void nextTick(measureSummary);
-  return true;
+
+  // The columns' own headings, so the card names the days in the words the
+  // chart above it is already using — dates where it shows dates, weekdays on a
+  // day-of-week event where there are none to show.
+  const nameOf = (index: number) => {
+    const column = props.model.columns[index];
+    if (!column) return "";
+    return props.model.showDates ? column.dateLabel : column.weekday;
+  };
+  const days = minCol === maxCol ? nameOf(minCol) : `${nameOf(minCol)} – ${nameOf(maxCol)}`;
+
+  const from = props.model.rows[minRow]?.localTimeNum ?? 0;
+  const until = (props.model.rows[maxRow]?.localTimeNum ?? 0) + props.model.stepHours;
+  const times = `${timeNumToTimeText(from, props.hour12)} – ${timeNumToTimeText(
+    until % 24,
+    props.hour12,
+  )}`;
+  return `${days} · ${times}`;
 }
 
 const summary = computed(() => {
-  const state = summaryState.value;
-  if (!state || props.editable) return null;
+  const selection = viewSelection.value;
+  if (!selection) return null;
 
-  const digest = slotDigest(state.slot, props.responseIndex, { cap: SUMMARY_CAP });
-  const label = formatSlotRange(
-    state.slot,
-    props.model.slotMinutes,
-    props.model.timezoneOffset,
-    props.hour12,
-    {
-      withDate: props.model.showDates,
-      dowDates: props.event.type === "dow" ? props.event.dates : undefined,
-      startOnMonday: props.event.startOnMonday,
-    },
-  );
+  const digest = regionDigest(selection.slots, props.responseIndex, { cap: SUMMARY_CAP });
+  const label = regionLabel(selection.start, selection.end);
+  /** More than one cell, so the fraction is about all of them at once. */
+  const whole = selection.slots.length > 1;
+
+  /**
+   * Placed against the region rather than against the point it was drawn from.
+   *
+   * A card anchored on the release lands *on* the rectangle, over the cells it
+   * is describing and — on a phone — over the handles the rectangle is grown
+   * by. Anchoring it on the region's centre with the region's own half-height
+   * as the clearance puts it clear of the whole rectangle on whichever side has
+   * room, and it follows the columns under a scroll for free, the box being
+   * recomputed from where they now are.
+   */
+  const box = regionBox(selection.start, selection.end);
+  const anchor = {
+    x: chartLeft.value + box.left + box.width / 2 - scrollLeft.value,
+    y: viewportTop.value + HEADER_HEIGHT + box.top + box.height / 2 - scrollTop.value,
+    clearance: box.height / 2 + SUMMARY_CLEARANCE,
+    gap: SUMMARY_GAP,
+    // Above by preference: a finger covers what it has just touched, and below
+    // a region near the foot of the chart is where the least room is.
+    above: true,
+  };
 
   const size = summarySize.value;
   const placement = size
-    ? placeOverlay(size, overlayField.value, {
-        x: state.x,
-        y: state.y,
-        clearance: SUMMARY_CLEARANCE,
-        gap: SUMMARY_GAP,
-        // Above the finger, which covers the cell it just touched.
-        above: true,
-      })
-    : { left: state.x, top: state.y };
+    ? placeOverlay(size, overlayField.value, anchor)
+    : { left: anchor.x, top: anchor.y };
 
   // Same three readings the respondents list gives the fraction: everyone free
   // is the answer you are looking for, nobody free rules the slot out, and
@@ -1341,54 +1520,41 @@ const summary = computed(() => {
   const tone =
     digest.free === 0 ? "none" : digest.free === digest.total ? "all" : "some";
 
-  return { ...digest, label, tone, ...placement, placed: size !== null };
+  return { ...digest, label, tone, whole, ...placement, placed: size !== null };
 });
 
 /**
- * A tap anywhere that is not the card takes it away. The chart's own presses go
- * through `onPointerDown`, which closes it before the release decides whether to
- * open it again; this is for everything else on the page — the view switch, the
- * identity bar, the foot.
+ * Dismissal takes the region with it, and the pin with that: they went up
+ * together and a rectangle with nothing on screen explaining it is a trap.
  */
-function onDocumentPointerDown(event: PointerEvent) {
-  if (!summaryState.value) return;
-  const target = event.target as Node;
-  if (summaryEl.value?.contains(target)) return;
-  // A press on the cells is the tap gesture itself: the release decides whether
-  // the card moves, closes or stays put, and closing it here first would turn a
-  // second tap on the same cell into a re-open of the thing it meant to shut.
-  if (body.value?.contains(target)) return;
-  dismissSummary();
-}
-
-/** Dismissal releases the pin as well: one gesture put both up, one takes both
- *  down, and a pinned slot with nothing on screen explaining it is a trap. */
-function dismissSummary() {
-  closeSummary();
+function dismissRegion() {
+  closeMenu();
   emit("pin", null);
 }
 
+// A card sized by its own content is laid out once unplaced and invisible,
+// measured, and only then shown. A fresh region starts that over; a region being
+// resized keeps the size it has until the new one is read, so it does not blink
+// out under the finger that is dragging it.
+watch(viewSelection, (selection, previous) => {
+  if (!selection) {
+    closeSummary();
+    return;
+  }
+  if (!previous) summarySize.value = null;
+  void nextTick(measureSummary);
+});
+
+// The content changes as the rectangle grows — a name comes or goes with every
+// cell the handle crosses — and the card has to be placed against the new box.
 watch(
-  () => summaryState.value !== null,
-  (open) => {
-    if (typeof window === "undefined") return;
-    if (open) window.addEventListener("pointerdown", onDocumentPointerDown, true);
-    else window.removeEventListener("pointerdown", onDocumentPointerDown, true);
+  () => viewSelection.value?.slots.length,
+  () => {
+    if (viewSelection.value) void nextTick(measureSummary);
   },
 );
 
-// Switching to editing, or losing the slot the card is about, leaves it stale.
-watch([() => props.editable, () => props.activeSlot], () => {
-  if (!summaryState.value) return;
-  if (props.editable || props.activeSlot !== summaryState.value.slot) closeSummary();
-});
-
-onBeforeUnmount(() => {
-  closeSummary();
-  if (typeof window !== "undefined") {
-    window.removeEventListener("pointerdown", onDocumentPointerDown, true);
-  }
-});
+onBeforeUnmount(closeSummary);
 
 // --- painting -------------------------------------------------------------
 
@@ -1730,17 +1896,20 @@ defineExpose({ measure, clearSelection });
         {{ tooltip.text }}
       </div>
 
-      <!-- Who is free at the cell that was just tapped, over the chart, on the
-           layout where the list that would otherwise say it is behind a drawer.
-           Sized by its own content and placed once measured, so the first frame
-           is laid out but not shown. -->
+      <!-- Who is free across the region that was just drawn, over the chart and
+           beside it. Sized by its own content and placed once measured, so the
+           first frame is laid out but not shown. -->
       <div
         v-if="summary"
         ref="summaryEl"
         class="digest"
         :class="{ 'digest--placed': summary.placed }"
         role="group"
-        :aria-label="`Who is free at ${summary.label}`"
+        :aria-label="
+          summary.whole
+            ? `Who is free throughout ${summary.label}`
+            : `Who is free at ${summary.label}`
+        "
         :style="{ left: `${summary.left}px`, top: `${summary.top}px` }"
       >
         <div class="digest__head">
@@ -1753,7 +1922,7 @@ defineExpose({ measure, clearSelection });
             type="button"
             class="digest__close"
             aria-label="Dismiss"
-            @click="dismissSummary"
+            @click="dismissRegion"
           >
             <IconClose aria-hidden="true" />
           </button>
@@ -1762,8 +1931,13 @@ defineExpose({ measure, clearSelection });
         <p v-if="summary.total === 0" class="digest__none">No answers yet.</p>
 
         <template v-else>
+          <!-- The fraction says the same thing the aggregate does: over more
+               than one cell, "free" means free for every one of them, so the
+               word that makes that plain rides along with it. -->
           <p class="digest__count" :class="`digest__count--${summary.tone}`">
-            {{ summary.free }} of {{ summary.total }} free
+            {{ summary.free }} of {{ summary.total }} free{{
+              summary.whole ? " throughout" : ""
+            }}
           </p>
 
           <!-- One chip per person, in the same three glyphs the respondents
@@ -2296,6 +2470,20 @@ defineExpose({ measure, clearSelection });
     inset 0 0 0 1px color-mix(in srgb, var(--color-bg) 75%, transparent),
     0 0 0 1px color-mix(in srgb, var(--color-bg) 75%, transparent),
     0 0 10px color-mix(in srgb, var(--color-selection-create) 55%, transparent);
+}
+
+/* A region over the group's answers keeps the same blue a selection has while
+   editing, and deliberately: it is the same idea — these cells, and this is
+   what they are about — and giving reading its own colour would say the two
+   were different kinds of thing. Nothing paints in the group view, so the blue
+   cannot be read as a pending change there; what it is not is the green of the
+   heatmap under it or the red of an erase. */
+.region--view {
+  /* The glow says "just done" on a paint. This was not done to anything, so it
+     keeps the ring and drops the halo. */
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-bg) 75%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-bg) 75%, transparent);
 }
 
 .region--erase {

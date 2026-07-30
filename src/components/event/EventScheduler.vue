@@ -486,7 +486,6 @@ function onSolo(person: { key: string; displayName: string } | null) {
         :highlight-respondent="editing ? null : isolated ?? highlight"
         :active-slot="activeSlot"
         :hour12="hour12"
-        :compact="compact"
         @paint="session.onPaint"
         @flip="session.onFlip"
         @commit="history.record"
