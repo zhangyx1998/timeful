@@ -907,6 +907,46 @@ export interface ColumnWidthOptions {
 }
 
 /**
+ * The width below which the event page stops being a document and becomes an
+ * app: the page itself no longer scrolls, and the respondents and the view
+ * settings move into drawers.
+ */
+export const COMPACT_MAX_WIDTH = 820;
+
+/** Columns a desktop viewport holds: a week, which is what the layout is for. */
+export const DESKTOP_PER_VIEW = 7;
+
+/**
+ * How wide a column wants to be on a phone.
+ *
+ * Measured against the widest thing a column has to carry: "Aug 30" at the
+ * compact heading size is 38 pixels, so this is that plus room to breathe. The
+ * heading is what sets the floor rather than an arbitrary count — a column
+ * narrow enough to fold its own date in half is not one worth showing, and the
+ * header's height is fixed, so folding it hides the weekday above it.
+ */
+export const TARGET_COL_WIDTH = 44;
+
+/**
+ * What the chart never gets: the pinned time gutter, and the page's padding
+ * either side of it. The peek is deliberately *not* in here — it is the sliver
+ * of the next column, so it belongs to the columns rather than to the chrome.
+ */
+const COMPACT_CHROME = 76;
+
+/** Columns a viewport holds, which on a phone is a question about its width. */
+export function perViewFor(viewportWidth: number, compact: boolean): number {
+  if (!compact) return DESKTOP_PER_VIEW;
+  // Three is the floor rather than a step: at any width a phone actually has,
+  // the division wins — this is for the fold-open-sideways cases and for a
+  // viewport nobody has reported yet.
+  return Math.max(
+    3,
+    Math.floor((viewportWidth - COMPACT_CHROME) / TARGET_COL_WIDTH),
+  );
+}
+
+/**
  * One width for every column, whatever the scroll position.
  *
  * An event small enough to fit spends the whole viewport on its columns and

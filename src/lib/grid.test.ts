@@ -3,8 +3,10 @@ import {
   allSlots,
   buildGrid,
   buildResponseIndex,
+  COMPACT_MAX_WIDTH,
   columnOffsets,
   columnWidthFor,
+  DESKTOP_PER_VIEW,
   edgeGlideStep,
   edgeScrollDirection,
   geometryFor,
@@ -15,6 +17,7 @@ import {
   inRectangle,
   isBestTime,
   maxRespondents,
+  perViewFor,
   placeOverlay,
   rectangleSlots,
   revertOperations,
@@ -1169,6 +1172,52 @@ describe("scrolling", () => {
 
     it("has no width without columns", () => {
       expect(columnWidthFor({ ...base, availableWidth: 700, columnCount: 0 })).toBe(0);
+    });
+  });
+
+  /**
+   * How many columns a viewport holds. On a desktop it is a week and a fact
+   * about the layout; on a phone it is a question about the screen, answered
+   * by dividing the width by what a column heading needs.
+   */
+  describe("perViewFor", () => {
+    it("shows a week on the desktop, whatever the width", () => {
+      expect(perViewFor(1400, false)).toBe(DESKTOP_PER_VIEW);
+      expect(perViewFor(900, false)).toBe(DESKTOP_PER_VIEW);
+    });
+
+    it("fills a phone's width with columns a heading still fits in", () => {
+      // The old brackets gave 3 here, and spent 90px on a column whose heading
+      // needs 38.
+      expect(perViewFor(360, true)).toBe(6);
+      expect(perViewFor(390, true)).toBe(7);
+      expect(perViewFor(430, true)).toBe(8);
+      expect(perViewFor(768, true)).toBe(15);
+    });
+
+    it("grows with the screen rather than in steps", () => {
+      let previous = 0;
+      for (let width = 280; width <= COMPACT_MAX_WIDTH; width += 10) {
+        const columns = perViewFor(width, true);
+        expect(columns).toBeGreaterThanOrEqual(previous);
+        previous = columns;
+      }
+    });
+
+    it("leaves every column wide enough for its own date label", () => {
+      for (const width of [320, 360, 390, 414, 430, 520, 768, 820]) {
+        // What the chart actually has for its columns, past the gutter, the
+        // page padding and the peek. "Aug 30" at the compact size is 38px, and
+        // a column narrower than that folds its heading in two — which the
+        // fixed header height then clips the weekday out of.
+        const forColumns = width - 32 - 44 - 15;
+        expect(forColumns / perViewFor(width, true)).toBeGreaterThan(38);
+      }
+    });
+
+    it("never drops below three, however little there is to divide", () => {
+      expect(perViewFor(120, true)).toBe(3);
+      expect(perViewFor(0, true)).toBe(3);
     });
   });
 

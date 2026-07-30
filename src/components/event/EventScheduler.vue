@@ -28,7 +28,13 @@ import {
   listTimezones,
   prefers12Hour,
 } from "../../lib/dates";
-import { buildGrid, buildResponseIndex, maxRespondents } from "../../lib/grid";
+import {
+  buildGrid,
+  buildResponseIndex,
+  COMPACT_MAX_WIDTH,
+  maxRespondents,
+  perViewFor,
+} from "../../lib/grid";
 import { toAvailabilitySets, toIsoArray, type AvailabilityType, type EventDoc } from "../../lib/event";
 import type { PresenceEntry, RealtimeSession, SavePayload } from "../../lib/realtime";
 import { createSaveTransport } from "../../lib/save-transport";
@@ -610,14 +616,20 @@ const viewMode = computed<string>({
 
 // --- responsive -----------------------------------------------------------
 //
-// One breakpoint decides two things: how many columns a viewport of the chart
-// holds, and — at 820px, the same width the layout has always stacked at —
-// whether the page is the desktop one or the phone one.
+// One breakpoint decides two things: whether the page is the desktop one or the
+// phone one, and — through it — how many columns a viewport of the chart holds.
+//
+// The desktop shows a week. The phone used to show three columns under 520px
+// and five under 900, which was a guess made once and then read as a rule: on
+// a 360px screen it spent 90 pixels on a column whose heading needs 35, and a
+// fortnight took five swipes to read. It now divides the width by what a
+// heading actually wants (`perViewFor`), so the number of columns follows the
+// screen rather than a bracket it happens to fall in.
 
 function updateLayout() {
   const width = window.innerWidth;
-  perView.value = width < 520 ? 3 : width < 900 ? 5 : 7;
-  compact.value = width <= 820;
+  compact.value = width <= COMPACT_MAX_WIDTH;
+  perView.value = perViewFor(width, compact.value);
   if (!compact.value) {
     peopleOpen.value = false;
     settingsOpen.value = false;

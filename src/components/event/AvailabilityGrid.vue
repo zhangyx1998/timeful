@@ -2125,12 +2125,18 @@ defineExpose({ measure });
   cursor: grab;
 }
 
+/* The header's height is fixed (`HEADER_HEIGHT`), so a label that wraps does
+   not make room for itself — it pushes the weekday above it out of the box and
+   out of sight. `perViewFor` sizes the columns so that cannot happen; the
+   `nowrap` is what keeps a stray long label a truncation rather than a
+   disappearing row. */
 .head-cell {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 0.05rem;
   overflow: hidden;
+  white-space: nowrap;
 }
 
 .weekday {
@@ -2696,6 +2702,16 @@ defineExpose({ measure });
 
   .gutter-label {
     font-size: 0.625rem;
+  }
+
+  /* The column heading is what decides how many columns fit — `perViewFor`
+     divides the width by a shade over the width of "Aug 30" — so the size it
+     is set at is load-bearing rather than cosmetic. Set here, at the phone's
+     own scale, both parts read at a glance in a column narrow enough that a
+     fortnight is two swipes rather than five. */
+  .weekday,
+  .date {
+    font-size: 0.6875rem;
   }
 }
 
