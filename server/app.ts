@@ -31,6 +31,7 @@ import {
 } from "./routes/events.ts";
 import { leasesRouter } from "./routes/leases.ts";
 import { sessionsRouter } from "./routes/sessions.ts";
+import { updateRouter } from "./routes/update.ts";
 import { readEvent, readLinks } from "./storage.ts";
 import { tarpitMiss } from "./tarpit.ts";
 import type { StoredEvent } from "./types.ts";
@@ -145,6 +146,7 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
   app.use("/api", sessionsRouter);
   app.use("/api", leasesRouter);
   app.use("/api", eventsRouter);
+  app.use("/api", updateRouter);
   app.use("/api", (_req: Request, res: Response) => {
     res.status(404).json({ error: "Not found" });
   });

@@ -13,7 +13,12 @@ import type {
   EventType,
   LastEdit,
 } from "../src/lib/event.ts";
-import type { EventDetails, EventSummary, SessionInfo } from "../src/lib/api.ts";
+import type {
+  EventDetails,
+  EventSummary,
+  SessionInfo,
+  UpdateCheck,
+} from "../src/lib/api.ts";
 import type {
   PresenceEntry,
   RealtimeMessage,
@@ -38,6 +43,7 @@ export type {
   ResponseInput,
   ResponseWrite,
   SaveMessage,
+  UpdateCheck,
 };
 
 /** An event exactly as stored in `var/events/<uuid>.json`. */

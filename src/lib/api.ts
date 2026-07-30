@@ -240,6 +240,33 @@ export interface EventDetails {
   users: EventDetailsUser[];
 }
 
+/**
+ * `GET /api/update-check` — admin only.
+ *
+ * The one response in the app that is answered from off the machine. It is
+ * never requested on its own: the panel asks only when the owner presses the
+ * button, so a Timeful with no route to the internet behaves exactly as it did
+ * before this existed (see ARCHITECTURE.md § The update check).
+ */
+export interface UpdateCheck {
+  /** The running version. `0.0.0-dev` when running from a source checkout. */
+  current: string;
+  /** The newest published version, or null when the registry could not be read. */
+  latest: string | null;
+  /** True only when `latest` is strictly newer than `current`. */
+  updateAvailable: boolean;
+  /** Why `latest` is null. Present only then, and safe to display verbatim. */
+  problem?: string;
+  /**
+   * The server's working directory — the webroot the upgrade is run from. It
+   * is the operator's own path, shown to the authenticated owner only, and it
+   * is the one path in this response: no event ever appears here.
+   */
+  webroot: string;
+  /** True when `current` is the source-checkout fallback rather than a release. */
+  development: boolean;
+}
+
 /** A `GET /api/sessions` row. */
 export interface SessionInfo {
   token: string;
