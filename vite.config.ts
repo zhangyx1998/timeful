@@ -1,6 +1,15 @@
+import { readFileSync } from "node:fs";
 import { defineConfig, type Plugin } from "vite";
 import vue from "@vitejs/plugin-vue";
 import svgLoader from "@zhangyx1998/svg-loader";
+
+// The one version string the client may show comes from package.json at build
+// time, the same way rollup.config.ts stamps the CLI. Both the client and the
+// SSR pass get it, so a server-rendered page and the hydrated one can never
+// print two different versions.
+const pkg = JSON.parse(
+  readFileSync(new URL("./package.json", import.meta.url), "utf8"),
+) as { version: string };
 
 // Every event URL is a capability link (docs/reference/architecture.md
 // § Security): knowing one is permission to answer it, so nothing here should
@@ -33,7 +42,15 @@ function robotsTxt(emit: boolean): Plugin {
 
 // Client bundle -> dist/client, SSR bundle -> dist/server (see the `build`
 // script, which passes --outDir for the SSR pass).
-export default defineConfig(({ isSsrBuild }) => ({
+export default defineConfig(({ isSsrBuild, mode }) => ({
+  // Left undefined under Vitest on purpose: the server tests exercise
+  // `server/cli/version.ts`'s dev fallback (vitest.config.ts resolves this
+  // config, so a blanket define would leak into them and turn a dev build
+  // into a released one as far as the update check is concerned).
+  define:
+    mode === "test"
+      ? undefined
+      : { __TIMEFUL_VERSION__: JSON.stringify(pkg.version) },
   // svgLoader compiles src/assets/icons/*.svg into inline, style-scoped Vue
   // components. It declares enforce: "pre", so it claims .svg ahead of Vite's
   // asset handling wherever it sits in this array -- and because both build
