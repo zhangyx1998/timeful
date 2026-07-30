@@ -83,6 +83,7 @@
   --color-tooltip-bg: light-dark(#18181b, #45464f);
   --color-tooltip-text: light-dark(#ffffff, #f4f4f5);
 
+
   /* --- shape -------------------------------------------------------------- */
   --radius-sm: 4px;
   --radius-md: 8px;
@@ -93,6 +94,28 @@
   --shadow-color-md: light-dark(rgb(0 0 0 / 0.1), rgb(0 0 0 / 0.55));
   --shadow-sm: 0 1px 2px var(--shadow-color-sm);
   --shadow-md: 0 4px 12px var(--shadow-color-md);
+
+  /* --- glass -------------------------------------------------------------- */
+  /* A chip floating over the chart, saying what the chart is currently doing.
+     It has to stay readable over a heatmap at full saturation and still let
+     that heatmap be seen through it, because what it describes is directly
+     underneath — an opaque chip in the middle of the columns is a hole in the
+     thing being read.
+
+     So: a tinted, blurred pane. The tint carries most of the contrast, the blur
+     kills the texture that would otherwise fight the text, and the saturate
+     keeps the greens underneath looking like the greens they are rather than
+     going grey behind the frost. `--color-glass-solid` is the same surface with
+     the transparency taken out, for a browser with no `backdrop-filter` and for
+     anyone who has asked for less of it. */
+  --color-glass: light-dark(rgb(255 255 255 / 0.72), rgb(30 31 36 / 0.72));
+  --color-glass-solid: light-dark(#ffffff, #26272d);
+  --color-glass-border: light-dark(rgb(24 24 27 / 0.14), rgb(255 255 255 / 0.16));
+  /* The hairline along the top inside edge: what makes a pane of glass read as
+     having a thickness rather than as a rectangle of paint. */
+  --color-glass-highlight: light-dark(rgb(255 255 255 / 0.9), rgb(255 255 255 / 0.14));
+  --blur-glass: blur(16px) saturate(180%);
+  --shadow-glass: 0 6px 20px var(--shadow-color-md), 0 1px 2px var(--shadow-color-sm);
 
   /* --- focus -------------------------------------------------------------- */
   --focus-ring-width: 2px;

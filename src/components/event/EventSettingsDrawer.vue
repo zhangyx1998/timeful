@@ -17,6 +17,11 @@
  * one admin thing on the page a guest is allowed to find, and there is nowhere
  * else on a phone to put it.
  *
+ * The three ways of reading the chart are all here — the zone, the clock, the
+ * colours — and the best-times filter joined them when the phone's chart foot
+ * went away: it is one more of those, and putting it on the chart's edge was
+ * only ever where there happened to be room.
+ *
  * It carries one thing the desktop has no need of. Undo and redo are a pair of
  * keystrokes on a keyboard, and a phone has none — so the two of them are
  * buttons here, in the only drawer a hand can reach without leaving the chart.
@@ -51,6 +56,7 @@ defineProps<{
 
 const timezone = defineModel<string>("timezone", { required: true });
 const clock = defineModel<string>("clock", { required: true });
+const bestTimes = defineModel<boolean>("bestTimes", { required: true });
 
 const emit = defineEmits<{
   close: [];
@@ -99,6 +105,16 @@ const emit = defineEmits<{
           </button>
         </div>
       </div>
+
+      <!-- Only while you are reading the group's answer: there is nothing to
+           filter in your own, and the chart ignores the flag there anyway. It
+           lives here rather than in the chart's foot because it is a way of
+           reading the chart, like the clock and the colours below it — not a
+           thing done to it. -->
+      <label v-if="mode === 'group'" class="setting setting--tappable">
+        <span class="setting__label">Best times only</span>
+        <input v-model="bestTimes" class="check" type="checkbox" />
+      </label>
 
       <div class="setting">
         <span class="setting__label">Clock</span>
@@ -155,6 +171,21 @@ const emit = defineEmits<{
 
 .setting__control {
   flex: none;
+}
+
+/* A whole row that is one control: the label is part of the target, so the row
+   itself carries the tap floor rather than the box at the end of it. */
+.setting--tappable {
+  min-height: var(--tap-min);
+  cursor: pointer;
+}
+
+.check {
+  flex: none;
+  width: 1.15rem;
+  height: 1.15rem;
+  margin: 0;
+  accent-color: var(--color-accent);
 }
 
 /* The pair reads as one control, so they sit in one bordered group the way the

@@ -1079,15 +1079,20 @@ text.
   itself does not scroll, the chart fills the space between the header bar and
   the identity bar and scrolls inside it on both axes, and the respondents, the
   view settings and — for an owner — the [admin tools](#the-owner-on-an-event-page)
-  each move into a bottom-sheet drawer. Both the clock and the
-  legend live in the settings drawer there rather than in the chart's foot: they
-  describe the chart rather than changing it, and a foot row of a fixed pane
-  costs grid. The drawer also carries the one control a phone cannot get from a
-  keyboard: undo and redo, while the edit view is the one open. Clearing your
-  own answer goes the other way, onto the identity bar beside the name it wipes,
-  which leaves the phone's foot holding the best-times filter in the group view
-  and **nothing at all** in the edit view — so there is no foot then, rather
-  than an empty row.
+  each move into a bottom-sheet drawer. **Every way of reading the chart** —
+  the zone, the clock, the legend and the best-times filter — lives in the
+  settings drawer there rather than in the chart's foot, because a foot row of
+  a fixed pane costs grid. The drawer also carries the one control a phone
+  cannot get from a keyboard: undo and redo, while the edit view is the one
+  open. Clearing your own answer goes the other way, onto the identity bar
+  beside the name it wipes. Nothing is then left for the foot to hold, so on a
+  phone **there is no foot at all** rather than an empty row.
+
+  The best-times filter is the one of those that used to sit on the chart's
+  edge, in the slot the clear button holds. It is not an action on the chart,
+  it is a way of reading one, so it stands with the clock on the desktop's foot
+  and in the settings drawer on a phone — one home per layout, and in both of
+  them beside its peers.
 - **The keyboard covers the page; it does not resize it.** The viewport meta
   says `interactive-widget=overlays-content`, so raising a keyboard leaves
   `dvh`, the layout and the chart's column geometry exactly where they were.
@@ -1151,6 +1156,27 @@ text.
   the component, so an unmount or a widening past 820px drops it. The pause is
   not gated on `prefers-reduced-motion`: it is comprehension time, not motion,
   and the sheet's own travel is what that setting already governs.
+- **A mode the chart is in says so on the chart** (`ModePills`). The group view
+  has two of them — best times, which drops every slot that is not one of the
+  fullest, and isolation, which drops everybody but one person — and each
+  leaves a heatmap that looks like a perfectly ordinary heatmap of a different
+  event. So each gets a chip fixed over the chart naming it, with the way out
+  on the chip.
+  **One chip per mode, stacked, never merged.** A merged chip would have to fit
+  two labels and two crosses into 360px with one of the labels being somebody's
+  name, and they are two independent facts with two independent ways out
+  besides. Isolation keeps the lower slot, so turning best times on or off does
+  not move the chip you were about to press. The stack itself takes no pointer
+  events; only the chips do, so a chart cell in the gap between them is still
+  tappable.
+  The material is the **glass** in `tokens.css`: a chip covers the thing it is
+  describing, so it is a tinted, blurred pane rather than an opaque one —
+  `--color-glass` plus `--blur-glass` behind an `@supports` guard, falling back
+  to `--color-glass-solid` where `backdrop-filter` is missing and under both
+  `prefers-reduced-transparency` and `prefers-contrast: more`. It stays visually
+  small under a finger, because a chip sized for a thumb covers a lot of chart:
+  the cross keeps its 44px target through an invisible box centred on it rather
+  than by growing.
 - The heatmap tints each cell with the `--color-slot-available` green at an
   alpha scaled by respondent-count over the maximum, and a separate tone for
   if-needed. Because the token is declared with `light-dark()`, the actual

@@ -28,7 +28,7 @@ import ColorLegend from "./ColorLegend.vue";
 import EventSettingsDrawer from "./EventSettingsDrawer.vue";
 import GuestIdentityDialog from "./GuestIdentityDialog.vue";
 import IdentityCard from "./IdentityCard.vue";
-import IsolationPill from "./IsolationPill.vue";
+import ModePills from "./ModePills.vue";
 import RespondentsPanel from "./RespondentsPanel.vue";
 import TimezoneField from "./TimezoneField.vue";
 import Button from "../ui/Button.vue";
@@ -506,28 +506,23 @@ function onSolo(person: { key: string; displayName: string } | null) {
       >
         <!-- The foot of the chart, in the chart's own box, and everything in
              it is about how the chart is read. It starts where the columns do
-             with the clock the hours are printed on, then what the colours
-             mean, and at the far end — the last column's edge — the control
-             that acts on the whole chart. There is one such control per mode
-             and never two at once, so they share the end: reading the group's
-             answer it is the best-times filter, and writing your own it is the
-             thing that wipes it.
+             with the clock the hours are printed on, then the best-times
+             filter, then what the colours mean — and at the far end, the last
+             column's edge, the one control that acts on the chart rather than
+             describing it: the thing that wipes your own answer.
 
-             On a phone almost none of that survives. The foot is a row of a
-             fixed pane rather than something the page scrolls past, so every
-             pixel it spends comes off the grid — and the two things in it that
-             only describe the chart (the clock, the legend) are settings, not
-             gestures, so they move into the settings drawer. Clearing your
-             answer moves the other way, onto the identity bar, beside the name
-             it wipes. What is left is the best-times filter, and in edit mode
-             nothing at all — so there is no foot then, rather than an empty
-             row holding a line of space open. -->
-        <template v-if="!compact || !editing" #foot>
+             On a phone none of it survives. The foot is a row of a fixed pane
+             rather than something the page scrolls past, so every pixel it
+             spends comes off the grid — the three ways of reading the chart go
+             into the settings drawer behind the gear, and clearing your answer
+             goes the other way, onto the identity bar beside the name it wipes.
+             That leaves nothing, so there is no foot at all rather than an
+             empty row holding a line of space open. -->
+        <template v-if="!compact" #foot>
           <div class="chart-foot">
             <!-- Which clock the gutter is printed on, at the gutter's own
                  edge: the control sits where what it changes begins. -->
             <Segmented
-              v-if="!compact"
               v-model="clock"
               class="chart-foot__clock"
               label="Clock format"
@@ -535,28 +530,28 @@ function onSolo(person: { key: string; displayName: string } | null) {
               size="sm"
             />
 
+            <!-- Beside the clock rather than at the far end, where it used to
+                 sit in the slot that belongs to the mode's own action. It is
+                 not an action: it is a way of reading the chart, like the clock
+                 it now stands next to and the legend that follows them. -->
+            <label v-if="!editing" class="best">
+              <input v-model="showBestTimes" type="checkbox" />
+              Show best times
+            </label>
+
             <ColorLegend
-              v-if="!compact"
               class="chart-foot__legend"
               :mode="editing ? 'edit' : 'group'"
               :max="maxCount"
               :total="responseIndex.keys.length"
             />
 
-            <!-- The verb is what a phone's foot row gives up first: beside a
-                 heatmap, "Best times" on a checkbox says the same thing in the
-                 width the row can actually spare. -->
-            <label v-if="!editing" class="best chart-foot__end">
-              <input v-model="showBestTimes" type="checkbox" />
-              {{ compact ? "Best times" : "Show best times" }}
-            </label>
-
             <!-- The one control on the page that destroys something, so it
                  says what it destroys rather than leaving a bin glyph to be
                  guessed at. On a phone it is not here at all — it rides the
                  identity bar, next to the name whose answer it wipes. -->
             <Button
-              v-else-if="guestName && hasMarks"
+              v-if="editing && guestName && hasMarks"
               class="clear chart-foot__end"
               :class="{ 'clear--armed': clearOpen }"
               variant="ghost"
@@ -640,11 +635,15 @@ function onSolo(person: { key: string; displayName: string } | null) {
       </div>
     </div>
 
-    <!-- Whose answer is on the chart, and the way back to everybody's. Fixed
-         to the viewport rather than to the chart: the desktop's chart is
-         taller than the screen, and a label at the bottom of it would be below
-         the fold exactly when you are reading the part you scrolled to. -->
-    <IsolationPill v-if="isolated" :name="isolatedLabel" @exit="showEveryone" />
+    <!-- What the group view is currently doing to itself — showing one
+         person, showing only the fullest slots, or both — and the way out of
+         each. See `ModePills` for why they stack rather than merge. -->
+    <ModePills
+      :isolated="isolated ? isolatedLabel : null"
+      :best-times="showBestTimes && !editing"
+      @exit-isolation="showEveryone"
+      @exit-best-times="showBestTimes = false"
+    />
 
     <!-- An empty chart with no explanation reads as one that failed to load.
          Fixed too, and inert: it is a caption for the whole view, so it does
@@ -701,6 +700,7 @@ function onSolo(person: { key: string; displayName: string } | null) {
       v-if="compact"
       v-model:timezone="timezone"
       v-model:clock="clock"
+      v-model:best-times="showBestTimes"
       :open="settingsOpen"
       :timezones="timezones"
       :reference-date="referenceDate"
@@ -799,10 +799,11 @@ function onSolo(person: { key: string; displayName: string } | null) {
   flex: none;
 }
 
-/* The clock leads at the columns' own left edge, the legend follows it, and the
-   mode's own control keeps the far end — the last column's edge — however
-   narrow the screen gets. Too narrow for all three and the row wraps rather
-   than dropping the words off the button. */
+/* Everything about *reading* the chart leads at the columns' own left edge —
+   the clock, the best-times filter, then the legend — and the one thing that
+   acts on the chart keeps the far end, the last column's edge, however narrow
+   the screen gets. Too narrow for all of it and the row wraps rather than
+   dropping the words off the button. */
 .chart-foot {
   display: flex;
   flex-wrap: wrap;
@@ -823,9 +824,10 @@ function onSolo(person: { key: string; displayName: string } | null) {
   margin-left: auto;
 }
 
-/* The filter that reads the group's answer, in the slot the clear button holds
-   while you are writing your own. A checkbox rather than a button because it is
-   a state of the chart, not an action on it. */
+/* The filter that reads the group's answer. A checkbox rather than a button
+   because it is a state of the chart, not an action on it — which is also why
+   it stands beside the clock rather than at the end of the row where the
+   actions are. */
 .best {
   display: inline-flex;
   align-items: center;
@@ -1032,24 +1034,6 @@ function onSolo(person: { key: string; displayName: string } | null) {
     width: 100%;
   }
 
-  /* The foot is now a row of the pane rather than something the page scrolls
-     past, so it spends as little height as it can: two controls, one row, and
-     nothing that could wrap it into two. What a finger has to hit keeps its
-     floor — the shrinking is in the words, not in the targets. */
-  .compact .chart-foot {
-    flex-wrap: nowrap;
-    gap: 0.4rem;
-  }
-
-  .compact .best {
-    gap: 0.3rem;
-    font-size: 0.75rem;
-  }
-
-  .compact .best input {
-    width: 0.9rem;
-    height: 0.9rem;
-  }
 }
 
 /* Held sideways there are about 360 pixels of height and the switch, the foot
