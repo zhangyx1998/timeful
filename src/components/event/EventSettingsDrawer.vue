@@ -8,9 +8,14 @@
  * every row of chrome comes off the grid. So on a phone they go behind a gear,
  * and the foot keeps only the control that changes what the chart *says*.
  *
- * The owner's tools lead it, as they lead the desktop column, and the way in
- * for an owner who is not signed in closes it, as it closes the desktop column.
- * Same order, same reasons, different container.
+ * The owner's tools used to lead it, as they lead the desktop column. They do
+ * not any more: they are not settings — they act on the event, or leave it —
+ * and behind a gear they were a surprise waiting for whichever visitor happened
+ * to be signed in. They have a sheet of their own now, opened from the shield
+ * in the navbar (`AdminDrawer`). What stays is the way *in* for an owner who is
+ * not signed in yet, at the foot, as it closes the desktop column: it is the
+ * one admin thing on the page a guest is allowed to find, and there is nowhere
+ * else on a phone to put it.
  *
  * It carries one thing the desktop has no need of. Undo and redo are a pair of
  * keystrokes on a keyboard, and a phone has none — so the two of them are
@@ -20,7 +25,6 @@
  * how you find out that undo exists at all.
  */
 import AdminLoginLink from "./AdminLoginLink.vue";
-import AdminTools from "./AdminTools.vue";
 import ColorLegend from "./ColorLegend.vue";
 import TimezoneField from "./TimezoneField.vue";
 import Dialog from "../ui/Dialog.vue";
@@ -33,8 +37,6 @@ import type { GridMode } from "../../lib/event";
 
 defineProps<{
   open: boolean;
-  /** The event the owner's tools act on. The uuid, so a rename cannot strand them. */
-  eventId: string;
   timezones: string[];
   referenceDate: Date;
   autoTimezone: string;
@@ -53,7 +55,6 @@ const clock = defineModel<string>("clock", { required: true });
 const emit = defineEmits<{
   close: [];
   "reset-timezone": [];
-  edit: [];
   undo: [];
   redo: [];
 }>();
@@ -62,8 +63,6 @@ const emit = defineEmits<{
 <template>
   <Dialog variant="sheet" :open="open" title="View settings" @close="emit('close')">
     <div class="stack">
-      <AdminTools v-if="isAdmin" :event-id="eventId" @edit="emit('edit')" />
-
       <TimezoneField
         v-model="timezone"
         :timezones="timezones"

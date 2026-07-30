@@ -1068,8 +1068,9 @@ text.
   six columns, 430px eight.
 - Below **820px** the event page is an app rather than a document: the page
   itself does not scroll, the chart fills the space between the header bar and
-  the identity bar and scrolls inside it on both axes, and the respondents and
-  the view settings move into bottom-sheet drawers. Both the clock and the
+  the identity bar and scrolls inside it on both axes, and the respondents, the
+  view settings and — for an owner — the [admin tools](#the-owner-on-an-event-page)
+  each move into a bottom-sheet drawer. Both the clock and the
   legend live in the settings drawer there rather than in the chart's foot: they
   describe the chart rather than changing it, and a foot row of a fixed pane
   costs grid. The drawer also carries the one control a phone cannot get from a
@@ -1138,9 +1139,10 @@ text.
    is told so and steps back too. Neither happens with live updates off, because
    then there are no sessions.
 7. An admin visiting an event page answers it exactly as a guest does. What they
-   get extra is a bordered **Admin** group at the head of the sidebar — or of
-   the settings drawer on a phone — carrying Edit event, Back to home, Details
-   and Logout. A guest renders none of it.
+   get extra is a bordered **Admin** group at the head of the sidebar — or, on a
+   phone, a bottom-sheet drawer of its own behind a shield in the navbar —
+   carrying Edit event, Back to home, Details and Logout. A guest renders none
+   of it.
 
 ### The owner, on an event page
 
@@ -1149,9 +1151,25 @@ page has one answer to it and three places render off it. It **fails closed**
 (`fetchIsAdmin`), and nothing rests on it: every route behind those buttons is
 gated by the session cookie regardless.
 
+**One mark, everywhere.** `shield-half.svg` — a shield whose left half is
+filled — is the app's only admin signifier: the sidebar group's heading, the
+navbar button on a phone, that drawer's own header, and the Administrator Login
+link and its dialog all wear it. Nothing else does, so the glyph means exactly
+one thing wherever it is met.
+
+The phone's tools are a drawer of their own rather than a section of the view
+settings, and the button that opens them is in the navbar rather than beside
+the chart. Both follow from what they are: they act on the event or leave it,
+which is neither a setting nor a property of the view being looked at — so the
+sheet opens the same way from the group view and from "My availability", and a
+guest who opens the gear finds only settings. The button and the sheet are
+owned by `EventPage`, which already owns the navbar and the edit form.
+
 Signing in does not mean leaving. A grey **Administrator Login** at the foot of
-the sidebar (or the drawer) opens the admin app's own form — `LoginForm`, shared
-so the two cannot drift — in a dialog over the event page.
+the sidebar (or of the settings drawer) opens the admin app's own form —
+`LoginForm`, shared so the two cannot drift — in a dialog over the event page.
+It stays in the settings drawer on a phone precisely because the admin drawer
+is not there yet for somebody who is not signed in.
 
 ::: tip Neither signing in nor signing out reloads anything.
 Both re-probe `GET /api/status` rather than writing down what they expect, so a

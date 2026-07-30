@@ -30,6 +30,13 @@ import type { EventDetails, EventDetailsUser } from "../../lib/api";
 const props = defineProps<{
   /** The event these act on. The uuid, so a rename cannot strand them. */
   eventId: string;
+  /**
+   * Inside the phone's admin drawer the border and the heading are the sheet's
+   * own — it is titled "Admin" and wears the shield already — so both are
+   * dropped here and only the tools are left. Same reasoning, and the same
+   * prop name, as the respondents panel inside its own drawer.
+   */
+  embedded?: boolean;
 }>();
 
 const emit = defineEmits<{ edit: [] }>();
@@ -72,12 +79,17 @@ async function signOut(): Promise<void> {
 </script>
 
 <template>
-  <section class="tools" aria-labelledby="admin-tools-title">
+  <section
+    class="tools"
+    :class="{ 'tools--embedded': embedded }"
+    :aria-labelledby="embedded ? undefined : 'admin-tools-title'"
+    :aria-label="embedded ? 'Admin' : undefined"
+  >
     <!-- The half-solid shield is the app's one admin mark: the same glyph is on
          the navbar button that opens the phone's admin drawer, on that drawer's
          own header, and on the way back in at the foot of the column. Wherever
          it appears, it means "this belongs to whoever is signed in". -->
-    <h2 id="admin-tools-title" class="tools__title">
+    <h2 v-if="!embedded" id="admin-tools-title" class="tools__title">
       <IconShield class="tools__mark" aria-hidden="true" />
       Admin
     </h2>
@@ -175,6 +187,14 @@ async function signOut(): Promise<void> {
   padding: 0.5rem 0.6rem 0.6rem;
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-md);
+}
+
+/* In the drawer the sheet is the box and its header is the title, so the group
+   is nothing but its rows. */
+.tools--embedded {
+  padding: 0;
+  border: none;
+  border-radius: 0;
 }
 
 .tools__title {

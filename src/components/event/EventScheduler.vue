@@ -347,12 +347,6 @@ function addRespondent() {
   identityOpen.value = true;
 }
 
-/** Same reason as `addRespondent`: the drawer would sit over the dialog. */
-function onDrawerEdit() {
-  settingsOpen.value = false;
-  emit("edit");
-}
-
 // --- showing one person ---------------------------------------------------
 
 const {
@@ -680,13 +674,14 @@ function onSolo(person: { key: string; displayName: string } | null) {
 
     <!-- The one thing the phone does not merely reflow: what the desktop keeps
          in a column goes behind a gear here, because a fixed pane spends grid
-         on every row of chrome. -->
+         on every row of chrome. The owner's tools are not among them — they
+         act on the event rather than describing it, and have a sheet of their
+         own off the navbar (`AdminDrawer`, owned by the page above). -->
     <EventSettingsDrawer
       v-if="compact"
       v-model:timezone="timezone"
       v-model:clock="clock"
       :open="settingsOpen"
-      :event-id="event.id"
       :timezones="timezones"
       :reference-date="referenceDate"
       :auto-timezone="autoTimezone"
@@ -697,7 +692,6 @@ function onSolo(person: { key: string; displayName: string } | null) {
       :can-redo="history.canRedo.value"
       @close="settingsOpen = false"
       @reset-timezone="resetTimezone"
-      @edit="onDrawerEdit"
       @undo="history.undo"
       @redo="history.redo"
     />

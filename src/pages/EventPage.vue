@@ -7,14 +7,17 @@
  * it depends on the browser's timezone and localStorage, which the server
  * cannot know without producing a hydration mismatch.
  */
-import { computed, inject, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import AdminDrawer from "../components/event/AdminDrawer.vue";
 import CopyLinkButton from "../components/ui/CopyLinkButton.vue";
 import EventScheduler from "../components/event/EventScheduler.vue";
 import EventFormDialog from "../components/shared/EventFormDialog.vue";
 import AppHeader from "../components/ui/AppHeader.vue";
+import IconButton from "../components/ui/IconButton.vue";
 import ThemeToggle from "../components/ui/ThemeToggle.vue";
 import Button from "../components/ui/Button.vue";
 import Dialog from "../components/ui/Dialog.vue";
+import IconShield from "../assets/icons/shield-half.svg";
 import { isAdmin, refreshAdmin } from "../lib/admin";
 import { api, eventDataPath } from "../lib/api";
 import {
@@ -30,6 +33,7 @@ import {
   type RealtimeSession,
   type SavePayload,
 } from "../lib/realtime";
+import { useViewport } from "../lib/viewport";
 
 defineProps<{ slug?: string }>();
 
@@ -45,6 +49,33 @@ const mounted = ref(false);
  * session cookie regardless (ARCHITECTURE.md § Guest UX).
  */
 const editOpen = ref(false);
+
+/**
+ * The phone's admin drawer, and the navbar shield that opens it.
+ *
+ * It lives up here rather than in the scheduler because the button does: the
+ * navbar is this page's, and the tools it opens act on the event rather than on
+ * either view of the chart — so the sheet answers a tap the same way whether
+ * the group's answers or the visitor's own are on screen.
+ *
+ * `compact` is the same measurement the scheduler makes (`lib/viewport.ts`);
+ * both are false until mount, so the server renders neither the button nor the
+ * sheet and there is nothing here to mismatch on hydration.
+ */
+const { compact } = useViewport();
+const adminOpen = ref(false);
+
+/** Widening past the phone layout puts the tools back in the sidebar, so the
+ *  sheet holding a second copy of them goes — the same rule the scheduler
+ *  applies to its own two drawers. */
+watch(compact, (on) => {
+  if (!on) adminOpen.value = false;
+});
+
+/** The drawer asked for the edit form, which is this page's own dialog. */
+function onAdminEdit(): void {
+  editOpen.value = true;
+}
 
 /** Set when the event is deleted out from under an open page. */
 const gone = ref(false);
@@ -266,6 +297,19 @@ onBeforeUnmount(() => {
            right-hand group rather than sitting in the body. -->
       <p v-if="event" class="when" :title="subtitle">{{ subtitle }}</p>
 
+      <!-- The phone's way to the owner's tools, beside the theme switch because
+           it is the same kind of control: it acts on the whole page rather than
+           on either view of the chart. A guest never renders it — `isAdmin`
+           fails closed — and neither does the desktop, which keeps the tools
+           where they already are, at the head of the sidebar. -->
+      <IconButton
+        v-if="isAdmin && compact && event"
+        label="Admin tools"
+        @click="adminOpen = true"
+      >
+        <IconShield />
+      </IconButton>
+
       <ThemeToggle />
     </AppHeader>
 
@@ -295,6 +339,17 @@ onBeforeUnmount(() => {
 
       <p v-else class="loading">No event data.</p>
     </main>
+
+    <!-- Before the form dialog below it, so the sheet's teleport anchor lands
+         first in <body> and the form it opens is drawn over it rather than
+         under it. -->
+    <AdminDrawer
+      v-if="isAdmin && compact && event"
+      :open="adminOpen"
+      :event-id="event.id"
+      @close="adminOpen = false"
+      @edit="onAdminEdit"
+    />
 
     <EventFormDialog
       v-if="isAdmin"
