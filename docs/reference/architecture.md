@@ -65,6 +65,7 @@ rule both halves must apply identically rather than a shape they must agree on:
 | -------- | -- | --- |
 | `realtimeAllowed` (`event.ts`) | `realtime.ts` | "no `realtime` field means on" is one default |
 | `normalizeResponses` (`event.ts`) | `storage.ts` | what a legacy file *means* is one reading |
+| `publicEvent` (`event.ts`) | `app.ts`, `routes/events.ts`, `realtime.ts` | what a link-holder may see is one rule, and the SSR page must apply the JSON route's |
 | `userKey`, `guestNameProblem`, … (`user-key.ts`) | `routes/events.ts`, `realtime.ts` | the dialog must reject what the server rejects, in the same words |
 | `slugProblem`, `RESERVED_SUBPATHS` (`slug-rules.ts`) | `slugs.ts`, `routes/events.ts` | same, for paths |
 | `parseSaveMessage`, close codes (`realtime.ts`) | `realtime.ts` | one definition of the frame both ends write |
@@ -129,6 +130,13 @@ interface EventResponse {
   availability: string[];           // ISO slot-start instants
   ifNeeded: string[];               // ISO slot-start instants
   updatedAt: string;
+  lastEdit?: LastEdit;              // PRIVATE — never served publicly
+}
+
+interface LastEdit {
+  ip: string;                       // trust-proxy-aware
+  userAgent: string;                // sliced to 400 chars
+  at: string;                       // ISO; the same instant as updatedAt
 }
 ```
 
@@ -136,7 +144,38 @@ Each entry in `dates` is a day's start instant, one per grid column; `duration`
 in hours defines the daily window. Availability entries are slot-start
 timestamps aligned to `timeIncrement`.
 
-`realtime` is the only optional field, and its absence is meaningful: every
+### The one private field
+
+`lastEdit` records where a response was **last written from**, and it is the
+only part of an event document that a link-holder may not read. It is
+overwritten in full on every write — the REST `PUT` and a `save` frame alike,
+because both go through `writeResponse` — and never merged, since half a stale
+origin is a worse answer than none.
+
+::: danger It is stripped at the door, not at the write.
+The whole document is public to whoever holds the URL: it is inlined into the
+server-rendered page byte for byte. So the exception needs exactly one gate.
+`publicEvent` (`src/lib/event.ts`) removes the field, and **every** way a
+document leaves the server goes through it — `GET /<slug>/data`, the SSR page,
+the `PUT`'s own answer, the `PATCH` answer and every realtime snapshot. The
+only caller that does not is `GET /<slug>/details`, which is behind the login
+wall and exists to serve exactly this.
+
+It is a shallow copy, deliberately: the argument is the in-memory document the
+storage layer just read, and stripping it in place would delete the field from
+the next write.
+:::
+
+The address is trust-proxy-aware. The `PUT` reads `req.ip`; a write session has
+no request left by the time a frame arrives, so the origin is captured at the
+**handshake**, and the address for it is resolved through the app's own
+`trust proxy` setting rather than the raw peer address — behind nginx the latter
+is `127.0.0.1` for every guest, which would make the field useless. The
+[tarpit](#the-tarpit) deliberately keeps the peer address: counting misses wants
+the one nobody can spoof.
+
+`realtime` and `lastEdit` are the only optional fields. `realtime`'s absence is
+meaningful: every
 event written before [live updates](#realtime-updates) existed lacks it, none of
 them are rewritten, and **absent reads as `true`**. Code asks
 `realtimeAllowed(event)` (`src/lib/event.ts`) rather than testing the field, so
@@ -306,7 +345,8 @@ safer choice from a page that might be open across a rename.
 
 | Route | Auth | Notes |
 | ----- | ---- | ----- |
-| `GET /<slug>/data` | **public** | the full event document — this is what the event page reads |
+| `GET /<slug>/data` | **public** | the full event document, less [`lastEdit`](#the-one-private-field) — this is what the event page reads |
+| `GET /<slug>/details` | admin | `{ users: [{ key, displayName, lastEdit }] }`, by display name. The **only** route that serves `lastEdit`, and the login wall the owner's tools sit behind |
 | `PATCH /<slug>/settings` | admin | any subset of the create fields, plus `slug` to rename |
 | `DELETE /<slug>/settings` | admin | → `{ ok: true }` |
 | `PUT /<slug>/users/<userKey>` | **public** | `{ displayName, availability?, ifNeeded? }` → `{ ok, key, response \| null }` |
@@ -314,7 +354,8 @@ safer choice from a page that might be open across a rename.
 | `GET /<slug>/ws` | **public** | WebSocket upgrade — the [browse socket](#realtime-updates), read-only. A non-upgrade `GET` is a plain `404` |
 | `GET /<slug>/users/<userKey>` | **public** | WebSocket upgrade — the [named write session](#named-write-sessions). A non-upgrade `GET` is a plain `404` |
 
-`data`, `settings`, `users` and `ws` are therefore **reserved sub-segments**.
+`data`, `details`, `settings`, `users` and `ws` are therefore **reserved
+sub-segments**.
 Slugs themselves are single segments and are unaffected; the reserved-slug list
 in `slug-rules.ts` is unchanged.
 
@@ -376,8 +417,8 @@ the `{ error }` field. `fetchIsAdmin()` fails **closed**.
 **Paths are written out in full**, and are no longer prefixed with `/api`
 automatically: there are two namespaces now, and a client that guessed between
 them would be guessing. The event-scoped ones have builders —
-`eventDataPath`, `eventSettingsPath`, `userPath` — so no call site spells
-one by hand.
+`eventDataPath`, `eventDetailsPath`, `eventSettingsPath`, `userPath` — so no
+call site spells one by hand.
 
 ## Realtime updates
 
@@ -751,8 +792,8 @@ try and blunts anything cheaper.
 - a WebSocket upgrade to either socket whose event does not resolve;
 - failed `POST /api/auth/setup` and `POST /api/auth/login`.
 
-The admin-only `PATCH`/`DELETE /<slug>/settings` are **not** in that list, for
-the same reason no admin route ever has been: the caller is already
+The admin-only `GET /<slug>/details` and `PATCH`/`DELETE /<slug>/settings` are
+**not** in that list, for the same reason no admin route ever has been: the caller is already
 authenticated, so delaying them buys nothing and only makes the panel feel
 broken when a stale tab asks about a deleted event.
 
@@ -837,7 +878,7 @@ event-scoped paths now gets.
 
 ### `/<slug>/…` — an event's own endpoints
 
-`data`, `settings`, `users` and `ws` are the reserved sub-segments. The
+`data`, `details`, `settings`, `users` and `ws` are the reserved sub-segments. The
 event-scoped router is mounted after the static middleware (so a real file under
 `/assets/…` is still a file) and before the page handler (which owns
 single-segment paths).
@@ -877,7 +918,11 @@ serialisation escapes `<`, U+2028 and U+2029.
 
 The **entire** event document, responses included, is inlined into the page.
 That is the point — the grid is populated on first paint with no round-trip —
-but it means anything ever added to the document is public to link-holders.
+but it means anything ever added to the document is public to link-holders. The
+one exception is `lastEdit`, and the page takes the same strip the JSON route
+does, from the same function: see
+[the one private field](#the-one-private-field). Anything else added had better
+be public, or it needs the same treatment.
 
 Injected meta: `robots=noindex`, a description, `og:type`, `og:site_name`,
 `og:title`, `og:description`, `og:url`, and the `twitter:` card equivalents.
@@ -953,21 +998,38 @@ text.
   inside that container, pinned with `position: sticky` on their own axis. A
   paint drag — or a handle drag — held at a clipped edge glides the scroll
   position under it, quantised to whole columns under `prefers-reduced-motion`.
+- How many columns a viewport holds is a fact about the layout on a desktop — a
+  week — and a question about the screen on a phone. `perViewFor` (`grid.ts`)
+  divides the width by a target column width measured against the **column
+  heading**: the header's height is fixed, so a label too wide for its column
+  wraps and pushes the weekday out of sight rather than making room. 360px holds
+  six columns, 430px eight.
 - Below **820px** the event page is an app rather than a document: the page
   itself does not scroll, the chart fills the space between the header bar and
   the identity bar and scrolls inside it on both axes, and the respondents and
-  the view settings move into bottom-sheet drawers. The chart's foot keeps the
-  clock and the mode's own control on one row and drops the legend, because
-  every pixel it spends there comes off the grid.
+  the view settings move into bottom-sheet drawers. Both the clock and the
+  legend live in the settings drawer there rather than in the chart's foot: they
+  describe the chart rather than changing it, and a foot row of a fixed pane
+  costs grid. Clearing your own answer goes the other way, onto the identity
+  bar beside the name it wipes, which leaves the phone's foot holding the
+  best-times filter in the group view and **nothing at all** in the edit view —
+  so there is no foot then, rather than an empty row.
 - Two readings of the group's answer that the desktop gets from the column
   beside the chart are given back to the phone, where that column is behind a
   drawer. A **tap** on a cell raises a card over it naming who is free at that
   slot in the respondents list's own glyphs — the pinned slot, read a second
-  way, not a second kind of selection. And an **eye** on each answered row of
-  the drawer puts that one person's answer on the chart alone, since a heatmap
-  is a sum and a sum cannot say who is behind it. The single-person view lives
-  exactly as long as the drawer does; turning it on collapses the drawer to that
-  row and stops it dimming, or it would be covering the chart it just changed.
+  way, not a second kind of selection.
+- An **eye** on every row of the respondents list puts that one person's answer
+  on the chart alone, since a heatmap is a sum and a sum cannot say who is
+  behind it. It is a view of the chart rather than a mode of the list
+  (`lib/isolation.ts`): the list does not move when one goes on, the view
+  survives the drawer closing, and a pill fixed over the chart names whose
+  answer is on it and takes it away again. Two rules, both about the edit tab —
+  entering it always clears the isolation, and an eye pressed from inside it
+  steps out and isolates in one gesture rather than doing nothing visible.
+  Somebody who is only *present* has an eye too; isolating them shows an empty
+  chart with a viewport-fixed caption saying they have marked nothing yet, which
+  is a real answer to a real question.
 - The heatmap tints each cell with the `--color-slot-available` green at an
   alpha scaled by respondent-count over the maximum, and a separate tone for
   if-needed. Because the token is declared with `light-dark()`, the actual
@@ -1002,8 +1064,33 @@ text.
    steps back to the group view and offers to take it over; the page that had it
    is told so and steps back too. Neither happens with live updates off, because
    then there are no sessions.
-7. An admin visiting an event page sees the guest view. Event management lives
-   in the admin panel, not on the event page.
+7. An admin visiting an event page answers it exactly as a guest does. What they
+   get extra is a bordered **Admin** group at the head of the sidebar — or of
+   the settings drawer on a phone — carrying Edit event, Back to home, Details
+   and Logout. A guest renders none of it.
+
+### The owner, on an event page
+
+`isAdmin` is module state (`src/lib/admin.ts`) rather than a prop, because one
+page has one answer to it and three places render off it. It **fails closed**
+(`fetchIsAdmin`), and nothing rests on it: every route behind those buttons is
+gated by the session cookie regardless.
+
+Signing in does not mean leaving. A grey **Administrator Login** at the foot of
+the sidebar (or the drawer) opens the admin app's own form — `LoginForm`, shared
+so the two cannot drift — in a dialog over the event page.
+
+::: tip Neither signing in nor signing out reloads anything.
+Both re-probe `GET /api/status` rather than writing down what they expect, so a
+login that half-succeeded cannot leave controls on screen that do not work. The
+flag is reactive, so the tools group appears and disappears where it stands and
+a half-finished answer on the grid is undisturbed.
+:::
+
+**Details** is the one thing the respondents list cannot say: two answers filed
+under one name look identical there. It asks `GET /<slug>/details` on open —
+it is a log, so what matters is what it says now — and prints each respondent's
+address, raw user agent (one line, whole string in the tooltip) and time.
 
 ## Packaging & CLI
 

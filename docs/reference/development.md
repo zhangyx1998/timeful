@@ -53,7 +53,9 @@ src/
   pages/              AdminPage.vue, EventPage.vue
   components/         admin/, event/, shared/, ui/
   lib/                dates, grid model, api client, sync engine, user keys,
-                      realtime client, save transport, theme, colors
+                      realtime client, save transport, theme, colors, and the
+                      event page's composables (response session, preferences,
+                      viewport, isolation, admin state)
   styles/tokens.css   the palette — single source of truth
 
 server/
