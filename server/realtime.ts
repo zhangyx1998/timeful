@@ -358,12 +358,20 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
   server.on("upgrade", handleUpgrade);
 
   function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
+    // In dev, Vite's HMR WebSocket rides this same server (`server/dev.ts`
+    // hands it to `server.hmr.server`) and tags every upgrade with the
+    // `vite-hmr` subprotocol — Vite's fixed token, not configurable from the
+    // client. Those are Vite's to answer, whatever URL they arrive on, so the
+    // check comes before any parse and any destroy. It is conditioned on
+    // another listener actually sharing the server: when this listener is
+    // alone — production — behaviour is exactly what it was, tarpit and all,
+    // whatever protocol a client claims.
+    if (server.listenerCount("upgrade") > 1 && isViteHmr(req)) return;
     const target = parseUpgrade(req.url ?? "");
     if (!target) {
       // Not ours. Claiming it would break anything else that shares this
-      // server — Vite's HMR socket attaches to the HTTP server whenever it is
-      // not running one of its own — so only close it when there is provably
-      // nobody else who could answer.
+      // server — in dev, Vite's HMR listener — so only close it when there is
+      // provably nobody else who could answer.
       if (server.listenerCount("upgrade") === 1) socket.destroy();
       return;
     }
@@ -565,6 +573,17 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
       return new Promise<void>((resolve) => wss.close(() => resolve()));
     },
   };
+}
+
+/**
+ * True when the upgrade names the `vite-hmr` subprotocol. The header is a
+ * comma-separated offer list, so it is split and compared token by token
+ * rather than substring-matched.
+ */
+function isViteHmr(req: IncomingMessage): boolean {
+  return headerValue(req, "sec-websocket-protocol")
+    .split(",")
+    .some((token) => token.trim() === "vite-hmr");
 }
 
 /** One request header as a plain string, however Node handed it over. */

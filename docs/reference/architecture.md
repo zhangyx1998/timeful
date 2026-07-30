@@ -476,6 +476,14 @@ Both never reach Express: the listener is on the HTTP server, registered by
 `serve()` in `server/app.ts`. A plain `GET` of either path is not an upgrade and
 falls through to the event-scoped catch-all as a `404`.
 
+In development the listener is not alone: Vite's HMR WebSocket shares the same
+server (`server/dev.ts` hands it to `server.hmr.server`), with Vite's `vite-hmr`
+subprotocol telling the two apart. The realtime listener steps aside for any
+upgrade carrying that token — checked before it parses the URL or destroys
+anything — but only while another upgrade listener actually shares the server,
+so in production, where it is alone, its behaviour does not depend on what a
+client claims.
+
 ### The contract
 
 ::: danger The browse socket is read-only, and stays read-only.

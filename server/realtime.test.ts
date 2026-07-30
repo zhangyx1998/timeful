@@ -19,7 +19,9 @@
  *   exclusivity — and the REST API carries on being the write path;
  * - rooms do not outlive their subscribers.
  */
-import type { Server } from "node:http";
+import http from "node:http";
+import type { IncomingMessage, Server } from "node:http";
+import type { Duplex } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Node's own global `WebSocket` answers pings by itself, which is the one thing
 // the reap test needs a client not to do; `ws` lets that be switched off.
@@ -228,6 +230,34 @@ async function refusedAfter(idOrSlug: string): Promise<number> {
   const started = Date.now();
   await expect(subscribe(idOrSlug)).rejects.toThrow("upgrade refused");
   return Date.now() - started;
+}
+
+/**
+ * A hand-rolled upgrade request, for handshakes `WebSocket` cannot make —
+ * an arbitrary subprotocol against a listener expected to answer with plain
+ * HTTP. Resolves with the response status; rejects if the socket is destroyed
+ * without one.
+ */
+function rawUpgradeStatus(route: string, protocol: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(`${base}${route}`, {
+      headers: {
+        Connection: "Upgrade",
+        Upgrade: "websocket",
+        "Sec-WebSocket-Version": "13",
+        "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+        "Sec-WebSocket-Protocol": protocol,
+      },
+    });
+    req.on("response", (res) => {
+      res.resume();
+      resolve(res.statusCode ?? 0);
+    });
+    // A 101 would arrive here rather than as a 'response'.
+    req.on("upgrade", (res) => resolve(res.statusCode ?? 0));
+    req.on("error", reject);
+    req.end();
+  });
 }
 
 /** Waits for a condition the server reaches on its own, or gives up. */
@@ -703,6 +733,39 @@ describe("the realtime channel", () => {
     // slug resolved, so it is a plain 404 with no delay behind it.
     expect((await call("GET", `/${event.slug}/ws`)).status).toBe(404);
     expect((await call("GET", `/${event.slug}/users/ada-lovelace`)).status).toBe(404);
+  });
+
+  it("leaves a vite-hmr upgrade to the listener that owns it", async () => {
+    attach();
+    const event = await createEvent(await adminCookie());
+
+    // Stand in for Vite: a second upgrade listener sharing the server, which
+    // is exactly the dev-mode shape (`server.hmr.server` in server/dev.ts).
+    // Like Vite's, it answers only upgrades carrying its subprotocol.
+    const answered: string[] = [];
+    const hmrListener = (req: IncomingMessage, socket: Duplex) => {
+      const protocols = String(req.headers["sec-websocket-protocol"] ?? "");
+      if (!protocols.split(",").some((p) => p.trim() === "vite-hmr")) return;
+      answered.push(req.url ?? "");
+      socket.end("HTTP/1.1 501 Not Implemented\r\nConnection: close\r\n\r\n");
+    };
+    server.on("upgrade", hmrListener);
+    try {
+      // Even on a URL the realtime listener would otherwise claim, the
+      // subprotocol decides: the upgrade reaches the HMR listener untouched
+      // instead of joining a room (or, for a miss, the tarpit).
+      const status = await rawUpgradeStatus(`/${event.slug}/ws`, "vite-hmr");
+      expect(status).toBe(501);
+      expect(answered).toEqual([`/${event.slug}/ws`]);
+      expect(roomCount()).toBe(0);
+
+      // And without the token, the same URL is still realtime's to serve.
+      const subscriber = await subscribe(event.slug);
+      expect(clientCount(event.id)).toBe(1);
+      subscriber.socket.close();
+    } finally {
+      server.off("upgrade", hmrListener);
+    }
   });
 
   // -------------------------------------------------------------------------
