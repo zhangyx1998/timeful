@@ -38,13 +38,6 @@
     "test": "vitest run",
     "typecheck": "vue-tsc --noEmit"
   },
-  "dependencies": {
-    "dayjs": "^1.11.21",
-    "express": "^5.2.1",
-    "vue": "^3.5.40",
-    "vue-router": "^4.6.4",
-    "ws": "^8.21.1"
-  },
   "devDependencies": {
     "@rollup/plugin-commonjs": "^29.0.3",
     "@rollup/plugin-json": "^6.1.0",
@@ -55,13 +48,18 @@
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-vue": "^6.0.8",
     "@zhangyx1998/svg-loader": "^0.0.2",
+    "dayjs": "^1.11.21",
     "esbuild": "^0.28.1",
+    "express": "^5.2.1",
     "rollup": "^4.62.3",
     "rollup-plugin-esbuild": "^6.2.1",
     "typescript": "^5.9.3",
     "vite": "^8.1.5",
     "vitest": "^3.2.4",
-    "vue-tsc": "^2.2.10"
+    "vue": "^3.5.40",
+    "vue-router": "^4.6.4",
+    "vue-tsc": "^2.2.10",
+    "ws": "^8.21.1"
   },
   "allowScripts": {
     "esbuild@0.28.1": true

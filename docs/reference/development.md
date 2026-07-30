@@ -153,6 +153,16 @@ runtime is bundled at build time, into `cli.js` and the per-package chunks
 under `dist/vendor/`, so there is nothing left to install. It also
 copies `LICENSE` and `docs/npm-README.md` (as `README.md`) into `dist/`.
 
+The root manifest follows the same rule: its `dependencies` field is
+**reserved for packages the published artifact must have installed at
+runtime** — none today — and `packageMeta` forwards the field verbatim
+whenever it is non-empty (the artifact test pins the two to matching).
+Everything that is bundled at build time — `express`, `ws`, `vue`,
+`vue-router`, `dayjs` — lives in `devDependencies`, because it is build
+tooling from the package's point of view. The trade-off is deliberate: a
+checkout always uses plain `npm install`, since `--omit=dev` would leave
+`npm run dev` and `npm start` without the server's own packages.
+
 `npm run build:debug` writes a `private: true` stub instead, so a debug `dist/`
 cannot be published by accident.
 

@@ -79,11 +79,16 @@ describe.skipIf(!fs.existsSync(cliFile))("dist/cli.js", () => {
     expect(scripts).toEqual(["cli.js"]);
   });
 
-  it("declares no dependencies", () => {
-    // Everything runtime is bundled; a dependencies key appearing here means
-    // something started resolving as external (ARCHITECTURE.md § Packaging).
+  it("mirrors the root manifest's dependencies exactly", () => {
+    // Root `dependencies` is reserved for packages the published artifact
+    // must have installed — packages bundled at build time live in
+    // devDependencies — and packageMeta forwards the field verbatim. Both
+    // sides are empty today; if one stops being empty, the other must match.
     const pkg = JSON.parse(fs.readFileSync(pkgFile, "utf8")) as Record<string, unknown>;
-    expect("dependencies" in pkg).toBe(false);
+    const root = JSON.parse(
+      fs.readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8"),
+    ) as Record<string, unknown>;
+    expect(pkg.dependencies ?? {}).toEqual(root.dependencies ?? {});
     expect("devDependencies" in pkg).toBe(false);
   });
 });

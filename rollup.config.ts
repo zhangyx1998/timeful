@@ -46,9 +46,15 @@ const distKeys = [
  */
 function packageMeta(isProduction: boolean): Plugin {
   const bin = { timeful: "cli.js" };
+  // The contract: root `dependencies` = published dependencies, forwarded
+  // verbatim. Packages bundled at build time live in `devDependencies`; the
+  // field here is reserved for anything that must be installed alongside the
+  // artifact — none today, so nothing is emitted.
+  const dependencies = pkg.dependencies ?? {};
   const packageJSON = isProduction
     ? {
         ...pick(pkg, ...distKeys),
+        ...(Object.keys(dependencies).length > 0 ? { dependencies } : {}),
         type: "module",
         bin,
         publishConfig: { access: "public" },
