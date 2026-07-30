@@ -47,10 +47,12 @@ jobs:
 
       - run: npm ci
 
-      # The same gates as CI. A tag is a bad place to discover a broken test.
+      # The same gates as CI, in the same order: build before test, because
+      # the CLI tests serve assets out of dist/. A tag is a bad place to
+      # discover a broken test.
       - run: npm run typecheck
-      - run: npx vitest run
       - run: npm run build
+      - run: npx vitest run
 
       # dist/ is the package: its own generated package.json, no dependencies
       # to install, and the CLI as its bin. The root package is private.

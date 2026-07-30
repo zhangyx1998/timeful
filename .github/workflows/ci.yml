@@ -32,8 +32,12 @@ jobs:
       # step means a type error is reported as a type error rather than as a
       # build failure.
       - run: npm run typecheck
-      - run: npx vitest run
+
+      # Build before testing: the CLI tests spawn the real `timeful` and the
+      # ones that reach "server on ..." serve assets out of dist/, which a
+      # fresh runner does not have until the build writes it.
       - run: npm run build
+      - run: npx vitest run
 
   docs:
     name: Build docs
