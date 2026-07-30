@@ -13,6 +13,7 @@ import { api, apiError, eventDataPath } from "../../lib/api";
 import EventFormDialog from "../shared/EventFormDialog.vue";
 import EventList from "./EventList.vue";
 import SessionsSection from "./SessionsSection.vue";
+import UpdateSection from "./UpdateSection.vue";
 import AppHeader from "../ui/AppHeader.vue";
 import Button from "../ui/Button.vue";
 import Segmented from "../ui/Segmented.vue";
@@ -138,6 +139,8 @@ onMounted(loadEvents);
           :email="props.email"
           @signed-out="(message: string) => emit('signed-out', message)"
         />
+
+        <UpdateSection @signed-out="emit('signed-out', 'You were signed out.')" />
       </template>
     </main>
   </div>
