@@ -7,6 +7,13 @@
  * outlined for everyone else, so they are findable at a glance in a list of
  * strangers.
  *
+ * The fraction beside the heading — how many of them are free at the slot under
+ * the pointer — is desktop-only, and for the same reason the hover highlight
+ * is: on a phone this list is a sheet *over* the chart, so there is no slot
+ * being pointed at and the number could only ever be stale or the whole roster.
+ * The per-row glyphs are not the same thing and stay: a slot pinned by a tap
+ * before the drawer was opened still has an answer for each person in it.
+ *
  * Hovering or pinning a slot turns the roster into an answer for that slot:
  * each person icon becomes the mark that person made — a green check, an
  * amber hourglass for if-needed, a red cross for unavailable — in the same
@@ -74,7 +81,9 @@ import type { PresenceEntry } from "../../lib/realtime";
 const props = defineProps<{
   /**
    * Inside a drawer the card chrome and the heading are the drawer's own, so
-   * both are dropped and only the answer is left.
+   * both are dropped and only the list is left — and the `M/N available`
+   * fraction with them, because it answers a question about the slot under the
+   * pointer and there is no pointing at a chart the sheet is sitting on.
    */
   embedded?: boolean;
   /**
@@ -309,9 +318,17 @@ function confirmSwitch() {
 
 <template>
   <aside class="panel" :class="{ 'panel--embedded': embedded }">
-    <header class="head">
-      <h2 class="heading">
-        <template v-if="!embedded">Respondents</template>
+    <!-- In the drawer there is nothing above the list until a slot puts
+         something there, and then the divider is the divider for it. -->
+    <header v-if="!embedded || slotLabel" class="head" :class="{ 'head--slim': embedded }">
+      <!-- The fraction answers "how many of them can make the slot I am
+           pointing at", and pointing at one is exactly what cannot be done
+           from inside the drawer: the sheet is over the chart. So it is
+           desktop-only — there it moves as the pointer crosses the grid, and
+           here it could only ever be a stale number or 3/3. What a slot *does*
+           reach in the drawer is the per-row glyphs, which stay. -->
+      <h2 v-if="!embedded" class="heading">
+        Respondents
         <span class="count" :class="`count--${countTone}`">
           {{ availableCount }}/{{ keys.length }} available
         </span>
@@ -493,7 +510,10 @@ function confirmSwitch() {
 
 .panel--embedded {
   min-width: 0;
-  padding: 0;
+  /* The sheet's own header is the heading now, so the only space left to keep
+     is the breath between it and the first row — the same the other drawers
+     open onto. */
+  padding: 0.35rem 0 0;
   background: none;
   border: none;
   border-radius: 0;
@@ -508,6 +528,17 @@ function confirmSwitch() {
   padding-bottom: 0.6rem;
   margin-bottom: 0.6rem;
   border-bottom: 1px solid var(--color-border);
+}
+
+/* In the drawer there is no pointer crossing the grid, so nothing to hold a
+   height open against: the slot line is the whole of the head, and it is
+   either there or the head is not rendered at all. */
+.head--slim {
+  min-height: 0;
+}
+
+.head--slim .slot {
+  margin-top: 0;
 }
 
 .heading {

@@ -772,6 +772,15 @@ to the group view and asks; on `replaced` it does the same and explains.
   or the heatmap's maximum — both of which are computed from the response index,
   which presence never enters. Clicking the row still offers to answer as them.
 
+That `M/N available` count is **desktop-only**, for the reason the hover
+highlight is: it says how many are free at the slot under the pointer, and on a
+phone the list is a sheet *over* the chart, so there is no slot being pointed at
+and the number could only be stale or the whole roster. The per-row glyphs are a
+different thing and stay — a slot pinned by a tap before the drawer was opened
+still has an answer for each person in it, and the slot's own label still heads
+the sheet when there is one. With neither, the drawer's list starts at the top
+of the sheet with no rule and no held-open gap above it.
+
 An incoming snapshot deliberately **does not** touch a visitor's half-finished
 answer. The marks live in `EventScheduler`, which re-seeds from a new document
 only when it asked for one (`awaitingIdentityRefresh`), and the current identity

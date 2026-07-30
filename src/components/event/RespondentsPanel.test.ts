@@ -26,6 +26,8 @@ import type { PresenceEntry } from "../../lib/realtime";
  * derives them.
  */
 interface Options {
+  /** The phone's drawer: no card, no heading, no fraction. */
+  embedded?: boolean;
   /** Respondents with a stored answer, by display name. */
   names?: string[];
   /** Who is on the page: a display name, or an entry that spells itself. */
@@ -43,6 +45,7 @@ const entry = (person: string | PresenceEntry): PresenceEntry =>
 function render(options: Options = {}): Promise<string> {
   const names = options.names ?? [];
   const props = {
+    embedded: options.embedded ?? false,
     keys: names.map(userKey),
     labels: new Map(names.map((name) => [userKey(name), name])),
     present: (options.present ?? []).map(entry),
@@ -196,6 +199,42 @@ describe("respondents list", () => {
     // … and somebody who has merely arrived cannot: there is nothing to
     // delete, and a button that deleted nothing would only ask to be pressed.
     expect(html).not.toContain("Remove Cy");
+  });
+
+  // -------------------------------------------------------------------------
+  // in the phone's drawer
+  // -------------------------------------------------------------------------
+
+  it("drops the fraction in the drawer, and the rule that carried it", async () => {
+    // It counts who is free at the slot under the pointer, and a sheet sitting
+    // on the chart is exactly where there is no pointing at one. What is left
+    // is the list, with nothing above it holding a gap open.
+    const html = await render({ embedded: true, names: ["Ada", "Bo"] });
+    expect(text(html)).not.toContain("available");
+    expect(html).not.toContain("Respondents");
+    expect(html).not.toContain('class="head"');
+    expect(rows(html)).toEqual(["Ada", "Bo"]);
+  });
+
+  it("still says which slot a pinned one is, and how each answered it", async () => {
+    // A slot pinned by a tap before the drawer was opened is a real reading,
+    // and the per-row glyphs are how it is read — those are not the fraction.
+    const html = await render({
+      embedded: true,
+      names: ["Ada", "Bo"],
+      availableNames: ["Ada"],
+      slotLabel: "Mon 3 Aug, 13:00 – 13:30",
+    });
+    expect(text(html)).toContain("Mon 3 Aug, 13:00 – 13:30");
+    expect(text(html)).not.toContain("available");
+    expect(html).toContain("avatar--available");
+    expect(html).toContain("avatar--unavailable");
+    expect(html).toContain("head--slim");
+  });
+
+  it("keeps the fraction on the desktop, where a pointer can move it", async () => {
+    const html = await render({ names: ["Ada", "Bo"], availableNames: ["Ada"] });
+    expect(text(html)).toContain("1/2 available");
   });
 
   // -------------------------------------------------------------------------
