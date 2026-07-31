@@ -16,8 +16,10 @@ import type {
   Credential,
   LinksMap,
   Mutator,
+  PushStore,
   SessionsMap,
   StoredEvent,
+  VapidKeyRecord,
 } from "./types.ts";
 
 export function varDir(): string {
@@ -156,6 +158,26 @@ export const readLinks = (): Promise<LinksMap> => readJson<LinksMap>(LINKS_FILE,
 
 export const updateLinks = (mutator: Mutator<LinksMap>): Promise<LinksMap> =>
   updateJson<LinksMap>(LINKS_FILE, {}, mutator);
+
+export const PUSH_FILE = "push.json";
+export const VAPID_FILE = "vapid.json";
+
+// The fallbacks below are fresh objects per call: `readJson` hands the
+// fallback itself back when the file is missing, and a shared constant would
+// let one caller's mutation leak into the next read.
+export const readPushStore = (): Promise<PushStore> =>
+  readJson<PushStore>(PUSH_FILE, { subscriptions: [] });
+
+export const updatePushStore = (mutator: Mutator<PushStore>): Promise<PushStore> =>
+  updateJson<PushStore>(PUSH_FILE, { subscriptions: [] }, mutator);
+
+export const readVapidKeys = (): Promise<VapidKeyRecord | null> =>
+  readJson<VapidKeyRecord | null>(VAPID_FILE, null);
+
+export const updateVapidKeys = (
+  mutator: Mutator<VapidKeyRecord | null>,
+): Promise<VapidKeyRecord | null> =>
+  updateJson<VapidKeyRecord | null>(VAPID_FILE, null, mutator);
 
 /**
  * Brings a file written before guest keys existed up to the current shape.

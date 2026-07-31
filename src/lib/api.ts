@@ -123,6 +123,11 @@ export function userPath(idOrSlug: string, userKey: string): string {
   return `/${encodeURIComponent(idOrSlug)}/users/${encodeURIComponent(userKey)}`;
 }
 
+/** `PUT`/`DELETE /<idOrSlug>/push` — this browser's notification subscription. */
+export function eventPushPath(idOrSlug: string): string {
+  return `/${encodeURIComponent(idOrSlug)}/push`;
+}
+
 /** Extracts a human-readable message plus HTTP status from a caught error. */
 export function apiError(
   err: unknown,
@@ -265,6 +270,50 @@ export interface UpdateCheck {
   webroot: string;
   /** True when `current` is the source-checkout fallback rather than a release. */
   development: boolean;
+}
+
+/**
+ * Who a push subscription is for, which decides what it is told about.
+ *
+ * The **owner** is notified when responses change; a **respondent** is
+ * notified when the event itself changes (details edited, event deleted).
+ * Subscribing as the owner requires the admin session; a respondent
+ * subscription carries the user key it claims.
+ */
+export type PushRole = "owner" | "respondent";
+
+/** The two keys a browser mints per push subscription, base64url. */
+export interface PushSubscriptionKeys {
+  /** 65-byte uncompressed P-256 point — the browser's public key. */
+  p256dh: string;
+  /** 16-byte shared secret. */
+  auth: string;
+}
+
+/**
+ * `GET /api/push/public-key` — the server's VAPID public key, minted on first
+ * ask and stable from then on. Public: it is, literally, a public key, and a
+ * respondent subscribing from an event page has no session to present.
+ */
+export interface PushPublicKey {
+  /** base64url, suitable for `applicationServerKey` as it stands. */
+  key: string;
+}
+
+/** Payload accepted by `PUT /<idOrSlug>/push`. */
+export interface PushSubscribePayload {
+  role: PushRole;
+  /** Required when `role` is `"respondent"`; refused for the owner. */
+  userKey?: string;
+  /** The push service URL, exactly as the browser handed it out. */
+  endpoint: string;
+  keys: PushSubscriptionKeys;
+}
+
+/** Payload accepted by `DELETE /<idOrSlug>/push`. */
+export interface PushUnsubscribePayload {
+  role: PushRole;
+  endpoint: string;
 }
 
 /** A `GET /api/sessions` row. */

@@ -16,6 +16,8 @@ import type {
 import type {
   EventDetails,
   EventSummary,
+  PushRole,
+  PushSubscriptionKeys,
   SessionInfo,
   UpdateCheck,
 } from "../src/lib/api.ts";
@@ -37,6 +39,8 @@ export type {
   EventType,
   EventSummary,
   LastEdit,
+  PushRole,
+  PushSubscriptionKeys,
   SessionInfo,
   PresenceEntry,
   RealtimeMessage,
@@ -71,6 +75,43 @@ export interface SessionRecord {
 
 /** `var/sessions.json` — token -> session. */
 export type SessionsMap = Record<string, SessionRecord>;
+
+/**
+ * `var/vapid.json` — the server's VAPID key pair, minted on first use and kept
+ * for the life of the data directory: a push subscription is bound to the
+ * public key it was created against, so regenerating would orphan every one.
+ */
+export interface VapidKeyRecord {
+  /** base64url, 65-byte uncompressed P-256 point — served to browsers. */
+  publicKey: string;
+  /** base64url, 32-byte scalar. Never served, exactly like a session token. */
+  privateKey: string;
+  createdAt: string;
+}
+
+/**
+ * One push subscription, as stored in `var/push.json`.
+ *
+ * `endpoint` is the push service URL the browser handed out. It is a
+ * capability — anyone holding it can send (encrypted) messages to that
+ * browser — so it is treated like a session token: stored, matched, never
+ * logged and never served back out.
+ */
+export interface PushSubscriptionRecord {
+  /** The event's uuid, never its slug: a rename must not orphan this. */
+  eventId: string;
+  role: PushRole;
+  /** The respondent's user key; absent for the owner's subscriptions. */
+  userKey?: string;
+  endpoint: string;
+  keys: PushSubscriptionKeys;
+  createdAt: string;
+}
+
+/** `var/push.json` — every push subscription, across all events. */
+export interface PushStore {
+  subscriptions: PushSubscriptionRecord[];
+}
 
 /** `var/links.json` — public slug -> event id. */
 export type LinksMap = Record<string, string>;
