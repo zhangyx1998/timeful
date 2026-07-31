@@ -4,6 +4,11 @@ import type { Request, Response } from "express";
 import { requireAdmin } from "../auth.ts";
 import { asRecord, BadRequest, jsonRoute, param } from "../http.ts";
 import { claimSlug, releaseSlug } from "../links.ts";
+import {
+  notifyEventChanged,
+  notifyEventDeleted,
+  notifyResponsesChanged,
+} from "../push/deliver.ts";
 import { broadcastEvent, broadcastGone, closeRoom } from "../realtime.ts";
 import { sendNotFoundPage } from "../not-found.ts";
 import { slugProblem } from "../slugs.ts";
@@ -389,6 +394,16 @@ async function patchEvent(
     res.status(404).json({ error: "Event not found" });
     return;
   }
+  // Respondents subscribed to hear when the plan itself moves: the name, the
+  // days, the window, the slot size — or the URL, which invalidates the link
+  // they saved. A PATCH that only touched `realtime`, or restated what was
+  // already there, moved nothing and says nothing.
+  const meaningful = (Object.keys(patch) as (keyof StoredEvent)[]).some(
+    (field) =>
+      field !== "realtime" &&
+      JSON.stringify(patch[field]) !== JSON.stringify(existing[field]),
+  );
+  if (meaningful) notifyEventChanged(existing.id);
   // Subscribers get the whole new document, the renamed slug included: a page
   // watching this event corrects its own address bar off the snapshot. A no-op
   // when this same PATCH just switched live updates off.
@@ -413,6 +428,9 @@ async function deleteEventRoute(
   await deleteEvent(existing.id);
   // Only once it is actually gone from disk; the room is closed with it.
   broadcastGone(existing.id);
+  // Told immediately — there is nothing left to coalesce with — and the
+  // event's subscriptions are dropped once the notice has gone out.
+  notifyEventDeleted(existing);
   res.json({ ok: true });
 }
 
@@ -576,6 +594,9 @@ export async function writeResponse(
   // never on the list.
   if (availability.length === 0 && ifNeeded.length === 0) {
     const { ok, removed, event } = await dropResponse(eventId, key);
+    // Clearing an answer is a change the owner asked to hear about; a clear
+    // that cleared nothing is not. Fire-and-forget, like the broadcast.
+    if (removed) notifyResponsesChanged(eventId, displayName);
     return { ok, response: null, event, changed: removed };
   }
 
@@ -597,6 +618,12 @@ export async function writeResponse(
     current.updatedAt = now;
     return current;
   });
+  // In here rather than in the routes, for the same reason the validator is:
+  // this is the only write path, so the REST PUT and a realtime save frame
+  // trigger the owner's notification identically. Scheduling only — delivery
+  // is coalesced and queued in push/deliver.ts and can neither block nor fail
+  // this request.
+  if (updated) notifyResponsesChanged(eventId, displayName);
   return {
     ok: updated !== null,
     response: updated ? response : null,
@@ -657,6 +684,11 @@ async function deleteResponse(
     return;
   }
   if (event) broadcastEvent(event);
+  // The name as the event knew it — the deleter typed nothing.
+  notifyResponsesChanged(
+    existing.id,
+    existing.responses?.[key]?.displayName ?? key,
+  );
   res.json({ ok: true });
 }
 

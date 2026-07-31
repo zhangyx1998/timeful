@@ -12,8 +12,16 @@ const originalMissDelay = vi.hoisted(() => {
   return previous;
 });
 
-import { fromBase64Url, isP256Point } from "../push/crypto.ts";
-import { makeTestSubscription } from "../push/test-support.ts";
+import crypto from "node:crypto";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import { flushPushDelivery } from "../push/deliver.ts";
+import { fromBase64Url, isP256Point, toBase64Url } from "../push/crypto.ts";
+import {
+  decryptPayload,
+  makeTestSubscription,
+  type TestSubscription,
+} from "../push/test-support.ts";
 import {
   MAX_SUBSCRIPTIONS_PER_EVENT,
   saveSubscription,
@@ -43,10 +51,13 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  // Drain anything a previous test left coalescing before the data root moves.
+  await flushPushDelivery();
   varDir = await makeVarDir("timeful-push-");
 });
 
 afterEach(async () => {
+  await flushPushDelivery();
   await removeVarDir(varDir);
 });
 
@@ -256,5 +267,297 @@ describe("DELETE /<slug>/push", () => {
       body: { role: "respondent", endpoint },
     });
     expect(again.status).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// the full loop: subscribe → trigger → deliver → decrypt
+// ---------------------------------------------------------------------------
+
+interface CapturedDelivery {
+  path: string;
+  headers: http.IncomingHttpHeaders;
+  body: Buffer;
+}
+
+interface PushServiceStub {
+  origin: string;
+  requests: CapturedDelivery[];
+  /** Status to answer with, by delivery path. Defaults to 201. */
+  statusFor: (path: string) => number;
+  close: () => Promise<void>;
+}
+
+/** A local HTTP server standing in for the vendor push service. */
+function startPushService(): Promise<PushServiceStub> {
+  const stub: PushServiceStub = {
+    origin: "",
+    requests: [],
+    statusFor: () => 201,
+    close: () => Promise.resolve(),
+  };
+  const server = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      stub.requests.push({
+        path: req.url ?? "",
+        headers: req.headers,
+        body: Buffer.concat(chunks),
+      });
+      res.statusCode = stub.statusFor(req.url ?? "");
+      res.end();
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as AddressInfo;
+      stub.origin = `http://127.0.0.1:${port}`;
+      stub.close = () =>
+        new Promise((done) => server.close(() => done()));
+      resolve(stub);
+    });
+  });
+}
+
+/** Verifies the `vapid t=…, k=…` header against the server's public key. */
+function verifyVapid(header: string, expectedKey: string, origin: string): void {
+  const match = /^vapid t=([^,]+), k=(.+)$/.exec(header);
+  expect(match).not.toBeNull();
+  const [, token, key] = match!;
+  expect(key).toBe(expectedKey);
+  const [headerPart, claimsPart, signaturePart] = token.split(".");
+  const claims = JSON.parse(
+    fromBase64Url(claimsPart)!.toString("utf8"),
+  ) as { aud: string; exp: number; sub: string };
+  expect(claims.aud).toBe(origin);
+  expect(claims.exp).toBeGreaterThan(Date.now() / 1000);
+  expect(typeof claims.sub).toBe("string");
+  const point = fromBase64Url(expectedKey)!;
+  const publicKey = crypto.createPublicKey({
+    format: "jwk",
+    key: {
+      kty: "EC",
+      crv: "P-256",
+      x: toBase64Url(point.subarray(1, 33)),
+      y: toBase64Url(point.subarray(33, 65)),
+    },
+  });
+  const verified = crypto.verify(
+    "sha256",
+    Buffer.from(`${headerPart}.${claimsPart}`, "ascii"),
+    { key: publicKey, dsaEncoding: "ieee-p1363" },
+    fromBase64Url(signaturePart)!,
+  );
+  expect(verified).toBe(true);
+}
+
+/** Decrypts a captured delivery with the subscriber's own keys. */
+function decryptDelivery(
+  delivery: CapturedDelivery,
+  subscription: TestSubscription,
+): { title: string; body: string; url: string } {
+  const plaintext = decryptPayload(
+    delivery.body,
+    subscription.privateKey,
+    subscription.authSecret,
+  );
+  return JSON.parse(plaintext.toString("utf8")) as {
+    title: string;
+    body: string;
+    url: string;
+  };
+}
+
+describe("delivery", () => {
+  let service: PushServiceStub;
+
+  beforeEach(async () => {
+    service = await startPushService();
+  });
+
+  afterEach(async () => {
+    await service.close();
+  });
+
+  /** Subscribes one fresh browser in `role` at `path` on the stub service. */
+  async function subscribe(
+    slug: string,
+    role: "owner" | "respondent",
+    path: string,
+    cookie?: string,
+  ): Promise<TestSubscription> {
+    const subscription = makeTestSubscription();
+    const res = await call("PUT", `/${slug}/push`, {
+      cookie,
+      body: {
+        role,
+        ...(role === "respondent" ? { userKey: "ada-lovelace" } : {}),
+        endpoint: `${service.origin}${path}`,
+        keys: subscription.keys,
+      },
+    });
+    expect(res.status).toBe(200);
+    return subscription;
+  }
+
+  it("carries a response change to the owner, encrypted end to end", async () => {
+    const { cookie, event } = await eventFixture(call);
+    const owner = await subscribe(event.slug, "owner", "/owner", cookie);
+    await subscribe(event.slug, "respondent", "/respondent");
+
+    const put = await call("PUT", `/${event.slug}/users/ada-lovelace`, {
+      body: {
+        displayName: "Ada Lovelace",
+        availability: ["2026-08-03T09:00:00.000Z"],
+      },
+    });
+    expect(put.status).toBe(200);
+    await flushPushDelivery();
+
+    // The owner heard; the respondent — whose subscription is about the event
+    // changing, not about answers — did not.
+    expect(service.requests.map((r) => r.path)).toEqual(["/owner"]);
+    const [delivery] = service.requests;
+
+    // The delivery contract: aes128gcm framing, a day's TTL, normal urgency,
+    // and a VAPID assertion the advertised public key verifies.
+    expect(delivery.headers["content-encoding"]).toBe("aes128gcm");
+    expect(delivery.headers["content-type"]).toBe("application/octet-stream");
+    expect(delivery.headers.ttl).toBe("86400");
+    expect(delivery.headers.urgency).toBe("normal");
+    const advertised = (await call("GET", "/api/push/public-key")).body as {
+      key: string;
+    };
+    verifyVapid(String(delivery.headers.authorization), advertised.key, service.origin);
+
+    // The body decrypts with the subscription's own keys, and only says what
+    // the subscriber is entitled to hear anyway: they hold the URL already.
+    expect(decryptDelivery(delivery, owner)).toEqual({
+      title: "Team Offsite",
+      body: "Ada Lovelace updated their availability.",
+      url: `/${event.slug}`,
+    });
+  });
+
+  it("coalesces a burst of writes into one notice naming everyone", async () => {
+    const { cookie, event } = await eventFixture(call);
+    const owner = await subscribe(event.slug, "owner", "/owner", cookie);
+
+    for (const [key, name] of [
+      ["ada-lovelace", "Ada Lovelace"],
+      ["ada-lovelace", "Ada Lovelace"],
+      ["grace-hopper", "Grace Hopper"],
+    ] as const) {
+      const res = await call("PUT", `/${event.slug}/users/${key}`, {
+        body: { displayName: name, availability: ["2026-08-03T09:00:00.000Z"] },
+      });
+      expect(res.status).toBe(200);
+    }
+    await flushPushDelivery();
+
+    expect(service.requests).toHaveLength(1);
+    expect(decryptDelivery(service.requests[0], owner).body).toBe(
+      "Ada Lovelace and Grace Hopper updated their availability.",
+    );
+  });
+
+  it("does not notify for a clear that cleared nothing", async () => {
+    const { cookie, event } = await eventFixture(call);
+    await subscribe(event.slug, "owner", "/owner", cookie);
+    const res = await call("PUT", `/${event.slug}/users/nobody-yet`, {
+      body: { displayName: "Nobody Yet", availability: [] },
+    });
+    expect(res.status).toBe(200);
+    await flushPushDelivery();
+    expect(service.requests).toHaveLength(0);
+  });
+
+  it("carries a settings change to respondents, with the renamed slug", async () => {
+    const { cookie, event } = await eventFixture(call);
+    await subscribe(event.slug, "owner", "/owner", cookie);
+    const respondent = await subscribe(event.slug, "respondent", "/respondent");
+
+    const patched = await call("PATCH", `/${event.id}/settings`, {
+      cookie,
+      body: { name: "Team Onsite", slug: "renamed-offsite" },
+    });
+    expect(patched.status).toBe(200);
+    await flushPushDelivery();
+
+    expect(service.requests.map((r) => r.path)).toEqual(["/respondent"]);
+    expect(decryptDelivery(service.requests[0], respondent)).toEqual({
+      title: "Team Onsite",
+      body: "The event was updated — your availability may need another look.",
+      url: "/renamed-offsite",
+    });
+  });
+
+  it("says nothing for a PATCH that changes nothing meaningful", async () => {
+    const { cookie, event } = await eventFixture(call);
+    await subscribe(event.slug, "respondent", "/respondent");
+
+    // Restating the current name, and flipping the realtime plumbing, are not
+    // changes to the plan.
+    const restated = await call("PATCH", `/${event.id}/settings`, {
+      cookie,
+      body: { name: event.name },
+    });
+    expect(restated.status).toBe(200);
+    const plumbing = await call("PATCH", `/${event.id}/settings`, {
+      cookie,
+      body: { realtime: false },
+    });
+    expect(plumbing.status).toBe(200);
+    await flushPushDelivery();
+    expect(service.requests).toHaveLength(0);
+  });
+
+  it("announces deletion to respondents and drops every subscription", async () => {
+    const { cookie, event } = await eventFixture(call);
+    await subscribe(event.slug, "owner", "/owner", cookie);
+    const respondent = await subscribe(event.slug, "respondent", "/respondent");
+
+    const deleted = await call("DELETE", `/${event.id}/settings`, { cookie });
+    expect(deleted.status).toBe(200);
+    await flushPushDelivery();
+
+    expect(service.requests.map((r) => r.path)).toEqual(["/respondent"]);
+    expect(decryptDelivery(service.requests[0], respondent)).toEqual({
+      title: "Team Offsite",
+      body: "The event was deleted.",
+      url: `/${event.slug}`,
+    });
+    expect((await readPushStore()).subscriptions).toHaveLength(0);
+  });
+
+  it("prunes a subscription the push service says is gone", async () => {
+    const { cookie, event } = await eventFixture(call);
+    await subscribe(event.slug, "owner", "/gone", cookie);
+    service.statusFor = (path) => (path === "/gone" ? 410 : 201);
+
+    const put = await call("PUT", `/${event.slug}/users/ada-lovelace`, {
+      body: { displayName: "Ada Lovelace", availability: ["2026-08-03T09:00:00.000Z"] },
+    });
+    expect(put.status).toBe(200);
+    await flushPushDelivery();
+
+    expect(service.requests.map((r) => r.path)).toEqual(["/gone"]);
+    expect((await readPushStore()).subscriptions).toHaveLength(0);
+  });
+
+  it("keeps a subscription through a transient delivery failure", async () => {
+    const { cookie, event } = await eventFixture(call);
+    // A closed port: connection refused, which is a network failure, not a
+    // statement that the subscription is dead.
+    await service.close();
+    await subscribe(event.slug, "owner", "/owner", cookie);
+
+    const put = await call("PUT", `/${event.slug}/users/ada-lovelace`, {
+      body: { displayName: "Ada Lovelace", availability: ["2026-08-03T09:00:00.000Z"] },
+    });
+    expect(put.status).toBe(200);
+    await flushPushDelivery();
+    expect((await readPushStore()).subscriptions).toHaveLength(1);
   });
 });
