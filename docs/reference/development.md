@@ -78,13 +78,15 @@ server/
   auth.ts             scrypt hashing, session tokens, requireAdmin
   slugs.ts leases.ts tarpit.ts proxy.ts config.ts http.ts not-found.ts
   realtime.ts         per-event WebSocket rooms, write sessions, the upgrade listener
-  registry.ts         the npm version lookup — the app's only outbound call
-  routes/             auth, sessions, leases, events, update
+  registry.ts         the npm version lookup — see architecture § The update check
+  push/               Web Push: aes128gcm + VAPID crypto, subscriptions, delivery
+  routes/             auth, sessions, leases, events, update, push
   cli/                the `npx timeful` CLI, bundled into dist/cli.js
     index.ts          entry: webroot detection, wizard, service subcommands
     args.ts config.ts wizard.ts service.ts upgrade.ts errors.ts version.ts
 
-public/               favicon.ico (copied into dist/client)
+public/               favicon.ico, push-sw.js, manifest.webmanifest, icons
+                      (copied into dist/client)
 docs/                 this site — a standalone VitePress package
 var/                  data root, gitignored, overridable via VAR_DIR
 ```
@@ -125,6 +127,12 @@ Three rules worth knowing before you write a new one:
   unauthenticated caller never causes a lookup. `timeful upgrade --dry-run`
   makes no lookup at all, so the CLI's end-to-end tests are offline by
   construction.
+- **Never reach a real push service either.** The push delivery tests
+  (`server/routes/push.test.ts`) subscribe endpoints that point at a local
+  HTTP server the test itself runs, and `flushPushDelivery()` drains the
+  coalescing queue deterministically — no vendor endpoint, no sleeping on
+  timers. The crypto needs no network at all: it is pinned to the RFC 8291
+  Appendix A vectors.
 
 ## Build and packaging
 

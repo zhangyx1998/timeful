@@ -48,8 +48,9 @@ server/
   config.ts     env-only runtime knobs
   http.ts       small helpers
   types.ts      type-only re-exports from src/lib (see below)
-  registry.ts   the npm lookup — the app's only outbound call
-  routes/       auth.ts, sessions.ts, leases.ts, events.ts, update.ts
+  registry.ts   the npm lookup — one of the two outbound calls (see § The update check)
+  push/         Web Push: crypto.ts, vapid.ts, subscriptions.ts, deliver.ts
+  routes/       auth.ts, sessions.ts, leases.ts, events.ts, update.ts, push.ts
   cli/          index.ts, args.ts, config.ts, wizard.ts, tui.ts,
                 service.ts, discover.ts, upgrade.ts, errors.ts, version.ts
 ```
@@ -85,6 +86,8 @@ var/credential.json      the single owner account
 var/sessions.json        active session tokens
 var/links.json           slug -> event id
 var/events/<uuid>.json   one file per event, guest answers inline
+var/push.json            push subscriptions, across all events
+var/vapid.json           the server's VAPID key pair, minted on first use
 ```
 
 There are no migrations and no schema version. If you change the event shape,
@@ -236,7 +239,7 @@ ids short-circuit to `null` in `readEvent`/`updateEvent`/`deleteEvent`, and
 `listEventIds` filters on it — so a stray file in `events/` can never be
 addressed.
 
-### The other three files
+### The other stored files
 
 ```ts
 // credential.json — absent means "first run"
@@ -252,7 +255,35 @@ Record<token, {
 
 // links.json
 Record<slug, eventUuid>
+
+// push.json — see § Notifications
+{
+  subscriptions: Array<{
+    eventId: string;                    // the uuid, never the slug
+    role: "owner" | "respondent";
+    userKey?: string;                   // respondent subscriptions only
+    endpoint: string;                   // the push service URL — a secret
+    keys: { p256dh: string; auth: string };  // base64url, as the browser minted them
+    createdAt: string;
+  }>
+}
+
+// vapid.json — the signing identity push services verify (§ Notifications)
+{
+  publicKey: string;   // base64url uncompressed P-256 point; served to browsers
+  privateKey: string;  // base64url 32-byte scalar; never served, like a session token
+  createdAt: string;
+}
 ```
+
+Push subscriptions live in their own file rather than on the event document
+deliberately: the document is inlined into the SSR page byte for byte, and an
+endpoint URL is a capability to message somebody's browser. Keeping the two
+apart means no new exception to `publicEvent` and nothing new that could leak
+through it. `vapid.json` is minted once and kept for the life of the data
+directory — every subscription is bound to the public key it was created
+against, so regenerating the pair would orphan them all. Copying `var/` remains
+a complete backup; restoring it restores the subscriptions with it.
 
 The CLI also writes `timeful.config.json` in the webroot. A macOS LaunchAgent
 writes `timeful.out.log` / `timeful.err.log` inside `varDir`; the systemd units
@@ -272,9 +303,9 @@ their answer disappears from it entirely.
 Everything is JSON, in **two namespaces**.
 
 `/api/*` is **global only**: status, auth, sessions, slug leases, the update
-check, and the event *list* and *create*. Routers mount in the order `auth` →
-`sessions` → `leases` → `events` → `update`, then a catch-all
-`404 {"error": "Not found"}`.
+check, the push public key, and the event *list* and *create*. Routers mount in
+the order `auth` → `sessions` → `leases` → `events` → `update` → `push`, then a
+catch-all `404 {"error": "Not found"}`.
 
 Everything addressed **to one event** hangs off that event's own path —
 `/<slug>/data`, `/<slug>/settings`, `/<slug>/users/<userKey>`, `/<slug>/ws` —
@@ -332,8 +363,13 @@ All admin-only.
 | ----- | ---- | -------- |
 | `GET /api/update-check` | admin | `{ current, latest, updateAvailable, problem?, webroot, development }` |
 
-**This is the only outbound network call in the entire application**, and it is
-worth stating what that costs and why it is acceptable.
+**This is one of exactly two kinds of outbound network call in the entire
+application.** The other is [push delivery](#notifications): POSTs of
+end-to-end-encrypted notices, made only to endpoints that a browser explicitly
+registered and only after something those subscribers asked to hear about
+happened. Both are strictly opt-in — a Timeful nobody subscribed to and whose
+owner never presses "Check for updates" initiates no connection to anything,
+ever. What the update check costs and why it is acceptable:
 
 - It is **admin-triggered and nothing else**. There is no interval, no check on
   page load, no probe at startup. The handler runs when the owner presses
@@ -361,6 +397,21 @@ worth stating what that costs and why it is acceptable.
 panel and `timeful upgrade` cannot disagree about what counts as newer. The
 comparison (`server/registry.ts`) is the release triple numerically, with a
 prerelease sorting before its release; anything unparseable is never "newer".
+
+### The push public key
+
+| Route | Auth | Response |
+| ----- | ---- | -------- |
+| `GET /api/push/public-key` | public | `{ key }` — the VAPID public key, base64url |
+
+Global rather than event-scoped, and that placement is the `/api` rule applied
+rather than bent: the VAPID pair is a property of the **server** — one signing
+identity however many events a browser subscribes from — so it is global state,
+and global state lives under `/api`. Public because a public key is public by
+definition, and because a respondent subscribing from an event page has no
+session to show. The first ask mints the pair (under the file lock, so two
+concurrent first asks cannot each mint one); every later ask answers the stored
+key, because subscriptions are bound to it.
 
 ### Slug leases
 
@@ -391,11 +442,13 @@ safer choice from a page that might be open across a rename.
 | `DELETE /<slug>/settings` | admin | → `{ ok: true }` |
 | `PUT /<slug>/users/<userKey>` | **public** | `{ displayName, availability?, ifNeeded? }` → `{ ok, key, response \| null }` |
 | `DELETE /<slug>/users/<userKey>` | **public** | `{ ok: true }`; `404 "Response not found"` if the event exists but the guest does not |
+| `PUT /<slug>/push` | **mixed** | subscribe this browser for [notifications](#notifications): `{ role, userKey?, endpoint, keys }` → `{ ok: true }`. `role: "owner"` additionally requires the admin session (`401` without); `"respondent"` is public and carries the user key it claims |
+| `DELETE /<slug>/push` | **public** | `{ role, endpoint }` → `{ ok: true }`, idempotent — the endpoint named is itself a secret only the subscribing browser ever held |
 | `GET /<slug>/ws` | **public** | WebSocket upgrade — the [browse socket](#realtime-updates), read-only. A non-upgrade `GET` is a plain `404` |
 | `GET /<slug>/users/<userKey>` | **public** | WebSocket upgrade — the [named write session](#named-write-sessions). A non-upgrade `GET` is a plain `404` |
 
-`data`, `details`, `settings`, `users` and `ws` are therefore **reserved
-sub-segments**.
+`data`, `details`, `settings`, `users`, `push` and `ws` are therefore
+**reserved sub-segments**.
 Slugs themselves are single segments and are unaffected; the reserved-slug list
 in `slug-rules.ts` is unchanged.
 
@@ -457,8 +510,8 @@ the `{ error }` field. `fetchIsAdmin()` fails **closed**.
 **Paths are written out in full**, and are no longer prefixed with `/api`
 automatically: there are two namespaces now, and a client that guessed between
 them would be guessing. The event-scoped ones have builders —
-`eventDataPath`, `eventDetailsPath`, `eventSettingsPath`, `userPath` — so no
-call site spells one by hand.
+`eventDataPath`, `eventDetailsPath`, `eventSettingsPath`, `userPath`,
+`eventPushPath` — so no call site spells one by hand.
 
 ## Realtime updates
 
@@ -796,6 +849,121 @@ is layered back over the group's answers by the response-index override. The edi
 dialog is safe for a related reason: its form seeds from the prop once and never
 watches it.
 
+## Notifications
+
+A closed page can still hear about an event, over **Web Push**: the owner can
+ask to be told when responses change, and a respondent can ask to be told when
+the event itself changes. Strictly opt-in per browser, end-to-end encrypted,
+and involving **no third-party account** — delivery goes through the push
+service the subscriber's own browser vendor already operates (that is what a
+`PushSubscription` is), and Timeful signs its deliveries with a key pair it
+minted itself.
+
+### The two roles
+
+A subscription belongs to one browser, one event, and one role, and the role
+decides what it is told:
+
+| Role | Who may subscribe | Notified when |
+| ---- | ----------------- | ------------- |
+| `owner` | admin session, on top of the URL | a response is added, edited, cleared or removed — through `writeResponse`, so the REST `PUT` and a realtime `save` frame trigger identically |
+| `respondent` | public, carrying the user key it claims (re-normalized like a path key) | the event's details change — name, dates, window, slot size, type, or the slug, which invalidates the saved link — or the event is deleted. A `PATCH` that only touches `realtime`, or restates what is already there, says nothing |
+
+The subscribe route is `PUT /<slug>/push` and the pair is upserted on
+(event, role, endpoint), so re-subscribing renews in place. Misses tarpit
+exactly like every other public event route. A per-event ceiling (200
+subscriptions) keeps a link-holder from growing `var/push.json` without bound;
+past it the route answers `429`.
+
+### What a delivery is
+
+One HTTP POST per subscription, to the subscription's own endpoint:
+
+- the body is the notice — `{ title, body, url }`, the event's name, one plain
+  sentence, and the event's path — encrypted to that one browser with
+  **RFC 8291 `aes128gcm`** (ECDH on P-256 against the subscription's `p256dh`
+  key, HKDF per RFC 8188, a single AES-128-GCM record). The push service
+  relaying it can read none of it;
+- `Authorization: vapid …` carries an ES256 JWT (**RFC 8292**) whose `aud` is
+  the endpoint's origin — never the full endpoint — with a 12-hour `exp` and a
+  `sub` naming the project. The key pair lives in `var/vapid.json`, minted on
+  first use;
+- `TTL: 86400` — a phone that was off overnight should still hear that the
+  plan moved — and `Urgency: normal`.
+
+Both halves of the crypto are hand-rolled on `node:crypto`, because the
+published package bundles everything and depends on nothing. The encryption is
+pinned to the **RFC 8291 Appendix A test vectors** in `server/push/crypto.test.ts`,
+and the route tests prove the whole loop — subscribe, trigger, deliver —
+against a local stand-in push service, decrypting the delivery with the test
+subscription's own keys.
+
+### Fire-and-forget, coalesced
+
+A trigger schedules a notice and returns; the HTTP request that caused it can
+neither block on delivery nor fail because of it. Notices then wait out a
+short quiet time per event and audience (`TIMEFUL_PUSH_COALESCE_MS`, default
+3s) — autosave means one guest painting their week is a stream of writes
+seconds apart, and a notification per write would teach the owner to turn
+notifications off. The names involved are collected while the notice waits,
+so one notice says "Ada and Grace updated their availability." Deletion skips
+the wait — there is nothing further to coalesce with — and drops every
+subscription the event had once the notice is out.
+
+Deliveries run through one serial queue. A push service answering **404 or
+410** is saying the subscription is dead, and it is pruned through the storage
+layer; anything else — a 5s timeout, DNS, a refused connection, a 5xx — is
+dropped silently, because delivery is best-effort by design and an endpoint
+must never reach a log, so there is nothing useful a log line could say.
+
+### The endpoint is the one client-chosen URL the server POSTs to
+
+So it is validated strictly: **https only**, with plain http allowed for
+loopback hosts alone (development, and the delivery tests). Browsers never
+mint anything else. Endpoints are stored, matched and pruned — treated
+exactly like session tokens, never logged and never served back out; there is
+deliberately no route that lists subscriptions.
+
+::: tip The payload names the slug, and that is within the trust boundary
+The click-through `url` in a notice is the event's path. The payload is
+encrypted end to end to one subscribing browser, and that browser holds the
+capability URL already — it subscribed from it. Nothing is disclosed to the
+push service in the middle, which sees only ciphertext, headers and its own
+endpoint.
+:::
+
+### The service worker, and the manifest
+
+Push needs somewhere to land when no page is open, so the client registers
+`public/push-sw.js` — **at opt-in, never on page load**, and the permission
+prompt likewise fires only from an explicit press on the bell. The worker
+handles `push` (show the notification) and `notificationclick` (focus a tab
+already on the event, or open one) and nothing else.
+
+::: danger No fetch handler, no cache — deliberately, and it stays that way.
+Every page in this app is server-rendered from live state behind a capability
+URL. A caching service worker would be a machine for serving stale documents
+with no offline story to show for it, and is the reason "service worker" sat
+on the out-of-scope list for so long. This worker is a push receiver, not a
+proxy: adding a `fetch` handler to it is a contract change, not a tweak.
+:::
+
+The web app manifest exists for the same feature: **iOS delivers push only to
+a page added to the home screen**, and adding wants a manifest and real PNG
+icons. `start_url` is deliberately absent, so an install opens the page it
+was made from — an event page for a respondent, the admin app for the owner —
+rather than dumping everyone on `/`.
+
+### Nothing to configure
+
+There is no notifications switch, env var aside (`TIMEFUL_PUSH_COALESCE_MS`
+exists for tests). The feature is inert by construction: with no
+subscriptions there are no deliveries, no key pair is minted until a browser
+first asks for the public key, and a server nobody subscribed to makes no
+outbound connection at all. The bell renders only where push can actually
+work (`isSecureContext`, a service worker, a `PushManager`); everywhere else
+the page simply has no bell.
+
 ## Security
 
 ### Capability URLs
@@ -845,7 +1013,8 @@ try and blunts anything cheaper.
 
 - the SSR page handler, on any HTTP method;
 - the public event-scoped routes — `GET /<slug>/data`, `PUT`/`DELETE
-  /<slug>/users/<key>` — and the event-scoped catch-all, on any method;
+  /<slug>/users/<key>`, `PUT`/`DELETE /<slug>/push` — and the event-scoped
+  catch-all, on any method;
 - a WebSocket upgrade to either socket whose event does not resolve;
 - failed `POST /api/auth/setup` and `POST /api/auth/login`.
 
@@ -935,7 +1104,8 @@ event-scoped paths now gets.
 
 ### `/<slug>/…` — an event's own endpoints
 
-`data`, `details`, `settings`, `users` and `ws` are the reserved sub-segments. The
+`data`, `details`, `settings`, `users`, `push` and `ws` are the reserved
+sub-segments. The
 event-scoped router is mounted after the static middleware (so a real file under
 `/assets/…` is still a file) and before the page handler (which owns
 single-segment paths).
@@ -992,8 +1162,11 @@ timezone hydration mismatches.
 Mounted after `/api` and before the page handler:
 
 - `/assets` → `<root>/client/assets` with `immutable, max-age=1y`;
-- then `<root>/client` (favicon, `robots.txt`), both with `index: false` so the
-  page handler keeps ownership of `/`.
+- then `<root>/client` (favicon, `robots.txt`, `manifest.webmanifest`,
+  `push-sw.js`, the `icons/`), both with `index: false` so the page handler
+  keeps ownership of `/`. The service worker is deliberately in this
+  un-hashed, un-immutable tier: its URL must be stable for the registration to
+  update in place.
 
 In dev these are replaced by Vite's middleware, plus `transformIndexHtml` and
 `ssrLoadModule` for the SSR entry.
@@ -1665,9 +1838,17 @@ was deliberately left behind. Absent, and intended to stay absent:
 
 ads; analytics; payments and pricing tiers; OAuth sign-in; calendar
 integrations of any kind; contacts, friends, groups and folders; chat-bot
-integrations; transactional email; reminders; sign-up-sheet event types; blind
-availability; marketing pages, privacy policy and cookie consent; service worker
-and PWA; the browser-plugin messaging API.
+integrations; transactional email; scheduled reminders; sign-up-sheet event
+types; blind availability; marketing pages, privacy policy and cookie consent;
+an offline/caching service worker or installable-PWA shell; the browser-plugin
+messaging API.
+
+One entry on that list narrowed rather than fell: "service worker and PWA"
+used to be absent wholesale. [Web Push](#notifications) brought a service
+worker and a manifest with it, because push cannot exist without them — but
+the worker receives pushes and does nothing else, and the caching/offline
+layer the entry was really about remains out of scope, enforced by the danger
+box in § Notifications.
 
 Dropped from the event model and not coming back: `daysOnly`,
 `blindAvailabilityEnabled`, `collectEmails` (guest **name** only — no email is
@@ -1679,5 +1860,7 @@ increments, guest availability plus if-needed, the group heatmap, the
 respondents list, a timezone selector, 12/24-hour display, and a best-times
 toggle.
 
-The through-line: **no account for guests, no network dependency at runtime, and
-no state that is not a JSON file you can read.**
+The through-line: **no account for guests, no state that is not a JSON file
+you can read, and no outbound connection except the two a person explicitly
+asked for** — the owner's update check, and push deliveries to browsers that
+subscribed.

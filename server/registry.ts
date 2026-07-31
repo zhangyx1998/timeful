@@ -1,13 +1,15 @@
 /**
  * Asking npm what the latest published version is.
  *
- * This is **the only outbound network call in the entire application**, and it
- * is never made on its own initiative: the admin presses a button, or an
- * operator types `timeful upgrade`. Nothing polls, nothing phones home on
- * startup, and no page load reaches the network. Timeful is a self-hosted app
- * whose whole promise is that it depends on no third party at runtime; a
- * background version check would quietly break that promise, and an
- * admin-triggered one does not.
+ * This is one of **exactly two kinds of outbound call in the application** —
+ * the other being push delivery (server/push/deliver.ts), which only ever
+ * POSTs to endpoints a browser explicitly subscribed — and it is never made
+ * on its own initiative: the admin presses a button, or an operator types
+ * `timeful upgrade`. Nothing polls, nothing phones home on startup, and no
+ * page load reaches the network. Timeful is a self-hosted app whose whole
+ * promise is that it depends on no third party at runtime; a background
+ * version check would quietly break that promise, and an admin-triggered one
+ * does not.
  *
  * Everything here fails soft. The registry being unreachable is the normal
  * state of an air-gapped or firewalled box, not an error worth a stack trace,
