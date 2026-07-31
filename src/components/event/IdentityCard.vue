@@ -21,6 +21,7 @@
  * saved stay on screen while you paint. The row reads name at the left, status
  * and the way out at the right end.
  */
+import PushToggle from "./PushToggle.vue";
 import SyncIndicator from "./SyncIndicator.vue";
 import Button from "../ui/Button.vue";
 import IconButton from "../ui/IconButton.vue";
@@ -48,8 +49,15 @@ withDefaults(
     canClear?: boolean;
     /** The confirm is open: the button stays armed under it. */
     clearing?: boolean;
+    /**
+     * The respondent's bell: notify this browser when the event changes.
+     * Null hides it — no adopted name means nobody to subscribe as. It
+     * renders in the card only; as a bar the row is spoken for, and the
+     * settings drawer carries the same toggle there.
+     */
+    push?: { eventId: string; userKey: string } | null;
   }>(),
-  { canClear: false, clearing: false },
+  { canClear: false, clearing: false, push: null },
 );
 
 const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
@@ -99,6 +107,17 @@ const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
             <IconSwitchUser aria-hidden="true" />
           </IconButton>
         </div>
+
+        <!-- A statement about the name above it, like the status: whether
+             this browser wants to hear when the event itself changes. -->
+        <PushToggle
+          v-if="push"
+          class="push-row"
+          :event-id="push.eventId"
+          role="respondent"
+          :user-key="push.userKey"
+          label="Notify me if the event changes"
+        />
       </template>
 
       <template v-else>
@@ -231,6 +250,13 @@ const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
   background: var(--color-danger-soft);
 }
 
+/* Bleeds the card's own padding so its hover pill lines up with the rows
+   above; the card sets the width, the toggle fills it. */
+.push-row {
+  align-self: stretch;
+  margin: 0 -0.4rem -0.15rem;
+}
+
 /* --- the bar, under the grid --------------------------------------------
    Same breakpoint as the scheduler's layout stack: the moment the identity
    stops sitting beside the grid it becomes the bottom edge of the phone
@@ -293,6 +319,12 @@ const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
   .trail {
     flex: none;
     gap: 0.4rem;
+  }
+
+  /* As a bar there is one row and it is spoken for; the settings drawer
+     carries the same toggle on a phone. */
+  .push-row {
+    display: none;
   }
 
   .pick {

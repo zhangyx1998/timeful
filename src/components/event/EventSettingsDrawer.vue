@@ -30,6 +30,7 @@
  */
 import ColorLegend from "./ColorLegend.vue";
 import EventFooter from "./EventFooter.vue";
+import PushToggle from "./PushToggle.vue";
 import TimezoneField from "./TimezoneField.vue";
 import Dialog from "../ui/Dialog.vue";
 import Segmented from "../ui/Segmented.vue";
@@ -52,6 +53,12 @@ defineProps<{
   /** Whether the edit session has anything left to take back, or to put back. */
   canUndo: boolean;
   canRedo: boolean;
+  /**
+   * The respondent's bell, when a name is adopted; null hides the row. On a
+   * phone this drawer is its home — the identity bar has no room — while the
+   * desktop keeps the same toggle on the identity card.
+   */
+  push?: { eventId: string; userKey: string } | null;
 }>();
 
 const timezone = defineModel<string>("timezone", { required: true });
@@ -133,6 +140,19 @@ const emit = defineEmits<{
         <span class="setting__label">Colours</span>
         <ColorLegend :mode="mode" :max="max" :total="total" />
       </div>
+
+      <!-- The respondent's bell, for the phone: the desktop keeps it on the
+           identity card, and this drawer is the phone's version of that
+           column. Only with a name adopted — no name, nobody to subscribe as
+           — and rendered at all only where push can actually work. -->
+      <PushToggle
+        v-if="push"
+        variant="setting"
+        :event-id="push.eventId"
+        role="respondent"
+        :user-key="push.userKey"
+        label="Notify me if the event changes"
+      />
 
       <!-- The same footer that closes the desktop sidebar, closing the drawer
            that stands in for it: the colophon, and the sign-in for the owner

@@ -14,6 +14,7 @@
  * is gated by the session cookie regardless.
  */
 import { ref } from "vue";
+import PushToggle from "./PushToggle.vue";
 import Button from "../ui/Button.vue";
 import Dialog from "../ui/Dialog.vue";
 import Spinner from "../ui/Spinner.vue";
@@ -111,6 +112,16 @@ async function signOut(): Promise<void> {
         <IconClock aria-hidden="true" />
         Details
       </Button>
+
+      <!-- The owner's bell: this browser asking to hear when answers change.
+           Hidden entirely where push cannot work; the prompt fires only from
+           the press. In the drawer and the sidebar alike, because both render
+           this same component. -->
+      <PushToggle
+        :event-id="eventId"
+        role="owner"
+        label="Notify me about responses"
+      />
 
       <Button
         class="tool"

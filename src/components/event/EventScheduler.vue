@@ -187,6 +187,16 @@ const {
 // socket, so it is the only thing that knows a session was taken away.
 defineExpose({ leaveEditing: session.leaveEditing, resumeEditing: session.startEditing });
 
+/**
+ * The respondent's bell, for the two places it renders (the identity card,
+ * and the settings drawer on a phone). Null until a name is adopted: with no
+ * key there is nobody to subscribe as. The uuid, not the slug — subscriptions
+ * survive renames the way every stored reference does.
+ */
+const pushBinding = computed(() =>
+  guestKey.value ? { eventId: props.event.id, userKey: guestKey.value } : null,
+);
+
 // --- taking it back -------------------------------------------------------
 
 const chart = ref<InstanceType<typeof AvailabilityGrid> | null>(null);
@@ -606,6 +616,7 @@ function onSolo(person: { key: string; displayName: string } | null) {
           :error="syncError"
           :can-clear="compact && editing && hasMarks"
           :clearing="clearOpen"
+          :push="pushBinding"
           @change="changeName"
           @pick="startEditing"
           @retry="session.retry()"
@@ -719,6 +730,7 @@ function onSolo(person: { key: string; displayName: string } | null) {
       :total="responseIndex.keys.length"
       :can-undo="history.canUndo.value"
       :can-redo="history.canRedo.value"
+      :push="pushBinding"
       @close="settingsOpen = false"
       @reset-timezone="resetTimezone"
       @undo="history.undo"
