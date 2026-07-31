@@ -157,6 +157,17 @@ function onClaim(): void {
 }
 
 /**
+ * The scheduler left the edit tab and has flushed what was pending: the write
+ * session goes back, while `identity` stays. Presence stops listing this
+ * editor, and the key is free for another device to claim without a takeover
+ * prompt. Entering "My availability" again claims it back through `onClaim` —
+ * including the occupied path, if somebody took the name in the meantime.
+ */
+function onRelease(): void {
+  realtime?.setSession(null);
+}
+
+/**
  * Somebody else is editing as this person. Step back to the group view and ask
  * — a takeover is a thing done to another human, so it is never automatic.
  */
@@ -341,6 +352,7 @@ onBeforeUnmount(() => {
           @refresh="refresh"
           @identity="onIdentity"
           @claim="onClaim"
+          @release="onRelease"
           @edit="editOpen = true"
         />
         <p v-else class="loading">Loading availability…</p>

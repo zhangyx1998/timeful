@@ -51,6 +51,12 @@ export interface ResponseSessionOptions {
   onRefresh: () => void;
   /** Ask it to claim the write session for the identity already adopted. */
   onClaim: () => void;
+  /**
+   * Ask it to give the write session back. The identity is kept — this is the
+   * counterpart of `onClaim`, not of `onIdentity(null)` — so entering the edit
+   * tab again can ask for the same session by the same name.
+   */
+  onRelease: () => void;
   /** Tell it who this page is now, so the socket can carry the name. */
   onIdentity: (session: RealtimeSession | null) => void;
   /** Drop the chart's pinned slot and hover; any identity change does. */
@@ -421,9 +427,34 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     identityOpen.value = true;
   }
 
+  /**
+   * Leaving the edit tab ends the editing session, not just the view.
+   *
+   * A page reading the group's chart is not editing anybody, and holding the
+   * write session anyway kept its presence dots pulsing and its key locked
+   * against every other device — which then had to be "taken over" from an
+   * editor that no longer existed. So the session goes with the tab, in order:
+   * the flush first, and the release only once it settles, because a mark made
+   * a moment before the switch must reach the server before the socket that
+   * would carry it is given up. A save that settles into the error state stays
+   * parked for `retry()` exactly as before — the release does not lose it, it
+   * only means the retry goes over the REST fallback.
+   *
+   * Checked again at the far end because the switch can be reversed within the
+   * debounce: re-entering the edit tab has already asked for the session back
+   * (`startEditing` → `onClaim`), and releasing it then would take away what
+   * was just claimed.
+   *
+   * `leaveEditing` below deliberately does not release: it is the path for a
+   * session that was refused or taken away, where there is nothing left to
+   * give back.
+   */
   function stopEditing() {
-    engine.flush();
     editing.value = false;
+    engine.flush();
+    void engine.settled().then(() => {
+      if (!editing.value) options.onRelease();
+    });
   }
 
   /**

@@ -93,6 +93,12 @@ const emit = defineEmits<{
    */
   claim: [];
   /**
+   * Give the write session back: the visitor left the edit tab and the flush
+   * behind the switch has settled. The identity is kept — `claim` is how the
+   * same session is asked for again.
+   */
+  release: [];
+  /**
    * The owner asked to edit this event. The form dialog belongs to the page
    * above — it is the page's own copy of the document that a save replaces —
    * so the button that opens it says so upwards rather than owning it.
@@ -160,6 +166,7 @@ const session = useResponseSession({
   writer: computed(() => props.writer),
   onRefresh: () => emit("refresh"),
   onClaim: () => emit("claim"),
+  onRelease: () => emit("release"),
   onIdentity: (identity) => emit("identity", identity),
   resetFocus,
 });
