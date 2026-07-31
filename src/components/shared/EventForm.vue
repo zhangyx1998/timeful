@@ -407,18 +407,11 @@ async function submit(): Promise<void> {
       </p>
 
       <p v-if="leaseNotice" class="hint hint--warn">{{ leaseNotice }}</p>
-      <!-- The one thing that is not obvious from looking at the field: whether
-           this path is guessable. One line either way; the reasoning behind it
-           is a hover, not a paragraph. -->
+      <!-- A caution, not a lecture, and only in reaction to the choice being
+           made: it appears when the reserved capability slug is given up for a
+           typed path. The reasoning behind it is a hover, not a paragraph. -->
       <p
-        v-else-if="usingLease"
-        class="hint"
-        title="Random and unguessable — the link is the only thing protecting this event, and anyone who has it can respond"
-      >
-        Unguessable link. Type your own for something memorable.
-      </p>
-      <p
-        v-else-if="!editing"
+        v-else-if="!editing && !usingLease"
         class="hint hint--warn"
         title="A path someone could guess can be found without being shared"
       >
@@ -432,13 +425,13 @@ async function submit(): Promise<void> {
          loads. It sits last because it is the only setting here that changes
          nothing about what the event *is*. -->
     <div class="field">
-      <label class="checkbox">
+      <label
+        class="checkbox"
+        title="Open pages show new answers as they arrive, without being reloaded"
+      >
         <input v-model="realtime" type="checkbox" />
         Live updates
       </label>
-      <p class="hint" title="Turning this off changes nothing else — answers still save the moment they are made">
-        Open pages show new answers as they arrive, without being reloaded.
-      </p>
     </div>
 
     <ErrorNote :message="error" />

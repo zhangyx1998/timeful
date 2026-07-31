@@ -19,12 +19,11 @@ const props = withDefaults(
     label?: string;
     /** Explicit id; otherwise one is generated (stable across SSR/CSR). */
     id?: string;
-    hint?: string;
-    /** Shown in place of the hint, and marks the field invalid. */
+    /** Shown under the field, and marks it invalid. */
     error?: string;
     invalid?: boolean;
   }>(),
-  { label: "", id: "", hint: "", error: "", invalid: false },
+  { label: "", id: "", error: "", invalid: false },
 );
 
 defineOptions({ inheritAttrs: false });
@@ -61,7 +60,7 @@ const messageId = computed(() => `${inputId.value}-message`);
         v-model="model"
         class="text-field__input"
         :aria-invalid="isInvalid || undefined"
-        :aria-describedby="error || hint ? messageId : undefined"
+        :aria-describedby="error ? messageId : undefined"
         v-bind="inputAttrs"
       />
       <!-- A control that acts on the value, kept on the value's own row rather
@@ -74,7 +73,6 @@ const messageId = computed(() => `${inputId.value}-message`);
     <p v-if="error" :id="messageId" class="text-field__message text-field__message--error">
       {{ error }}
     </p>
-    <p v-else-if="hint" :id="messageId" class="text-field__message">{{ hint }}</p>
     <slot />
   </div>
 </template>
@@ -195,7 +193,6 @@ const messageId = computed(() => `${inputId.value}-message`);
 .text-field__message {
   margin: 0;
   font-size: 0.75rem;
-  color: var(--color-text-muted);
 }
 
 .text-field__message--error {

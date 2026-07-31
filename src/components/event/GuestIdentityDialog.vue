@@ -163,9 +163,6 @@ function pick(person: KnownPerson) {
         <strong>{{ matched.displayName }}</strong> already answered — continuing
         edits their times.
       </p>
-      <p v-else class="hint hint--muted" title="Stored in this browser only">
-        Saved on this device, so you can come back and edit.
-      </p>
 
       <div v-if="suggestions.length > 0" class="suggestions">
         <span class="suggestions__label">Already answered</span>
@@ -219,10 +216,6 @@ function pick(person: KnownPerson) {
 .hint {
   font-size: 0.8125rem;
   line-height: 1.4;
-}
-
-.hint--muted {
-  color: var(--color-text-muted);
 }
 
 .hint--warn {

@@ -21,13 +21,12 @@ const props = withDefaults(
     options: readonly SelectOption<T>[];
     label?: string;
     id?: string;
-    hint?: string;
     /** Keeps the label for screen readers only — for dense toolbars. */
     hideLabel?: boolean;
     /** Caps the control's width; useful for long timezone names. */
     maxWidth?: string;
   }>(),
-  { label: "", id: "", hint: "", hideLabel: false, maxWidth: "" },
+  { label: "", id: "", hideLabel: false, maxWidth: "" },
 );
 
 const generatedId = useId();
@@ -52,7 +51,6 @@ const selectId = computed(() => props.id || generatedId);
       </select>
       <IconChevronDown class="select-field__arrow" aria-hidden="true" />
     </div>
-    <p v-if="hint" class="select-field__message">{{ hint }}</p>
   </div>
 </template>
 
@@ -130,11 +128,5 @@ const selectId = computed(() => props.id || generatedId);
   color: var(--color-text-muted);
   transform: translateY(-50%);
   pointer-events: none;
-}
-
-.select-field__message {
-  margin: 0;
-  font-size: 0.75rem;
-  color: var(--color-text-muted);
 }
 </style>

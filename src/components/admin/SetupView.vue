@@ -66,7 +66,6 @@ async function submit(): Promise<void> {
         id="setup-password"
         v-model="password"
         label="Password"
-        hint="At least 8 characters."
         type="password"
         autocomplete="new-password"
         minlength="8"
