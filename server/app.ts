@@ -32,6 +32,7 @@ import {
   writeResponse,
 } from "./routes/events.ts";
 import { leasesRouter } from "./routes/leases.ts";
+import { pushRouter, pushScopedRouter } from "./routes/push.ts";
 import { sessionsRouter } from "./routes/sessions.ts";
 import { updateRouter } from "./routes/update.ts";
 import { readEvent, readLinks } from "./storage.ts";
@@ -149,6 +150,7 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
   app.use("/api", leasesRouter);
   app.use("/api", eventsRouter);
   app.use("/api", updateRouter);
+  app.use("/api", pushRouter);
   app.use("/api", (_req: Request, res: Response) => {
     res.status(404).json({ error: "Not found" });
   });
@@ -158,7 +160,10 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
   // Event-scoped endpoints live on the event's own path, not under `/api`
   // (ARCHITECTURE.md § API). Mounted *after* the static middleware so a real
   // file under `/assets/…` is still a file rather than a slug named "assets",
-  // and before the page handler, which owns single-segment paths.
+  // and before the page handler, which owns single-segment paths. The push
+  // router goes first: it owns only `/:slug/push`, and the event router's
+  // catch-all would otherwise swallow it.
+  app.use(pushScopedRouter);
   app.use(eventScopedRouter);
 
   // -------------------------------------------------------------------------
