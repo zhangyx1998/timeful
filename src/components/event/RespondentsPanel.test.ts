@@ -241,35 +241,45 @@ describe("respondents list", () => {
   // one person's answer, alone
   // -------------------------------------------------------------------------
 
-  it("offers every row a view of its own, answered or not", async () => {
+  it("offers every drawer row a view of its own, answered or not", async () => {
     // Including somebody who is only here: "have they marked anything yet?" is
     // a real question, and an empty chart that says so is a real answer to it.
     // A row missing its eye only reads as broken.
-    const html = await render({ names: ["Ada", "Bo"], present: ["Cy"] });
+    const html = await render({ embedded: true, names: ["Ada", "Bo"], present: ["Cy"] });
     expect(html).toContain("Show only Ada");
     expect(html).toContain("Show only Bo");
     expect(html).toContain("Show only Cy");
   });
 
+  it("keeps the desktop list free of eyes", async () => {
+    // The desktop previews a person by hovering their row: the list is beside
+    // the chart, so the answer appears under the pointer and leaves with it.
+    // An eye there would be a second control for a thing the pointer already
+    // does — and persistent state with a pill the desktop never shows.
+    const html = await render({ names: ["Ada", "Bo"], present: ["Cy"] });
+    expect(html).not.toContain("Show only");
+    expect(html).not.toContain("reveal");
+  });
+
   it("changes nothing about itself when one of them is on", async () => {
     // The isolated view outlives this panel being open — closing the drawer is
     // how you look at it — so a list that collapsed onto the row, dropped its
-    // fraction and hid its bins would be describing a state it no longer owns.
+    // rows and hid its bins would be describing a state it no longer owns.
     const html = await render({
+      embedded: true,
       names: ["Ada", "Bo", "Cy"],
       present: ["Dee"],
       solo: "Bo",
     });
 
     expect(rows(html)).toEqual(["Ada", "Bo", "Cy", "Dee"]);
-    expect(text(html)).toContain("available");
     expect(html).toContain("Add someone");
     expect(html).toContain("Remove Bo");
   });
 
   it("says on the row itself which view is on", async () => {
-    const off = await render({ names: ["Ada", "Bo"] });
-    const on = await render({ names: ["Ada", "Bo"], solo: "Bo" });
+    const off = await render({ embedded: true, names: ["Ada", "Bo"] });
+    const on = await render({ embedded: true, names: ["Ada", "Bo"], solo: "Bo" });
     expect(off).not.toContain("reveal--on");
     expect(on).toContain("reveal--on");
     expect(on).toContain('aria-pressed="true"');
@@ -286,14 +296,14 @@ describe("respondents list", () => {
 
     // Nobody isolated: every answer is on the chart, so every eye is open and
     // nothing is drawn as hidden.
-    const off = await render({ names: ["Ada", "Bo", "Cy"] });
+    const off = await render({ embedded: true, names: ["Ada", "Bo", "Cy"] });
     expect(open(off)).toBe(3);
     expect(shut(off)).toBe(0);
     expect(off).not.toContain("reveal--hidden");
 
     // One isolated: that row is what the chart shows, so it keeps the open eye
     // — the others are the ones that have been taken off it.
-    const on = await render({ names: ["Ada", "Bo", "Cy"], solo: "Bo" });
+    const on = await render({ embedded: true, names: ["Ada", "Bo", "Cy"], solo: "Bo" });
     expect(open(on)).toBe(1);
     expect(shut(on)).toBe(2);
     expect(on.split("reveal--hidden").length - 1).toBe(2);
@@ -305,7 +315,12 @@ describe("respondents list", () => {
   });
 
   it("marks a presence-only row as the isolated one too", async () => {
-    const html = await render({ names: ["Ada", "Bo"], present: ["Cy"], solo: "Cy" });
+    const html = await render({
+      embedded: true,
+      names: ["Ada", "Bo"],
+      present: ["Cy"],
+      solo: "Cy",
+    });
     expect(rows(html)).toEqual(["Ada", "Bo", "Cy"]);
     expect(html).toContain("reveal--on");
   });

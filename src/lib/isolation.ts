@@ -6,13 +6,15 @@
  * every row of the respondents list that puts that row's owner on the chart
  * alone.
  *
- * It began as a phone-only trick tied to the drawer it was switched on from,
- * and lived exactly as long as the drawer did: turning it on collapsed the
- * sheet to the row it was about, and closing the sheet put the group back.
- * That made it a thing you could set up but barely look at. It is now a view of
- * the chart rather than a mode of the drawer — it survives the drawer closing,
- * it is offered on the desktop too, and a pill over the chart says whose answer
- * is on screen and takes it away again.
+ * It is a phone mode, because it exists to stand in for something a phone
+ * cannot do: rest a pointer on a row. The desktop answers the same question by
+ * hovering — the list is beside the chart, the preview appears under the
+ * pointer and leaves with it, and no state has to be set or remembered. A
+ * finger has no hover, so the drawer's rows carry an eye instead; the view it
+ * asks for survives the drawer closing, and a pill over the chart says whose
+ * answer is on screen and takes it away again. Widening past the phone layout
+ * clears it: the desktop shows no pill, and a filter with no visible way out
+ * would strand the chart on one person.
  *
  * Which leaves exactly two rules worth stating in one place, because both are
  * about a *different* control moving this one:

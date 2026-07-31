@@ -128,6 +128,10 @@ watch(compact, (on) => {
   holdThenClose.cancel();
   peopleOpen.value = false;
   settingsOpen.value = false;
+  // Isolation is a phone mode: the desktop previews a person by hovering their
+  // row and offers no pill, so an isolation set before the window widened would
+  // be a filter with no way out. The group comes back with the layout.
+  showEveryone();
 });
 
 // --- what the chart is pointing at ----------------------------------------
@@ -386,6 +390,16 @@ const {
 } = useIsolation({ editing, leaveEditing: stopEditing });
 
 /**
+ * Whose answer the chart is showing alone right now, however it was asked for:
+ * the drawer's eye on a phone (persistent, said by the pill), or a hovered row
+ * on the desktop (transient, gone when the pointer leaves). The eye is the
+ * deliberate one, and wins where both could exist.
+ */
+const shownAlone = computed(() =>
+  editing.value ? null : isolated.value ?? highlight.value,
+);
+
+/**
  * The spelling the row used when it asked, kept as a fallback.
  *
  * The live label is preferred — a rename between then and now should show —
@@ -396,31 +410,33 @@ const {
 const askedFor = ref("");
 
 /** The name to print on the pill, and in the overlay for a name with no answer. */
-const isolatedLabel = computed(() =>
-  isolated.value === null
-    ? ""
-    : responseIndex.value.labels.get(isolated.value) ||
-      props.present.find((person) => person.key === isolated.value)?.displayName ||
-      askedFor.value ||
-      isolated.value,
-);
+const shownLabel = computed(() => {
+  const key = shownAlone.value;
+  if (key === null) return "";
+  return (
+    responseIndex.value.labels.get(key) ||
+    props.present.find((person) => person.key === key)?.displayName ||
+    (key === isolated.value ? askedFor.value : "") ||
+    key
+  );
+});
 
 /**
- * Isolating somebody who has not answered leaves an empty chart, which on its
- * own looks like a chart that failed to load. It is a real question with a real
- * answer — they are here, they have marked nothing yet — so the chart says so.
+ * Showing somebody who has not answered leaves an empty chart, which on its
+ * own looks like a chart that failed to load. It is a real question with a
+ * real answer — they are here, they have marked nothing yet — so the chart
+ * says so, whether the eye asked or the desktop's hover is asking.
  */
-const isolatedEmpty = computed(
-  () => isolated.value !== null && !responseIndex.value.labels.has(isolated.value),
+const shownEmpty = computed(
+  () => shownAlone.value !== null && !responseIndex.value.labels.has(shownAlone.value),
 );
 
 /**
- * A row's eye. Null is the "show everyone" an eye already on sends.
+ * A row's eye, which only the phone's drawer offers. Null is the "show
+ * everyone" an eye already on sends.
  *
- * On a desktop the list is beside the chart, so the change is visible where it
- * was asked for and nothing else has to happen. Inside the phone's drawer the
- * list is *over* the chart it just filtered, so the sheet gives the eye half a
- * second to be seen moving and then takes itself down — refusing every
+ * The list is *over* the chart it just filtered, so the sheet gives the eye
+ * half a second to be seen moving and then takes itself down — refusing every
  * dismissal in between, so a stray backdrop tap cannot race it.
  */
 function onSolo(person: { key: string; displayName: string } | null) {
@@ -495,9 +511,9 @@ function onSolo(person: { key: string; displayName: string } | null) {
     </div>
 
     <div class="layout">
-      <!-- A row's eye and a row's hover ask the chart for the same thing — one
-           person's answer instead of the sum of everybody's — so they arrive by
-           the same prop. The eye is the deliberate one, and wins. -->
+      <!-- The drawer's eye and a desktop row's hover ask the chart for the same
+           thing — one person's answer instead of the sum of everybody's — so
+           they arrive by the same prop (`shownAlone`). -->
       <AvailabilityGrid
         ref="chart"
         class="chart"
@@ -511,7 +527,7 @@ function onSolo(person: { key: string; displayName: string } | null) {
         :max-count="maxCount"
         :total-respondents="responseIndex.keys.length"
         :show-best-times="showBestTimes"
-        :highlight-respondent="editing ? null : isolated ?? highlight"
+        :highlight-respondent="shownAlone"
         :active-slot="activeSlot"
         :hour12="hour12"
         @paint="session.onPaint"
@@ -633,8 +649,7 @@ function onSolo(person: { key: string; displayName: string } | null) {
           :if-needed-names="ifNeededNames"
           :slot-label="slotLabel"
           :pinned="pinnedSlot !== null"
-          :highlight="editing || isolated ? null : highlight"
-          :solo="isolated"
+          :highlight="editing ? null : highlight"
           :current-key="guestKey"
           :deleting="deletingKey"
           :delete-error="deleteError"
@@ -643,7 +658,6 @@ function onSolo(person: { key: string; displayName: string } | null) {
           @delete="removeRespondent"
           @add="addRespondent"
           @switch="confirmIdentity"
-          @solo="onSolo"
         />
 
         <!-- Last, and quiet. The column is about the event; the footer is the
@@ -656,9 +670,13 @@ function onSolo(person: { key: string; displayName: string } | null) {
 
     <!-- What the group view is currently doing to itself — showing one
          person, showing only the fullest slots, or both — and the way out of
-         each. See `ModePills` for why they stack rather than merge. -->
+         each. See `ModePills` for why they stack rather than merge. The
+         isolation chip is phone-only in effect: only the drawer's eye can set
+         the state, and widening past the phone layout clears it. A desktop
+         hover is transient and needs no chip — lifting the pointer is the way
+         out. -->
     <ModePills
-      :isolated="isolated ? isolatedLabel : null"
+      :isolated="isolated ? shownLabel : null"
       :best-times="showBestTimes && !editing"
       @exit-isolation="showEveryone"
       @exit-best-times="showBestTimes = false"
@@ -668,9 +686,9 @@ function onSolo(person: { key: string; displayName: string } | null) {
          Fixed too, and inert: it is a caption for the whole view, so it does
          not travel with the columns under a scroll and does not take the taps
          that scroll them. -->
-    <div v-if="isolatedEmpty" class="nothing" role="status">
+    <div v-if="shownEmpty" class="nothing" role="status">
       <p class="nothing__card">
-        <strong class="nothing__name" :title="isolatedLabel">{{ isolatedLabel }}</strong>
+        <strong class="nothing__name" :title="shownLabel">{{ shownLabel }}</strong>
         has not marked any times yet.
       </p>
     </div>

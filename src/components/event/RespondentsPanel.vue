@@ -34,14 +34,15 @@
  * there does the same thing for that person — after a confirm, because it means
  * editing somebody else's times and one row looks much like the next.
  *
- * Every row also carries an eye, which puts that one person's answer on the
- * chart alone. A sum cannot say who is behind it, and that is the one question
- * about the chart the colours can never answer. It changes nothing about the
- * shape of the list — no collapsing, no rearranging — because the view it asked
- * for outlives this panel being open and a list that folded itself up would be
- * describing a state it no longer owns. What says the state is a pill over the
- * chart (`ModePills`); see `lib/isolation.ts` for the two rules about the
- * edit tab.
+ * "Show me this one person" is answered differently by the two layouts,
+ * because their pointers are different. On the desktop the list sits beside
+ * the chart and a mouse can rest on a row: hovering previews that person's
+ * answer on the chart and leaving puts the group back, so there is nothing to
+ * switch on and nothing to remember to switch off. A finger cannot hover, so
+ * inside the phone's drawer every row instead carries an eye, which puts that
+ * one person's answer on the chart alone until it is dismissed — persistent
+ * state, said by a pill over the chart (`ModePills`); see `lib/isolation.ts`
+ * for the two rules about the edit tab.
  *
  * The eyes themselves report the state rather than the gesture: an answer that
  * is on the chart wears the open eye, one that has been taken off it wears the
@@ -51,7 +52,8 @@
  * Somebody who is here without having answered gets an eye too, and isolating
  * them shows an empty chart with an overlay saying so. That is a real answer to
  * a real question — "has Ada marked anything yet?" — and a row whose eye is
- * missing only reads as broken.
+ * missing only reads as broken. Hovering their row on the desktop answers the
+ * same question the same way.
  *
  * Whoever is on the page right now gets three quietly pulsing dots after their
  * name, the visitor included — they are online too, and a rule with no
@@ -399,7 +401,9 @@ function confirmSwitch() {
 
         <!-- Puts this person's answer on the chart on its own. A heatmap is a
              sum, and a sum cannot say who is behind it; this is the one
-             question the list is asked that the colours cannot answer. Every
+             question the list is asked that the colours cannot answer. Only
+             inside the drawer, where there is no pointer to hover with — the
+             desktop answers it by resting the mouse on the row. Every drawer
              row has one, including somebody who is only here — "have they
              marked anything yet?" is answered by an empty chart that says so,
              and a row missing its eye only reads as broken.
@@ -409,6 +413,7 @@ function confirmSwitch() {
              been taken off it wears the struck-through one, and with nobody
              isolated every row is on the chart and so every eye is open. -->
         <button
+          v-if="embedded"
           type="button"
           class="reveal"
           :class="{ 'reveal--on': row.isSolo, 'reveal--hidden': !row.onChart }"
