@@ -186,6 +186,7 @@ describe("apiError", () => {
     expect(apiError(new ApiError("Not authenticated", 401), "fallback")).toEqual({
       message: "Not authenticated",
       status: 401,
+      detail: "",
     });
   });
 
@@ -193,7 +194,37 @@ describe("apiError", () => {
     expect(apiError(new TypeError("Failed to fetch"), "fallback")).toEqual({
       message: "Failed to fetch",
       status: 0,
+      detail: "",
     });
-    expect(apiError(null, "fallback")).toEqual({ message: "fallback", status: 0 });
+    expect(apiError(null, "fallback")).toEqual({
+      message: "fallback",
+      status: 0,
+      detail: "",
+    });
+  });
+
+  it("formats the admin-only detail when the body carried one", () => {
+    const body = {
+      error: "Internal server error",
+      detail: { message: "EACCES: permission denied", code: "EACCES", path: "/var/x" },
+    };
+    const err = new ApiError("Internal server error", 500, body);
+    // The code is already inside the message, so it is not printed twice.
+    expect(apiError(err, "fallback").detail).toBe(
+      "EACCES: permission denied /var/x",
+    );
+  });
+
+  it("reads no detail out of a body that has none — a guest's, always", () => {
+    const err = new ApiError("Event not found", 404, { error: "Event not found" });
+    expect(err.detail).toBeNull();
+    expect(apiError(err, "fallback").detail).toBe("");
+  });
+
+  it("refuses a malformed detail rather than rendering rubbish", () => {
+    for (const detail of [null, "text", { code: "E" }, { message: "" }, 7]) {
+      const err = new ApiError("x", 500, { error: "x", detail });
+      expect(err.detail).toBeNull();
+    }
   });
 });
