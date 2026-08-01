@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "./api";
 import { createSyncEngine, type SyncPayload } from "./sync";
 
 function payload(...slots: string[]): SyncPayload {
@@ -202,6 +203,44 @@ describe("sync engine", () => {
     await vi.advanceTimersByTimeAsync(10);
     await backend.fail(0, {});
     expect(engine.error.value).toBe("Could not save your availability");
+  });
+
+  it("carries the admin-only detail beside the error, and only then", async () => {
+    const backend = controllableSave();
+    const engine = createSyncEngine({ save: backend.save, debounceMs: 10 });
+
+    // The shape a 500 answers the signed-in owner with; a guest's ApiError
+    // has a null detail and the ref stays null for them.
+    engine.schedule(payload("a"));
+    await vi.advanceTimersByTimeAsync(10);
+    await backend.fail(
+      0,
+      new ApiError("Internal server error", 500, {
+        error: "Internal server error",
+        detail: { message: "EACCES: permission denied", code: "EACCES" },
+      }),
+    );
+    expect(engine.error.value).toBe("Internal server error");
+    expect(engine.errorDetail.value).toBe("EACCES: permission denied");
+
+    // A retry that lands clears both lines together.
+    engine.retry();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(engine.errorDetail.value).toBeNull();
+    await backend.settle(1);
+    expect(engine.error.value).toBeNull();
+    expect(engine.errorDetail.value).toBeNull();
+  });
+
+  it("keeps the detail null for a failure that carries none", async () => {
+    const backend = controllableSave();
+    const engine = createSyncEngine({ save: backend.save, debounceMs: 10 });
+
+    engine.schedule(payload("a"));
+    await vi.advanceTimersByTimeAsync(10);
+    await backend.fail(0, new ApiError("Event not found", 404, { error: "Event not found" }));
+    expect(engine.error.value).toBe("Event not found");
+    expect(engine.errorDetail.value).toBeNull();
   });
 
   it("flushes on demand, skipping the debounce", async () => {

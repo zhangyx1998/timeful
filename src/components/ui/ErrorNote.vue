@@ -15,11 +15,29 @@
  * sit beside the button that caused them, and announcing all of them would be
  * noise where today there is silence.
  */
-withDefaults(defineProps<{ message: string; alert?: boolean }>(), { alert: false });
+withDefaults(
+  defineProps<{
+    message: string;
+    alert?: boolean;
+    /**
+     * The admin-only elaboration under the message — the formatted `detail`
+     * an error response carried, which the server only includes for the
+     * signed-in owner. Empty means no second line, which is every guest.
+     */
+    detail?: string;
+  }>(),
+  { alert: false, detail: "" },
+);
 </script>
 
 <template>
-  <p v-if="message" class="error" :role="alert ? 'alert' : undefined">{{ message }}</p>
+  <p v-if="message" class="error" :role="alert ? 'alert' : undefined">
+    {{ message }}
+    <!-- The cause, under the sentence: a diagnostic rather than a second
+         message, so it drops to caption weight, goes monospace, and stays
+         selectable — its whole point is being pasted somewhere. -->
+    <span v-if="detail" class="detail">{{ detail }}</span>
+  </p>
 </template>
 
 <style scoped>
@@ -29,5 +47,16 @@ withDefaults(defineProps<{ message: string; alert?: boolean }>(), { alert: false
   color: var(--color-danger);
   background: var(--color-danger-soft);
   border-radius: var(--radius-md);
+}
+
+.detail {
+  display: block;
+  margin-top: 0.25rem;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--color-text-muted);
+  user-select: text;
 }
 </style>

@@ -78,6 +78,8 @@ export interface ResponseSession {
   hasMarks: ComputedRef<boolean>;
   syncStatus: Ref<SyncStatus>;
   syncError: Ref<string | null>;
+  /** The admin-only detail under a failed save; null for guests always. */
+  syncErrorDetail: Ref<string | null>;
   /** The visitor's own unsaved edits, for `buildResponseIndex`. */
   override: ComputedRef<{
     key: string;
@@ -214,6 +216,7 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
 
   const syncStatus = engine.status;
   const syncError = engine.error;
+  const syncErrorDetail = engine.errorDetail;
 
   function queueSave() {
     if (!identity.value) return;
@@ -527,6 +530,7 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     hasMarks,
     syncStatus,
     syncError,
+    syncErrorDetail,
     override,
     existingPeople,
     retry: () => engine.retry(),

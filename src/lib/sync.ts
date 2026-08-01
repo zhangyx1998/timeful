@@ -19,6 +19,7 @@
  *   blank "idle". See `SyncBaseline`.
  */
 import { ref, type Ref } from "vue";
+import { ApiError, formatErrorDetail } from "./api";
 
 /**
  * The two resting states: nothing is queued, nothing is in flight, and nothing
@@ -51,6 +52,12 @@ export interface SyncEngineOptions {
 export interface SyncEngine {
   status: Ref<SyncStatus>;
   error: Ref<string | null>;
+  /**
+   * The admin-only elaboration under the error, already formatted for print.
+   * Null for everyone else — a guest's failures never carry one, because the
+   * server only adds the field for a request holding the admin session.
+   */
+  errorDetail: Ref<string | null>;
   /** True while edits are waiting to be sent or a request is in flight. */
   pending: Ref<boolean>;
   /** Records new state and (re)starts the debounce timer. */
@@ -79,6 +86,13 @@ function errorMessage(error: unknown): string {
   return "Could not save your availability";
 }
 
+/** The formatted admin-only detail a failed save carried, or null. */
+function errorDetailText(error: unknown): string | null {
+  if (error instanceof ApiError && error.detail)
+    return formatErrorDetail(error.detail);
+  return null;
+}
+
 export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
   const debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
 
@@ -87,6 +101,7 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
 
   const status = ref<SyncStatus>(baseline);
   const error = ref<string | null>(null);
+  const errorDetail = ref<string | null>(null);
   const pending = ref(false);
 
   /** Newest state the caller has given us. */
@@ -144,6 +159,7 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
           if (disposed || sentIn !== era) return;
           inFlight = null;
           error.value = null;
+          errorDetail.value = null;
           if (dirty) {
             // Newer state arrived mid-flight: send it straight away so the
             // server always converges on the latest edit.
@@ -160,6 +176,7 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
           dirty = true;
           status.value = "error";
           error.value = errorMessage(reason);
+          errorDetail.value = errorDetailText(reason);
           notifySettled();
         },
       );
@@ -184,6 +201,7 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
   function retry() {
     if (disposed) return;
     error.value = null;
+    errorDetail.value = null;
     if (!dirty && latest === null) {
       status.value = baseline;
       return;
@@ -206,6 +224,7 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
     baseline = next;
     status.value = next;
     error.value = null;
+    errorDetail.value = null;
     notifySettled();
   }
 
@@ -222,5 +241,16 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
     settledWaiters = [];
   }
 
-  return { status, error, pending, schedule, flush, retry, reset, settled, dispose };
+  return {
+    status,
+    error,
+    errorDetail,
+    pending,
+    schedule,
+    flush,
+    retry,
+    reset,
+    settled,
+    dispose,
+  };
 }

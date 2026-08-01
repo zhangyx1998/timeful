@@ -12,9 +12,13 @@ import { createSSRApp, h } from "vue";
 import SyncIndicator from "./SyncIndicator.vue";
 import type { SyncStatus } from "../../lib/sync";
 
-function render(status: SyncStatus, error: string | null = null): Promise<string> {
+function render(
+  status: SyncStatus,
+  error: string | null = null,
+  detail: string | null = null,
+): Promise<string> {
   return renderToString(
-    createSSRApp({ render: () => h(SyncIndicator, { status, error }) }),
+    createSSRApp({ render: () => h(SyncIndicator, { status, error, detail }) }),
   );
 }
 
@@ -65,6 +69,21 @@ describe("sync indicator", () => {
   it("falls back to a message when the failure carries none", async () => {
     const html = await render("error", null);
     expect(text(html)).toContain("Could not save your availability");
+  });
+
+  it("prints the admin-only detail under the failure, when there is one", async () => {
+    const html = await render(
+      "error",
+      "Could not save your availability",
+      "EACCES: permission denied [EACCES] /var/events/x.json",
+    );
+    expect(text(html)).toContain("EACCES: permission denied");
+    expect(html).toContain('class="detail"');
+  });
+
+  it("prints no detail line for a guest's failure, which never carries one", async () => {
+    const html = await render("error", "Event not found");
+    expect(html).not.toContain('class="detail"');
   });
 
   it("renders something for every state", async () => {

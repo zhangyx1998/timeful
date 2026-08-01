@@ -37,6 +37,8 @@ withDefaults(
     name: string | null;
     status: SyncStatus;
     error: string | null;
+    /** The admin-only line under the error; guests never receive one. */
+    errorDetail?: string | null;
     /**
      * Offer to wipe this answer, here.
      *
@@ -57,7 +59,7 @@ withDefaults(
      */
     push?: { eventId: string; userKey: string } | null;
   }>(),
-  { canClear: false, clearing: false, push: null },
+  { canClear: false, clearing: false, push: null, errorDetail: null },
 );
 
 const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
@@ -81,6 +83,7 @@ const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
             class="sync"
             :status="status"
             :error="error"
+            :detail="errorDetail"
             @retry="emit('retry')"
           />
 

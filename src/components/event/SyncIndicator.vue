@@ -20,7 +20,19 @@ import IconCheck from "../../assets/icons/check-sm.svg";
 import IconAlertTriangle from "../../assets/icons/alert-triangle-sm.svg";
 import type { SyncStatus } from "../../lib/sync";
 
-defineProps<{ status: SyncStatus; error: string | null }>();
+withDefaults(
+  defineProps<{
+    status: SyncStatus;
+    error: string | null;
+    /**
+     * The admin-only elaboration under the failure — the server includes it
+     * only for a request carrying the owner's session, so rendering it here
+     * is admin-only by construction; a guest's failures never have one.
+     */
+    detail?: string | null;
+  }>(),
+  { detail: null },
+);
 const emit = defineEmits<{ retry: [] }>();
 </script>
 
@@ -54,6 +66,11 @@ const emit = defineEmits<{ retry: [] }>();
       {{ error ?? "Could not save your availability" }}
     </span>
     <button type="button" class="retry" @click="emit('retry')">Retry</button>
+    <!-- The cause, under the sentence: rendered only when the response carried
+         it, which the server does only for the signed-in owner. Muted and
+         monospace — a diagnostic, not a second message — and selectable,
+         because its whole point is being pasted somewhere. -->
+    <span v-if="detail" class="detail" :title="detail">{{ detail }}</span>
   </p>
 </template>
 
@@ -98,7 +115,24 @@ const emit = defineEmits<{ retry: [] }>();
 }
 
 .failed {
+  /* The one state with a possible second line: the detail wraps under the
+     sentence while the sentence itself keeps its single-line rule. */
+  flex-wrap: wrap;
   color: var(--color-danger);
+}
+
+/* The admin's diagnostic line. Full width under the message, quiet, mono, and
+   selectable — it exists to be read closely and pasted, not to alarm. */
+.detail {
+  flex-basis: 100%;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1.35;
+  color: var(--color-text-muted);
+  text-overflow: ellipsis;
+  user-select: text;
 }
 
 .icon {

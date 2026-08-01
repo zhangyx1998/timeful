@@ -184,6 +184,7 @@ const {
   hasMarks,
   syncStatus,
   syncError,
+  syncErrorDetail,
   existingPeople,
   confirmIdentity,
   browseOnly,
@@ -637,6 +638,7 @@ function onSolo(person: { key: string; displayName: string } | null) {
           :name="guestName"
           :status="syncStatus"
           :error="syncError"
+          :error-detail="syncErrorDetail"
           :can-clear="compact && editing && hasMarks"
           :clearing="clearOpen"
           :push="pushBinding"
