@@ -1,17 +1,19 @@
 <script setup lang="ts">
 /**
- * Signed-in management view, in two tabs.
+ * Signed-in management view, in three tabs.
  *
  * Events is what the owner comes here for; sessions and credentials are
  * housekeeping they touch once in a while, so they move behind Settings rather
- * than sitting under the list as two more panels to scroll past. The switch is
- * the same segmented control the event page uses for its two views.
+ * than sitting under the list as two more panels to scroll past; Logs is the
+ * server's own account of itself, streamed live. The switch is the same
+ * segmented control the event page uses for its two views.
  */
 import { onMounted, ref } from "vue";
 import AccountSection from "./AccountSection.vue";
 import { api, apiError, eventDataPath } from "../../lib/api";
 import EventFormDialog from "../shared/EventFormDialog.vue";
 import EventList from "./EventList.vue";
+import LogViewer from "../shared/LogViewer.vue";
 import SessionsSection from "./SessionsSection.vue";
 import UpdateSection from "./UpdateSection.vue";
 import AppHeader from "../ui/AppHeader.vue";
@@ -20,6 +22,7 @@ import ErrorNote from "../ui/ErrorNote.vue";
 import Segmented from "../ui/Segmented.vue";
 import ThemeToggle from "../ui/ThemeToggle.vue";
 import IconCalendar from "../../assets/icons/calendar.svg";
+import IconScrollText from "../../assets/icons/scroll-text.svg";
 import IconSliders from "../../assets/icons/sliders.svg";
 import type { EventSummary } from "../../lib/api";
 import type { EventDoc } from "../../lib/event";
@@ -30,9 +33,12 @@ const emit = defineEmits<{ (e: "signed-out", message: string): void }>();
 const events = ref<EventSummary[]>([]);
 const loading = ref(true);
 const error = ref("");
+/** The admin-only line under the error; the panel is signed in by definition. */
+const errorDetail = ref("");
 
 const TABS = [
   { value: "events", label: "Events" },
+  { value: "logs", label: "Logs" },
   { value: "settings", label: "Settings" },
 ] as const;
 
@@ -43,16 +49,18 @@ const form = ref<{ event: EventDoc | null } | null>(null);
 
 async function loadEvents(): Promise<void> {
   error.value = "";
+  errorDetail.value = "";
   loading.value = true;
   try {
     events.value = await api.get<EventSummary[]>("/api/events");
   } catch (err) {
-    const { message, status } = apiError(err, "Could not load events");
+    const { message, status, detail } = apiError(err, "Could not load events");
     if (status === 401) {
       emit("signed-out", "");
       return;
     }
     error.value = message;
+    errorDetail.value = detail;
   } finally {
     loading.value = false;
   }
@@ -64,11 +72,14 @@ function openCreate(): void {
 
 async function openEdit(summary: EventSummary): Promise<void> {
   error.value = "";
+  errorDetail.value = "";
   try {
     const full = await api.get<EventDoc>(eventDataPath(summary.id));
     form.value = { event: full };
   } catch (err) {
-    error.value = apiError(err, "Could not open the event").message;
+    const failure = apiError(err, "Could not open the event");
+    error.value = failure.message;
+    errorDetail.value = failure.detail;
   }
 }
 
@@ -108,13 +119,18 @@ onMounted(loadEvents);
               class="tab-icon"
               aria-hidden="true"
             />
+            <IconScrollText
+              v-else-if="option.value === 'logs'"
+              class="tab-icon"
+              aria-hidden="true"
+            />
             <IconSliders v-else class="tab-icon" aria-hidden="true" />
             {{ option.label }}
           </template>
         </Segmented>
       </div>
 
-      <ErrorNote :message="error" />
+      <ErrorNote :message="error" :detail="errorDetail" />
 
       <EventFormDialog
         :open="form !== null"
@@ -131,6 +147,19 @@ onMounted(loadEvents);
           @edit="openEdit"
           @changed="loadEvents"
         />
+      </template>
+
+      <!-- The server's own account of itself, live over a socket that exists
+           only while this tab is the one showing — leaving it closes the
+           stream, and returning replays the buffer afresh. -->
+      <template v-else-if="tab === 'logs'">
+        <section class="logs" aria-label="Server logs">
+          <p class="logs__note">
+            What the server has logged recently — errors, refused requests, and
+            housekeeping. Kept in memory only, and visible only to you.
+          </p>
+          <LogViewer path="/api/logs" empty-text="Nothing logged yet" />
+        </section>
       </template>
 
       <template v-else>
@@ -189,5 +218,17 @@ onMounted(loadEvents);
   width: 1rem;
   height: 1rem;
   flex: none;
+}
+
+.logs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.logs__note {
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--color-text-muted);
 }
 </style>

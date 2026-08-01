@@ -15,8 +15,10 @@
  */
 import { ref } from "vue";
 import PushToggle from "./PushToggle.vue";
+import LogViewer from "../shared/LogViewer.vue";
 import Button from "../ui/Button.vue";
 import Dialog from "../ui/Dialog.vue";
+import Segmented from "../ui/Segmented.vue";
 import Spinner from "../ui/Spinner.vue";
 import IconPencil from "../../assets/icons/pencil.svg";
 import IconHome from "../../assets/icons/home.svg";
@@ -24,7 +26,7 @@ import IconClock from "../../assets/icons/clock.svg";
 import IconSignOut from "../../assets/icons/sign-out.svg";
 import IconShield from "../../assets/icons/shield-half.svg";
 import { adminLogout } from "../../lib/admin";
-import { api, apiError, eventDetailsPath } from "../../lib/api";
+import { api, apiError, eventDetailsPath, eventLogsPath } from "../../lib/api";
 import { formatDateTime } from "../../lib/dates";
 import type { EventDetails, EventDetailsUser } from "../../lib/api";
 
@@ -45,8 +47,22 @@ const emit = defineEmits<{ edit: [] }>();
 const detailsOpen = ref(false);
 const loading = ref(false);
 const error = ref("");
+const errorDetail = ref("");
 const users = ref<EventDetailsUser[]>([]);
 const signingOut = ref(false);
+
+/**
+ * The dialog's two panes: the respondents' origins, and the event's slice of
+ * the server log. The log tab mounts its viewer only while it is the one
+ * showing, so the socket behind it opens on entering the tab and closes on
+ * leaving it — a disposable viewing session, never a background one.
+ */
+const DETAIL_TABS = [
+  { value: "details", label: "Details" },
+  { value: "logs", label: "Server logs" },
+] as const;
+
+const detailTab = ref<string>("details");
 
 /**
  * Fetched on open rather than held: it is a log, so what matters is what it
@@ -55,13 +71,17 @@ const signingOut = ref(false);
  */
 async function openDetails(): Promise<void> {
   detailsOpen.value = true;
+  detailTab.value = "details";
   loading.value = true;
   error.value = "";
+  errorDetail.value = "";
   try {
     users.value = (await api.get<EventDetails>(eventDetailsPath(props.eventId))).users;
   } catch (err) {
     users.value = [];
-    error.value = apiError(err, "Could not load the details").message;
+    const failure = apiError(err, "Could not load the details");
+    error.value = failure.message;
+    errorDetail.value = failure.detail;
   } finally {
     loading.value = false;
   }
@@ -141,10 +161,35 @@ async function signOut(): Promise<void> {
   <Dialog
     :open="detailsOpen"
     size="lg"
-    title="Where each answer came from"
+    title="Event details"
     @close="detailsOpen = false"
   >
     <div class="details">
+      <div class="details__tabs">
+        <Segmented
+          v-model="detailTab"
+          label="Details section"
+          size="sm"
+          equal
+          :options="DETAIL_TABS"
+        />
+      </div>
+
+      <!-- The event's slice of the server log, streamed live. The viewer only
+           exists while its tab is showing, so closing the tab — or the dialog —
+           closes the socket behind it. -->
+      <template v-if="detailTab === 'logs'">
+        <p class="details__note">
+          What the server has logged about this event, live, and visible only
+          to you.
+        </p>
+        <LogViewer
+          :path="eventLogsPath(props.eventId)"
+          empty-text="Nothing logged for this event yet"
+        />
+      </template>
+
+      <template v-else>
       <p class="details__note">
         Recorded when a response was last saved, and visible only to you.
       </p>
@@ -154,6 +199,7 @@ async function signOut(): Promise<void> {
       </p>
       <p v-else-if="error" class="details__state details__state--error" role="alert">
         {{ error }}
+        <span v-if="errorDetail" class="details__cause">{{ errorDetail }}</span>
       </p>
       <p v-else-if="users.length === 0" class="details__state">Nobody has answered yet.</p>
 
@@ -186,6 +232,7 @@ async function signOut(): Promise<void> {
           </p>
         </li>
       </ul>
+      </template>
     </div>
   </Dialog>
 </template>
@@ -281,6 +328,24 @@ async function signOut(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+}
+
+/* Centred like the panel's own tabs: a switch over the content, not a row
+   of it. */
+.details__tabs {
+  display: flex;
+  justify-content: center;
+}
+
+/* The admin-only cause under a failure to load: a diagnostic, so it drops to
+   caption weight, goes monospace, and stays selectable. */
+.details__cause {
+  display: block;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  user-select: text;
 }
 
 .details__note {
