@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import os from "node:os";
 import path from "node:path";
 import { CliError } from "./errors.ts";
-import { fakeHost } from "./fixtures.ts";
+import { fakeHost, noWait } from "./fixtures.ts";
 import {
   availableTiers,
   controlFor,
@@ -20,7 +20,9 @@ import {
   systemTierProblem,
   uninstallService,
   unitFor,
+  watchAfterStart,
   webrootHash,
+  type RunResult,
   type ServiceCommand,
   type ServiceRef,
   type ServiceSpec,
@@ -196,9 +198,8 @@ UMask=0002
 WorkingDirectory=/srv/timeful
 ExecStart=/usr/bin/node /usr/lib/node_modules/timeful/cli.js serve
 ProtectSystem=strict
-ProtectHome=tmpfs
-BindReadOnlyPaths=/srv/timeful
-BindPaths=/srv/timeful/var
+ProtectHome=off
+ReadWritePaths=/srv/timeful/var
 NoNewPrivileges=yes
 PrivateTmp=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
@@ -210,24 +211,37 @@ WantedBy=multi-user.target
 `);
   });
 
-  it("never covers a home directory with something nothing can be bound through", () => {
-    // ProtectHome=yes is the bug this tier shipped with: an inaccessible mount
-    // over /home that no BindPaths can reach past, so a webroot in a home
-    // directory answered every start with 200/CHDIR.
-    expect(unit.contents).toContain("ProtectHome=tmpfs");
+  it("emits the one shape that has survived a real boot: off + strict + ReadWritePaths", () => {
+    // The empirical ladder (systemd 255, production): ProtectHome=yes was a
+    // mount nothing can be bound through (200/CHDIR); ProtectHome=tmpfs +
+    // BindPaths surfaced a *read-only* data directory (EROFS on every save),
+    // and adding ReadWritePaths on top of the bind changed nothing. Only
+    // ProtectHome=off with a plain ReadWritePaths carve-out writes.
+    expect(unit.contents).toContain("ProtectHome=off");
     expect(unit.contents).not.toContain("ProtectHome=yes");
+    expect(unit.contents).not.toContain("ProtectHome=tmpfs");
+    expect(unit.contents).not.toMatch(/^BindPaths=/m);
+    expect(unit.contents).not.toMatch(/^BindReadOnlyPaths=/m);
   });
 
   it("grants write access to the data directory and nowhere else", () => {
-    // ProtectSystem=strict makes everything read-only and the tmpfs makes a
-    // home directory empty, so both paths are named as mounts: the webroot
-    // read-only, and the one directory the server writes read-write.
-    expect(unit.contents).toContain(`BindReadOnlyPaths=${WEBROOT}`);
-    expect(unit.contents).toContain(`BindPaths=${WEBROOT}/var`);
-    expect(unit.contents.match(/^BindPaths=.*$/gm)).toHaveLength(1);
-    // The whole webroot is no longer writable; only var/ is.
-    expect(unit.contents).not.toContain(`BindPaths=${WEBROOT}\n`);
-    expect(unit.contents).not.toMatch(/^ReadWritePaths=/m);
+    // ProtectSystem=strict makes the whole filesystem read-only; the single
+    // ReadWritePaths line is the carve-out, and it names varDir, never the
+    // webroot around it.
+    expect(unit.contents).toContain("ProtectSystem=strict");
+    expect(unit.contents.match(/^ReadWritePaths=.*$/gm)).toEqual([
+      `ReadWritePaths=${WEBROOT}/var`,
+    ]);
+  });
+
+  it("collapses cleanly when the data directory is the webroot itself", () => {
+    // The default layout since varDir began defaulting to "./": one path,
+    // one write grant, and no read-only directive fighting it.
+    const merged = unitFor(spec({ tier: "system", varDir: WEBROOT }));
+    expect(merged.contents.match(/^ReadWritePaths=.*$/gm)).toEqual([
+      `ReadWritePaths=${WEBROOT}`,
+    ]);
+    expect(merged.contents).not.toMatch(/^BindPaths=|^BindReadOnlyPaths=|^ReadOnlyPaths=/m);
   });
 
   it("keeps the data durable across a UID it does not choose", () => {
@@ -239,7 +253,10 @@ WantedBy=multi-user.target
     expect(unit.contents).toContain("UMask=0002");
   });
 
-  it("mounts an npx-cache CLI back through the tmpfs", () => {
+  it("needs no mounts for a webroot or an npx cache in a home directory", () => {
+    // With ProtectHome=off nothing is hidden, so nothing has to be bound
+    // back: the home-dir webroot and the npx-cache CLI are reached by plain
+    // permissions, which systemTierProblem checks at install time instead.
     const npx = unitFor(
       spec({
         tier: "system",
@@ -248,18 +265,9 @@ WantedBy=multi-user.target
         cliPath: "/home/ada/.npm/_npx/abc123/node_modules/timeful/cli.js",
       }),
     );
-    // The package directory, not the file: cli.js is served beside client/.
-    expect(npx.contents).toContain(
-      "BindReadOnlyPaths=/home/ada/.npm/_npx/abc123/node_modules/timeful",
-    );
-    expect(npx.contents).toContain("BindReadOnlyPaths=/home/ada/timeful");
-    expect(npx.contents).toContain("BindPaths=/home/ada/timeful/var");
-  });
-
-  it("leaves a CLI outside a home directory to ProtectSystem, which only hides nothing", () => {
-    // Read-only is not invisible, so there is no mount to add and the unit
-    // says so by not carrying one.
-    expect(unit.contents.match(/^BindReadOnlyPaths=.*$/gm)).toHaveLength(1);
+    expect(npx.contents).not.toMatch(/^Bind/m);
+    expect(npx.contents).toContain("ReadWritePaths=/home/ada/timeful/var");
+    expect(npx.contents).toContain("WorkingDirectory=/home/ada/timeful");
   });
 
   it("starts at boot rather than at login", () => {
@@ -305,7 +313,8 @@ WantedBy=multi-user.target
     const activate = commands(unit.activate);
     expect(activate[0]).toContain("groupadd --system timeful");
     expect(activate.findIndex((cmd) => cmd.includes("chown"))).toBeGreaterThan(0);
-    // mkdir first: BindPaths= cannot mount a source that is not there.
+    // mkdir first: systemd silently ignores a ReadWritePaths= path that does
+    // not exist at start, so the carve-out depends on the directory existing.
     expect(activate.findIndex((cmd) => cmd.includes("mkdir -p"))).toBeLessThan(
       activate.findIndex((cmd) => cmd.includes("chown")),
     );
@@ -313,65 +322,103 @@ WantedBy=multi-user.target
 });
 
 describe("systemTierProblem", () => {
-  it("has nothing to say about a webroot in a home directory any more", () => {
-    // The whole point of ProtectHome=tmpfs plus the binds: this used to be the
-    // crash-loop case, and it is now the ordinary one.
-    expect(
-      systemTierProblem(
-        spec({
-          tier: "system",
-          webroot: "/home/ada/timeful",
-          varDir: "/home/ada/timeful/var",
-          cliPath: "/home/ada/.npm/_npx/abc/node_modules/timeful/cli.js",
-        }),
-      ),
-    ).toBeNull();
+  // A webroot in a traversable home: the ordinary deployed layout.
+  const homeSpec = (overrides: Partial<ServiceSpec> = {}) =>
+    spec({
+      tier: "system",
+      webroot: "/home/ada/timeful",
+      varDir: "/home/ada/timeful",
+      cliPath: "/home/ada/.npm/_npx/abc/node_modules/timeful/cli.js",
+      user: "ada",
+      ...overrides,
+    });
+
+  it("has nothing to say about a home directory another account can walk", async () => {
+    // ProtectHome=off means reaching the webroot is plain DAC: a home with
+    // o+x (0755, or traverse-only 0711) is not a problem.
+    const { host } = fakeHost({ modes: { "/home/ada": 0o755, "/home/ada/timeful": 0o755 } });
+    expect(await systemTierProblem(homeSpec(), host)).toBeNull();
+    const stingy = fakeHost({ modes: { "/home/ada": 0o711 } });
+    expect(await systemTierProblem(homeSpec(), stingy.host)).toBeNull();
   });
 
-  it("refuses a Node installation inside a home directory, with the cure", () => {
-    const problem = systemTierProblem(
-      spec({
-        tier: "system",
-        nodePath: "/home/ada/.nvm/versions/node/v22.18.0/bin/node",
-        user: "ada",
-      }),
-    );
-    expect(problem).toContain("cannot use this Node installation");
-    expect(problem).toContain("/home/ada/.nvm/versions/node/v22.18.0/bin/node");
+  it("refuses a home the ephemeral user cannot pass through, with the one-bit cure", async () => {
+    const { host } = fakeHost({ modes: { "/home/ada": 0o700 } });
+    const problem = await systemTierProblem(homeSpec(), host);
+    expect(problem).toContain("cannot reach this webroot");
+    // What was found, and exactly what to run about it.
+    expect(problem).toContain("0700  /home/ada");
+    expect(problem).toContain("chmod o+x /home/ada");
     // A refusal without the alternative is just a refusal.
     expect(problem).toContain("timeful service install");
     expect(problem).toContain("sudo loginctl enable-linger ada");
   });
 
-  it("adds the uninstall when a broken unit is already sitting there", () => {
-    const broken = spec({ tier: "system", nodePath: "/home/ada/.nvm/bin/node", user: "ada" });
-    expect(systemTierProblem(broken, { installed: true })).toContain(
+  it("no longer refuses a version-manager node just for living in a home", async () => {
+    // With no tmpfs there is nothing to delimit: nvm's tree is reached by
+    // ordinary permissions like everything else, so only an untraversable
+    // ancestor is a problem.
+    const nvm = spec({
+      tier: "system",
+      nodePath: "/home/ada/.nvm/versions/node/v22.18.0/bin/node",
+      user: "ada",
+    });
+    const open = fakeHost({ modes: { "/home/ada": 0o755, "/home/ada/.nvm": 0o755 } });
+    expect(await systemTierProblem(nvm, open.host)).toBeNull();
+    const closed = fakeHost({ modes: { "/home/ada/.nvm": 0o700 } });
+    expect(await systemTierProblem(nvm, closed.host)).toContain("chmod o+x /home/ada/.nvm");
+  });
+
+  it("exempts the data directory itself, which the timeful group unlocks instead", async () => {
+    // Activation chowns varDir to the service's own group; o+x on it is not
+    // required. Its *ancestors* still are.
+    const layout = homeSpec({ varDir: "/home/ada/timeful/var" });
+    const { host } = fakeHost({
+      modes: { "/home/ada": 0o755, "/home/ada/timeful": 0o755, "/home/ada/timeful/var": 0o770 },
+    });
+    expect(await systemTierProblem(layout, host)).toBeNull();
+  });
+
+  it("lets an unstattable directory through rather than guessing", async () => {
+    // The check is a courtesy; the post-start watch is the backstop. A mode
+    // it cannot read is not evidence of anything.
+    const { host } = fakeHost();
+    expect(await systemTierProblem(homeSpec(), host)).toBeNull();
+  });
+
+  it("adds the uninstall when a broken unit is already sitting there", async () => {
+    const { host } = fakeHost({ modes: { "/home/ada": 0o700 } });
+    expect(await systemTierProblem(homeSpec(), host, { installed: true })).toContain(
       "timeful service uninstall --system",
     );
-    expect(systemTierProblem(broken, { installed: false })).not.toContain(
+    expect(await systemTierProblem(homeSpec(), host, { installed: false })).not.toContain(
       "timeful service uninstall --system",
     );
   });
 
-  it("says nothing about the tiers and platforms it does not govern", () => {
-    const home = { nodePath: "/home/ada/.nvm/bin/node" };
-    expect(systemTierProblem(spec({ tier: "user", ...home }))).toBeNull();
-    expect(systemTierProblem(spec({ platform: "darwin", tier: "system", ...home }))).toBeNull();
-    // /root and /run/user are covered by ProtectHome just as /home is.
-    expect(systemTierProblem(spec({ tier: "system", nodePath: "/root/node/bin/node" }))).not.toBeNull();
+  it("says nothing about the tiers and platforms it does not govern", async () => {
+    const { host } = fakeHost({ modes: { "/home/ada": 0o700 } });
+    expect(await systemTierProblem(homeSpec({ tier: "user" }), host)).toBeNull();
+    expect(await systemTierProblem(homeSpec({ platform: "darwin" }), host)).toBeNull();
     // A directory that merely starts with the same letters is not a home.
-    expect(systemTierProblem(spec({ tier: "system", nodePath: "/homebrew/bin/node" }))).toBeNull();
+    const lookalike = spec({ tier: "system", nodePath: "/homebrew/bin/node" });
+    const brew = fakeHost({ modes: { "/homebrew": 0o700 } });
+    expect(await systemTierProblem(lookalike, brew.host)).toBeNull();
   });
 
-  it("follows the invoking user's home when it is somewhere unusual", () => {
-    // ProtectHome does not cover /export/home, but a 0700 home is untraversable
-    // by another account wherever it lives.
+  it("covers /root and an unusual home just as it covers /home", async () => {
+    const root = spec({ tier: "system", nodePath: "/root/node/bin/node" });
+    const rootHost = fakeHost({ modes: { "/root": 0o700 } });
+    expect(await systemTierProblem(root, rootHost.host)).toContain("chmod o+x /root");
+    // ProtectHome never covered /export/home, but DAC applies wherever the
+    // invoking user's home actually is.
     const odd = spec({
       tier: "system",
       home: "/export/home/ada",
       nodePath: "/export/home/ada/.local/bin/node",
     });
-    expect(systemTierProblem(odd)).not.toBeNull();
+    const oddHost = fakeHost({ modes: { "/export/home/ada": 0o750 } });
+    expect(await systemTierProblem(odd, oddHost.host)).toContain("chmod o+x /export/home/ada");
   });
 });
 
@@ -419,9 +466,10 @@ describe("installService", () => {
   it("prints the whole unit before doing anything", async () => {
     const unit = unitFor(spec({ tier: "system" }));
     const { host, text } = fakeHost();
-    await installService(unit, host, { confirmPrivileged: async () => true });
+    await installService(unit, host, { confirmPrivileged: async () => true, verify: noWait });
     expect(text()).toContain("DynamicUser=yes");
-    expect(text()).toContain("ProtectHome=tmpfs");
+    expect(text()).toContain("ProtectHome=off");
+    expect(text()).toContain(`ReadWritePaths=${WEBROOT}/var`);
     expect(text()).toContain("sudo systemctl restart");
     expect(text()).toContain("groupadd --system timeful");
     expect(text()).toContain("ephemeral system user");
@@ -435,17 +483,19 @@ describe("installService", () => {
   it("says the group and the data outlive an uninstall", async () => {
     const unit = unitFor(spec({ tier: "system" }));
     const { host, text } = fakeHost();
-    await installService(unit, host, { confirmPrivileged: async () => true });
+    await installService(unit, host, { confirmPrivileged: async () => true, verify: noWait });
     expect(text()).toContain("The 'timeful' group and the contents of");
   });
 
   it("refuses a hardened install that could only crash-loop", async () => {
-    const unit = unitFor(spec({ tier: "system", nodePath: "/home/ada/.nvm/bin/node" }));
-    const { host, files, ran, text } = fakeHost();
+    const unit = unitFor(
+      spec({ tier: "system", webroot: "/home/ada/timeful", varDir: "/home/ada/timeful" }),
+    );
+    const { host, files, ran, text } = fakeHost({ modes: { "/home/ada": 0o700 } });
 
     await expect(
-      installService(unit, host, { confirmPrivileged: async () => true }),
-    ).rejects.toThrow(/cannot use this Node installation/);
+      installService(unit, host, { confirmPrivileged: async () => true, verify: noWait }),
+    ).rejects.toThrow(/cannot reach this webroot/);
     // Refused before anything is printed, written or run: a unit that can
     // never start is not worth describing.
     expect(text()).toBe("");
@@ -457,14 +507,16 @@ describe("installService", () => {
     const unit = unitFor(spec({ tier: "system" }));
     const { host, ran } = fakeHost({ fail: "reset-failed" });
     // A unit systemd has never seen has no failure to reset.
-    expect(await installService(unit, host, { confirmPrivileged: async () => true })).toBe(true);
-    expect(commands(ran)).toEqual(commands(unit.activate));
+    expect(
+      await installService(unit, host, { confirmPrivileged: async () => true, verify: noWait }),
+    ).toBe(true);
+    expect(commands(ran).slice(0, unit.activate.length)).toEqual(commands(unit.activate));
   });
 
   it("suggests '--system' in the undo line for the hardened tier", async () => {
     const unit = unitFor(spec({ tier: "system" }));
     const { host, text } = fakeHost();
-    await installService(unit, host, { confirmPrivileged: async () => true });
+    await installService(unit, host, { confirmPrivileged: async () => true, verify: noWait });
     expect(text()).toContain("timeful service uninstall --system");
   });
 
@@ -503,6 +555,112 @@ describe("installService", () => {
     const unit = unitFor(spec({ tier: "user" }));
     const { host } = fakeHost({ fail: "enable --now" });
     await expect(installService(unit, host)).rejects.toThrow(/Command failed \(exit 3\)/);
+  });
+});
+
+describe("installService: the post-start watch", () => {
+  const unit = unitFor(spec({ tier: "system" }));
+  const PROBE = `systemctl show -p ActiveState -p SubState -p NRestarts timeful-${HASH}.service`;
+
+  /** The stock host, with the probe scripted to answer `stdout`. */
+  const probing = (stdout: string) => {
+    const fake = fakeHost();
+    let probes = 0;
+    const host = {
+      ...fake.host,
+      run: async (cmd: ServiceCommand): Promise<RunResult> => {
+        if (!cmd.args.includes("show")) return fake.host.run(cmd);
+        probes += 1;
+        return { code: 0, stdout, stderr: "" };
+      },
+    };
+    return { ...fake, host, probes: () => probes };
+  };
+
+  it("verifies the hardened service came up and stayed up", async () => {
+    const { host, ran, text } = fakeHost();
+    expect(
+      await installService(unit, host, { confirmPrivileged: async () => true, verify: noWait }),
+    ).toBe(true);
+    // The watch rides the same unprivileged probe the status verb uses, and
+    // keeps looking across the whole window rather than trusting one answer.
+    expect(commands(ran).filter((cmd) => cmd === PROBE)).toHaveLength(4);
+    expect(text()).toContain(`Verified: timeful-${HASH}.service came up and stayed up.`);
+    expect(text()).toContain("Installed and started");
+  });
+
+  it("reports a crash loop loudly instead of claiming success", async () => {
+    // activating + auto-restart is systemd counting down to another attempt
+    // after one died — the exact state a broken sandbox leaves a unit in.
+    const scripted = probing("ActiveState=activating\nSubState=auto-restart\nNRestarts=3");
+    await expect(
+      installService(unit, scripted.host, {
+        confirmPrivileged: async () => true,
+        verify: noWait,
+      }),
+    ).rejects.toThrow(/not staying up/);
+    expect(scripted.text()).not.toContain("Installed and started");
+  });
+
+  it("points a failed watch at journalctl, and names the EROFS trap", async () => {
+    const scripted = probing("ActiveState=failed\nSubState=failed");
+    const failure = await installService(unit, scripted.host, {
+      confirmPrivileged: async () => true,
+      verify: noWait,
+    }).catch((err: unknown) => (err instanceof Error ? err.message : String(err)));
+    expect(failure).toContain(`journalctl -u timeful-${HASH}.service -e`);
+    expect(failure).toContain("EROFS");
+    expect(failure).toContain(`/etc/systemd/system/timeful-${HASH}.service.d/`);
+  });
+
+  it("stops probing the moment the verdict is in", async () => {
+    const scripted = probing("ActiveState=activating\nSubState=auto-restart");
+    await expect(
+      installService(unit, scripted.host, {
+        confirmPrivileged: async () => true,
+        verify: noWait,
+      }),
+    ).rejects.toThrow();
+    expect(scripted.probes()).toBe(1);
+  });
+
+  it("treats a counted restart as not staying up, even mid-green", async () => {
+    // active(running) with NRestarts>0 means it died and came back inside the
+    // window: reset-failed ran just before restart, so the count is ours.
+    const scripted = probing("ActiveState=active\nSubState=running\nNRestarts=2");
+    await expect(
+      installService(unit, scripted.host, {
+        confirmPrivileged: async () => true,
+        verify: noWait,
+      }),
+    ).rejects.toThrow(/not staying up/);
+  });
+
+  it("does not watch the user tier or a dry run", async () => {
+    const user = unitFor(spec({ tier: "user" }));
+    const { host, ran } = fakeHost();
+    await installService(user, host, { verify: noWait });
+    expect(commands(ran).some((cmd) => cmd.includes("show -p ActiveState"))).toBe(false);
+
+    const dry = fakeHost({ dryRun: true });
+    await installService(unit, { ...dry.host, dryRun: true }, { verify: noWait });
+    expect(dry.text()).not.toContain("show -p ActiveState");
+    expect(dry.text()).toContain(`Dry run: timeful-${HASH}.service was not installed.`);
+  });
+
+  it("paces itself with the injected sleep, once per gap between probes", async () => {
+    const scripted = probing("ActiveState=active\nSubState=running");
+    const sleeps: number[] = [];
+    const report = await watchAfterStart(refFor(unit), scripted.host, {
+      attempts: 3,
+      delayMs: 250,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+    });
+    expect(report.state).toBe("running");
+    expect(sleeps).toEqual([250, 250]);
+    expect(scripted.probes()).toBe(3);
   });
 });
 

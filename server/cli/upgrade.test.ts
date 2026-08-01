@@ -13,7 +13,7 @@ import {
   type ServiceSpec,
   type ServiceUnit,
 } from "./service.ts";
-import { fakeHost } from "./fixtures.ts";
+import { fakeHost, noWait } from "./fixtures.ts";
 import { pinnedCliPath } from "./discover.ts";
 import {
   installKind,
@@ -47,7 +47,7 @@ function installedUnit(cliPath: string, overrides: Partial<ServiceSpec> = {}): S
 }
 
 function context(host: ServiceHost, overrides: Partial<UpgradeContext> = {}): UpgradeContext {
-  return { host, cliPath: NEW_CLI, version: "1.4.0", ...overrides };
+  return { host, cliPath: NEW_CLI, version: "1.4.0", verify: noWait, ...overrides };
 }
 
 // ---------------------------------------------------------------------------
@@ -236,14 +236,14 @@ describe("upgradeWebroot", () => {
   });
 
   /**
-   * The migration path for the boxes the old hardened tier is crash-looping
-   * on. Re-pinning goes through `unitFor`, so the unit comes back in the
-   * current shape whatever shape it was in — nobody has to hand-edit
+   * The migration path for the boxes the old hardened tiers are broken on.
+   * Re-pinning goes through `unitFor`, so the unit comes back in the current
+   * shape whatever shape it was in — nobody has to hand-edit
    * /etc/systemd/system to get the fix.
    */
-  it("regenerates a legacy hardened unit into the shape that works", async () => {
+  it("regenerates a ProtectHome=yes legacy unit into the shape that works", async () => {
     const next = installedUnit(NEW_CLI, { tier: "system" });
-    // Exactly what this CLI used to write: an inaccessible /home, the whole
+    // Exactly what this CLI first wrote: an inaccessible /home, the whole
     // webroot writable, and no group to own anything.
     const legacy = `[Unit]
 Description=Timeful (${WEBROOT})
@@ -272,14 +272,12 @@ WantedBy=multi-user.target
     expect(text()).toContain(`was ${OLD_CLI}`);
 
     const written = files.get(next.staging ?? next.file) ?? "";
-    expect(written).toContain("ProtectHome=tmpfs");
+    expect(written).toContain("ProtectHome=off");
     expect(written).not.toContain("ProtectHome=yes");
     expect(written).toContain("SupplementaryGroups=timeful");
     expect(written).toContain("UMask=0002");
-    expect(written).toContain(`BindReadOnlyPaths=${WEBROOT}`);
-    expect(written).toContain(`BindPaths=${WEBROOT}/var`);
-    // The whole-webroot write grant is gone.
-    expect(written).not.toMatch(/^ReadWritePaths=/m);
+    // The write grant is varDir, not the whole webroot as the legacy unit had.
+    expect(written.match(/^ReadWritePaths=.*$/gm)).toEqual([`ReadWritePaths=${WEBROOT}/var`]);
 
     const commands = ran.map(formatCommand);
     expect(commands).toContain(
@@ -292,18 +290,68 @@ WantedBy=multi-user.target
     expect(commands).toContain(`sudo systemctl restart ${next.id}`);
   });
 
-  it("refuses to re-pin a hardened unit onto a Node it could never exec", async () => {
+  /**
+   * The 0.0.2 generation: ProtectHome=tmpfs with the data directory reached
+   * through BindPaths=, which systemd 255 surfaces *read-only* — reads work,
+   * every save dies with EROFS. Upgrading must converge the unit on the
+   * shape a production box proved out (ProtectHome=off + ReadWritePaths=),
+   * so the operator's stop-gap drop-in can be deleted afterwards.
+   */
+  it("regenerates a 0.0.2 tmpfs unit whose data directory was read-only", async () => {
+    const next = installedUnit(NEW_CLI, { tier: "system" });
+    const erofs = `[Unit]
+Description=Timeful (${WEBROOT})
+After=network.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+SupplementaryGroups=timeful
+UMask=0002
+WorkingDirectory=${WEBROOT}
+ExecStart=/usr/bin/node ${OLD_CLI} serve
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindReadOnlyPaths=${WEBROOT}
+BindPaths=${WEBROOT}/var
+NoNewPrivileges=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+`;
+    const { host, files, ran } = fakeHost({ seed: { [next.file]: erofs } });
+
+    expect(await upgradeWebroot(WEBROOT, [next], context(host))).toBe("upgraded");
+
+    const written = files.get(next.staging ?? next.file) ?? "";
+    expect(written).toContain("ProtectHome=off");
+    expect(written).not.toContain("ProtectHome=tmpfs");
+    expect(written).not.toMatch(/^Bind/m);
+    expect(written.match(/^ReadWritePaths=.*$/gm)).toEqual([`ReadWritePaths=${WEBROOT}/var`]);
+    // Regenerating is not enough on its own; the running process is replaced.
+    expect(ran.map(formatCommand)).toContain(`sudo systemctl restart ${next.id}`);
+  });
+
+  it("refuses to re-pin a hardened unit into a home it could never traverse", async () => {
     const next = installedUnit(NEW_CLI, {
       tier: "system",
-      nodePath: "/home/ada/.nvm/versions/node/v22.18.0/bin/node",
+      webroot: "/home/ada/timeful",
+      varDir: "/home/ada/timeful",
     });
-    const { host, files } = fakeHost({ seed: { [next.file]: next.contents } });
+    const { host, files } = fakeHost({
+      seed: { [next.file]: next.contents },
+      modes: { "/home/ada": 0o700 },
+    });
 
-    await expect(upgradeWebroot(WEBROOT, [next], context(host))).rejects.toThrow(
-      /cannot use this Node installation/,
+    await expect(upgradeWebroot("/home/ada/timeful", [next], context(host))).rejects.toThrow(
+      /cannot reach this webroot/,
     );
     // The cure, not just the refusal — including how to stop the broken one.
-    await expect(upgradeWebroot(WEBROOT, [next], context(host))).rejects.toThrow(
+    await expect(upgradeWebroot("/home/ada/timeful", [next], context(host))).rejects.toThrow(
       /timeful service uninstall --system/,
     );
     expect(files.get(next.file)).toBe(next.contents);

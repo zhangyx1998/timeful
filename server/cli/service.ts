@@ -7,10 +7,11 @@
  *    user, starts when that user logs in.
  *  - **system** (Linux + systemd only): a unit in /etc/systemd/system with
  *    `DynamicUser=yes` and the usual sandboxing, so the service runs as an
- *    ephemeral user that owns no account and reaches nothing it was not given.
- *    Needs sudo, starts at boot. See `systemdSystemUnit` for how a webroot
- *    inside a home directory is reached, and `systemTierProblem` for the one
- *    case that cannot be.
+ *    ephemeral user that owns no account and writes nowhere it was not given.
+ *    Needs sudo, starts at boot. See `systemdSystemUnit` for the sandbox shape
+ *    (and the production experiments behind it), and `systemTierProblem` for
+ *    the install-time traversal check that refuses a webroot the ephemeral
+ *    user could never walk to.
  *
  * Everything here is generated from a `ServiceSpec` by pure functions —
  * `unitFor` returns the file to write and the exact commands that would
@@ -268,54 +269,61 @@ function homeRoots(spec: ServiceSpec): string[] {
   return roots;
 }
 
-/** True when `target` sits inside a home directory this unit would have to mount past. */
-function underHome(spec: ServiceSpec, target: string): boolean {
-  return Boolean(target) && homeRoots(spec).some((root) => isUnder(target, root));
-}
-
 /**
  * The hardened tier.
  *
  * `DynamicUser=yes` means systemd allocates a throwaway UID for each start, so
  * the service owns no account and no files outside the paths it is granted.
- * `ProtectSystem=strict` makes the entire filesystem read-only, and the two
- * bind mounts below are the only holes in it.
+ * `ProtectSystem=strict` makes the entire filesystem read-only, and
+ * `ReadWritePaths=<varDir>` is the single writable exception carved out of it.
  *
- * ::: The home directory, and why `tmpfs` rather than `yes`
- * This unit used to say `ProtectHome=yes`, which covers /home, /root and
- * /run/user with an *inaccessible* mount. Nothing can be bound back through
- * one, so a webroot under /home could never be entered: systemd answered every
- * start with `status=200/CHDIR` and the unit crash-looped. The tier could not
- * have worked for any webroot in a home directory, which is where most of them
- * are.
+ * ::: Why `ProtectHome=off`: three shapes, one verified
+ * This shape is the survivor of live experiments on a production box (systemd
+ * 255, Ubuntu 24.04). In order:
  *
- * `ProtectHome=tmpfs` is the combination systemd documents for exactly this:
- * the three directories become empty tmpfs instances, and a path listed in
- * `BindPaths=` / `BindReadOnlyPaths=` is made visible through one, with systemd
- * creating the intermediate directories inside the tmpfs as root:755. So the
- * operator's real 0700 home is *shadowed* rather than traversed, and the
- * ephemeral UID walks a synthetic parent it is allowed to walk. No chmod on
- * anybody's home directory, and every other home stays as hidden as before.
+ * 1. `ProtectHome=tmpfs` + `BindPaths=<varDir>` (what this unit shipped
+ *    with): the data directory is *visible* through the tmpfs and reads work,
+ *    but every write fails with EROFS. The bind surfaces the path; nothing
+ *    exempts it from `ProtectSystem=strict`'s read-only remount. The service
+ *    looks healthy until somebody saves.
+ * 2. The same plus `ReadWritePaths=<varDir>` — the fix the documentation
+ *    suggests: `systemctl show` confirms all four settings applied together,
+ *    and writes **still** fail with EROFS. On real systemd 255,
+ *    `ReadWritePaths=` does not deliver write access to a path surfaced
+ *    through the `ProtectHome=tmpfs` by `BindPaths=`; the read-only
+ *    application wins regardless.
+ * 3. `ProtectHome=off` + `ProtectSystem=strict` + `ReadWritePaths=<varDir>`,
+ *    no binds at all: writes succeed. This function emits exactly that.
  *
- * What the tmpfs does **not** bypass is the webroot's own permissions: the
- * bound directory keeps its real inode, so the webroot needs `o+x` and
- * `timeful.config.json` needs `o+r` (the 0755/0644 both are born with).
+ * Shapes 1 and 2 both read as if they should work. Do not re-derive a
+ * tmpfs-plus-binds design from the manual: these tests are dry-run by design
+ * and can never boot a unit, so mount semantics are only ever proven on a
+ * real machine.
  * :::
  *
- * ::: The two mounts, and why not `ReadWritePaths=`
- * `BindReadOnlyPaths=<webroot>` and `BindPaths=<varDir>`, in that shape,
- * because a bind is the only directive that can make a path *appear* through
- * the tmpfs — `ReadWritePaths=` only changes whether an already-visible path is
- * writable, and naming a path the tmpfs has hidden is a start failure rather
- * than a mount. `BindPaths=` is read-write by default, which is what the data
- * directory wants, and systemd applies mount entries deepest-path-last, so the
- * writable data directory nested inside the read-only webroot survives both the
- * webroot's bind and `ProtectSystem=strict`. Order in the file is irrelevant.
+ * ::: What `off` costs, and what still holds
+ * With no tmpfs there is no synthetic parent to walk: the ephemeral UID
+ * reaches the webroot, the data directory, node and the CLI by ordinary
+ * permission checks, so every home-directory ancestor of those paths needs
+ * `o+x` (traverse-only — no `o+r` required, nobody gets to list anything).
+ * `systemTierProblem` stats exactly those directories at install time and
+ * refuses with the `chmod o+x` cure attached rather than installing a crash
+ * loop; the post-start watch in `installService` is the backstop for
+ * permissions that change later. Other people's homes are no longer shadowed
+ * by a tmpfs — they are protected by their own modes, exactly as they are
+ * from any other unprivileged account, and `ProtectSystem=strict` keeps every
+ * path on the machine read-only to the service anyway.
  *
- * Read-write is therefore `varDir` alone, not the whole webroot as before:
- * tighter, and sufficient — `timeful.config.json` is only ever read, and the
- * unit logs to the journal rather than to the `timeful.*.log` files the
- * LaunchAgent writes, so nothing else in the webroot is written at runtime.
+ * Read-write is `varDir` alone, not the whole webroot: `timeful.config.json`
+ * is only ever read, and the unit logs to the journal rather than to the
+ * `timeful.*.log` files the LaunchAgent writes. A `varDir` that *is* the
+ * webroot needs no special case — the same single line grants it. No
+ * `ReadOnlyPaths=<webroot>` is emitted: `ProtectSystem=strict` already makes
+ * it read-only, and stacking an unverified directive onto the write path is
+ * the exact class of mistake shapes 1 and 2 were. systemd silently ignores a
+ * `ReadWritePaths=` path that does not exist when the unit starts — the
+ * carve-out simply never happens — which is why activation `mkdir -p`s the
+ * data directory before anything else.
  * :::
  */
 function systemdSystemUnit(spec: ServiceSpec): ServiceUnit {
@@ -324,18 +332,6 @@ function systemdSystemUnit(spec: ServiceSpec): ServiceUnit {
   // generating it from a Windows host must not hand it backslashes.
   const file = path.posix.join(SYSTEMD_SYSTEM_DIR, id);
   const staging = path.join(os.tmpdir(), id);
-
-  // The package directory — cli.js beside the client/ and server/ asset trees.
-  // Only load-bearing when the CLI lives under a home directory (an npx cache
-  // does): everything else is left visible by ProtectSystem=strict, which makes
-  // the filesystem read-only rather than invisible. Emitted only when it is
-  // needed, so the unit says why every mount in it is there. An npx path moves
-  // with each version, and `timeful upgrade` rewrites the unit each time, so a
-  // bind can never outlive the package it points at.
-  const cliDir = path.posix.dirname(spec.cliPath);
-  const cliMount = underHome(spec, spec.cliPath)
-    ? `BindReadOnlyPaths=${cliDir}\n`
-    : "";
 
   const contents = `[Unit]
 Description=Timeful (${spec.webroot})
@@ -349,9 +345,8 @@ UMask=0002
 WorkingDirectory=${spec.webroot}
 ExecStart=${spec.nodePath} ${spec.cliPath} ${SERVE_ARG}
 ProtectSystem=strict
-ProtectHome=tmpfs
-BindReadOnlyPaths=${spec.webroot}
-${cliMount}BindPaths=${spec.varDir}
+ProtectHome=off
+ReadWritePaths=${spec.varDir}
 NoNewPrivileges=yes
 PrivateTmp=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
@@ -378,8 +373,9 @@ WantedBy=multi-user.target
         "-c",
         `getent group ${SERVICE_GROUP} >/dev/null || groupadd --system ${SERVICE_GROUP}`,
       ),
-      // BindPaths= fails to mount a source that is not there, and a webroot
-      // initialized with --dry-run may not have one yet.
+      // systemd ignores a ReadWritePaths= path that does not exist at start —
+      // the writable carve-out silently never happens — and a webroot
+      // initialized with --dry-run may not have a data directory yet.
       sudo("mkdir", "-p", spec.varDir),
       // Group ownership is what outlives a dynamic UID; setgid on the
       // directories keeps it true for everything written from here on, and
@@ -410,25 +406,68 @@ WantedBy=multi-user.target
 }
 
 /**
+ * The ancestors of `target` that sit inside a home directory — the ones
+ * nothing on a stock machine guarantees are traversable by another account.
+ * From the home itself down to `target` inclusive; the containers above it
+ * (/home, /run/user, the parent of an unusual home) are root-owned 0755 and
+ * not worth a stat.
+ */
+function homeAncestors(spec: ServiceSpec, target: string): string[] {
+  const roots = homeRoots(spec);
+  // /home and /run/user hold homes and are root:0755 themselves; /root *is* a
+  // home, so the walk includes it rather than stopping above it.
+  const containers = ["/home", "/run/user"];
+  const chain: string[] = [];
+  let dir = target;
+  while (dir !== "/" && dir !== path.posix.dirname(dir)) {
+    if (!roots.some((root) => isUnder(dir, root))) break;
+    if (containers.includes(dir)) break;
+    chain.unshift(dir);
+    dir = path.posix.dirname(dir);
+  }
+  return chain;
+}
+
+/**
  * Why this spec cannot be a system unit, or null when it can.
  *
- * Almost everything a home directory used to break is now reachable through
- * the tmpfs and the binds above. The one thing left is the **node binary**:
- * making an arbitrary Node installation visible means knowing where that
- * installation ends, and nvm, fnm, asdf and volta each answer differently. The
- * bundled CLI is one self-contained directory and can be bound; a version
- * manager's tree cannot be delimited without guessing, and a wrong guess is
- * another crash loop rather than an error message.
+ * With `ProtectHome=off` there is nothing a home directory hides — but there
+ * is still what it *denies*. The ephemeral UID belongs to no group but
+ * `timeful`, so it reaches the webroot, the data directory, node and the CLI
+ * by ordinary DAC: every home-directory ancestor of those paths needs `o+x`,
+ * and a 0700 or 0750 home stops the walk cold. That failure is
+ * `status=200/CHDIR` (or 203/EXEC) in a crash loop, so it is refused here,
+ * before anything is written, with the one-bit cure attached.
  *
- * So this refuses, with the cure attached, rather than generating a unit that
- * would fail at the first start.
+ * The data directory itself (and below) is exempt from the check: activation
+ * chowns it to the `timeful` group, which grants the service its own way in.
+ * A directory that cannot be statted is let through rather than refused — the
+ * check is a courtesy, and the post-start watch is the backstop.
  */
-export function systemTierProblem(
+export async function systemTierProblem(
   spec: ServiceSpec,
+  host: ServiceHost,
   options: { installed?: boolean } = {},
-): string | null {
+): Promise<string | null> {
   if (spec.platform !== "linux" || spec.tier !== "system") return null;
-  if (!underHome(spec, spec.nodePath)) return null;
+
+  const suspects = new Set<string>();
+  const targets = [
+    spec.webroot,
+    path.posix.dirname(spec.varDir),
+    path.posix.dirname(spec.cliPath),
+    path.posix.dirname(spec.nodePath),
+  ];
+  for (const target of targets)
+    for (const dir of homeAncestors(spec, target)) suspects.add(dir);
+
+  const blocked: string[] = [];
+  for (const dir of [...suspects].sort()) {
+    const mode = await host.mode(dir);
+    if (mode !== null && (mode & 0o001) === 0)
+      blocked.push(`  ${(mode & 0o7777).toString(8).padStart(4, "0")}  ${dir}`);
+  }
+  if (blocked.length === 0) return null;
 
   const who = spec.user || (spec.home ? path.posix.basename(spec.home) : "") || "<user>";
   // Two commands, one comment column: the second line is the longer one only
@@ -437,25 +476,25 @@ export function systemTierProblem(
   const linger = `  sudo loginctl enable-linger ${who}`;
   const column = Math.max(install.length, linger.length) + 2;
   const lines = [
-    "The hardened system tier cannot use this Node installation.",
+    "The hardened system tier cannot reach this webroot.",
     "",
-    `  node   ${spec.nodePath}`,
+    "It would run as an ephemeral user (DynamicUser=yes) with no access beyond",
+    "the 'timeful' group, and everything it uses — the webroot, the data",
+    "directory, node, the CLI — sits behind directories that do not let another",
+    "account pass through them:",
     "",
-    "A system service runs as an ephemeral user with ProtectHome=tmpfs, which",
-    "replaces /home, /root and /run/user with empty directories. Timeful's own",
-    "webroot and package are mounted back through that, but a Node installation",
-    "in a home directory cannot be: where a version manager's tree begins and",
-    "ends is its own business, and mounting the wrong part of it would replace",
-    "this message with a crash loop.",
+    ...blocked,
     "",
-    "Run it as yourself instead. The user tier needs no sudo, and lingering is",
-    "what makes it start at boot rather than at login:",
+    "Traverse-only access is enough. o+x lets a process walk through a",
+    "directory it names exactly, without listing or reading anything in it:",
+    "",
+    ...blocked.map((line) => `  chmod o+x ${line.trimStart().split(/\s+/)[1]}`),
+    "",
+    "Or run it as yourself instead. The user tier needs no sudo, and lingering",
+    "is what makes it start at boot rather than at login:",
     "",
     `${install.padEnd(column)}# user tier, runs as you`,
     `${linger.padEnd(column)}# start at boot, survive logout`,
-    "",
-    "Or install Timeful under a system-wide Node — one outside a home",
-    "directory — and run 'timeful service install --system' from that.",
   ];
 
   if (options.installed) {
@@ -517,6 +556,12 @@ export interface ServiceHost {
   readFile(file: string): Promise<string | null>;
   removeFile(file: string): Promise<void>;
   exists(file: string): Promise<boolean>;
+  /**
+   * The permission bits of `file` (`st_mode & 0o7777`), or null when it cannot
+   * be statted. Like `readFile`, honoured in a dry run — a stat is not a
+   * change, and the traversal check has to be able to refuse a dry run too.
+   */
+  mode(file: string): Promise<number | null>;
   run(cmd: ServiceCommand): Promise<RunResult>;
   /** Whether an executable is on PATH. */
   which(binary: string): Promise<boolean>;
@@ -579,6 +624,14 @@ export function nodeHost(options: NodeHostOptions = {}): ServiceHost {
         return true;
       } catch {
         return false;
+      }
+    },
+    async mode(file) {
+      // Not gated on `dryRun`: a stat is not a change.
+      try {
+        return (await fs.stat(file)).mode & 0o7777;
+      } catch {
+        return null;
       }
     },
     async run(cmd) {
@@ -676,6 +729,8 @@ export interface InstallOptions {
    * untouched and the commands are printed for manual execution instead.
    */
   confirmPrivileged?: () => Promise<boolean>;
+  /** Pacing for the post-start watch; tests hand in a sleep that does not. */
+  verify?: VerifyOptions;
 }
 
 /**
@@ -690,7 +745,9 @@ export async function installService(
 ): Promise<boolean> {
   // Before anything is printed: a unit that could never start is not something
   // to describe and then fail at, it is something to refuse with the cure.
-  const problem = systemTierProblem(unit.spec, { installed: await host.exists(unit.file) });
+  const problem = await systemTierProblem(unit.spec, host, {
+    installed: await host.exists(unit.file),
+  });
   if (problem) throw new CliError(problem);
 
   describeUnit(unit, host);
@@ -733,6 +790,39 @@ export async function installService(
     if (result.code === 0 || cmd.tolerant) continue;
     throw new CliError(
       `Command failed (exit ${result.code}): ${formatCommand(cmd)}\n${result.stderr.trim()}`,
+    );
+  }
+
+  // The lesson of the read-only data directory: `systemctl restart` exiting 0
+  // only proves the process forked. Watch the hardened tier for a few seconds
+  // and report a service that did not stay up *now*, at install time, rather
+  // than when an operator eventually asks for status. System tier only: its
+  // activation always ends in an unconditional restart preceded by
+  // `reset-failed`, so the state and restart count the watch reads belong to
+  // this install and to nothing older. (The user tier's `enable --now` may not
+  // have restarted an already-running unit at all.) Skipped in a dry run,
+  // where nothing was started and a probe would answer nothing.
+  if (unit.spec.platform === "linux" && unit.spec.tier === "system" && !host.dryRun) {
+    const report = await watchAfterStart(refFor(unit), host, options.verify);
+    if (report.state === "failed" || (report.restarts ?? 0) > 0) {
+      throw new CliError(
+        [
+          `${unit.id} was installed, but the service is not staying up: ${describeRunState(report)}.`,
+          "The unit file is in place and systemd keeps retrying it. To see why it dies:",
+          "",
+          `  journalctl -u ${unit.id} -e`,
+          "",
+          "If the journal shows EROFS (read-only file system) under the data",
+          "directory, the unit's ReadWritePaths= line is missing or overridden —",
+          `check for stale drop-ins in /etc/systemd/system/${unit.id}.d/`,
+          "and rerun 'npx timeful@latest upgrade' to regenerate the unit.",
+        ].join("\n"),
+      );
+    }
+    host.log(
+      report.state === "running"
+        ? `Verified: ${unit.id} came up and stayed up.`
+        : `Could not confirm ${unit.id} is running (state: ${report.state}). Check 'timeful service status'.`,
     );
   }
 
@@ -1003,6 +1093,45 @@ export function describeRunState(report: RunReport): string {
   if (!report.restarts) return report.state;
   const times = report.restarts === 1 ? "1 automatic restart" : `${report.restarts} automatic restarts`;
   return `${report.state} (${times})`;
+}
+
+/** How the post-start watch paces itself; injectable so tests never sleep. */
+export interface VerifyOptions {
+  /** How many probes to make, spaced `delayMs` apart. */
+  attempts?: number;
+  delayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Watches a just-(re)started service long enough to see a crash loop.
+ *
+ * A start command exiting 0 proves only that the process forked; a unit that
+ * dies moments later spends its life in `activating (auto-restart)`, and one
+ * with a read-only data directory shipped as "Installed and started" exactly
+ * that way. So the watch keeps probing across a short window rather than
+ * trusting the first answer: a `failed` probe — or any probe that counted an
+ * automatic restart — is the verdict the moment it shows, and only a service
+ * still up at the *end* of the window is called good. The window (~3s at the
+ * defaults) is deliberately shorter than the unit's RestartSec=5, so a unit
+ * that died is caught in `auto-restart` rather than mid-relaunch.
+ */
+export async function watchAfterStart(
+  ref: ServiceRef,
+  host: ServiceHost,
+  options: VerifyOptions = {},
+): Promise<RunReport> {
+  const attempts = options.attempts ?? 4;
+  const delayMs = options.delayMs ?? 1000;
+  const sleep =
+    options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let report: RunReport = { state: "unknown" };
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (attempt > 0) await sleep(delayMs);
+    report = await probeRun(ref, host);
+    if (report.state === "failed" || (report.restarts ?? 0) > 0) return report;
+  }
+  return report;
 }
 
 /**

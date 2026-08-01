@@ -28,6 +28,7 @@ import {
   refFor,
   type ServiceHost,
   type ServiceUnit,
+  type VerifyOptions,
 } from "./service.ts";
 import { isNewerVersion, type RegistryLookup } from "../registry.ts";
 
@@ -87,6 +88,8 @@ export interface UpgradeContext {
   version: string;
   /** Asked before anything privileged runs; handed to `installService`. */
   confirmPrivileged?: () => Promise<boolean>;
+  /** Pacing for the post-start watch; handed to `installService`. */
+  verify?: VerifyOptions;
 }
 
 /** What happened to one webroot. Reported back so `-A` can summarise. */
@@ -151,7 +154,10 @@ export async function upgradeWebroot(
       continue;
     }
 
-    await installService(unit, host, { confirmPrivileged: context.confirmPrivileged });
+    await installService(unit, host, {
+      confirmPrivileged: context.confirmPrivileged,
+      verify: context.verify,
+    });
     await controlService(refFor(unit), "restart", host);
     outcome = "upgraded";
   }

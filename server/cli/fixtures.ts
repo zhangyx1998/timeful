@@ -6,8 +6,20 @@
  * `dist`.
  */
 import { PassThrough, Writable } from "node:stream";
-import { formatCommand, type ServiceCommand, type ServiceHost } from "./service.ts";
+import {
+  formatCommand,
+  type ServiceCommand,
+  type ServiceHost,
+  type VerifyOptions,
+} from "./service.ts";
 import type { Tty } from "./tui.ts";
+
+/**
+ * Pacing for the post-start watch that probes immediately and never sleeps.
+ * Handed to `installService`/`upgradeWebroot` in tests, which would otherwise
+ * spend real seconds watching a fake service.
+ */
+export const noWait: VerifyOptions = { sleep: async () => {} };
 
 export interface FakeHostOptions {
   /** Files already on disk before the test starts: path -> contents. */
@@ -18,6 +30,12 @@ export interface FakeHostOptions {
    * `serviceStatus`'s installed check depends on exactly that.
    */
   existing?: string[];
+  /**
+   * Permission bits by path, for the traversal check. A path not listed here
+   * cannot be statted (mode() answers null), which the check lets through —
+   * so tests only name the directories whose modes they mean to assert on.
+   */
+  modes?: Record<string, number>;
   which?: (binary: string) => boolean;
   /** Fail (exit 3) every command whose formatted form contains this string. */
   fail?: string;
@@ -51,6 +69,10 @@ export function fakeHost(options: FakeHostOptions = {}) {
     },
     async exists(file) {
       return existing.has(file);
+    },
+    async mode(file) {
+      // Like reads, honoured in a dry run: a stat is not a change.
+      return options.modes?.[file] ?? null;
     },
     async run(cmd) {
       if (options.dryRun) {
