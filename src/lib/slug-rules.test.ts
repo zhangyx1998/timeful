@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { MAX_SLUG_LENGTH, RESERVED_SLUGS, slugProblem } from "./slug-rules";
+import {
+  MAX_SLUG_LENGTH,
+  RESERVED_SLUGS,
+  RESERVED_SUBPATHS,
+  slugProblem,
+} from "./slug-rules";
 
 describe("slugProblem", () => {
   it("accepts a path of letters, digits and hyphens", () => {
@@ -67,5 +72,22 @@ describe("slugProblem", () => {
     for (const reserved of RESERVED_SLUGS) {
       expect(slugProblem(reserved)).toBe(`'${reserved}' is a reserved slug`);
     }
+  });
+
+  it("reserves the API sub-segments an event's path spends, and no slugs", () => {
+    // The full set, pinned: forgetting to reserve a new sub-path would route
+    // an API client to the 404 *page*, and quietly widening it would take a
+    // word away from the page handler.
+    expect([...RESERVED_SUBPATHS].sort()).toEqual([
+      "data",
+      "details",
+      "logs",
+      "push",
+      "settings",
+      "users",
+      "ws",
+    ]);
+    // Sub-segments constrain nothing about slugs: `/logs` is a fine event page.
+    for (const sub of RESERVED_SUBPATHS) expect(slugProblem(sub)).toBeNull();
   });
 });

@@ -22,6 +22,7 @@ import type {
   SessionInfo,
   UpdateCheck,
 } from "../src/lib/api.ts";
+import type { LogEntry, LogLevel, LogStreamMessage } from "../src/lib/logs.ts";
 import type {
   PresenceEntry,
   RealtimeMessage,
@@ -41,6 +42,9 @@ export type {
   EventType,
   EventSummary,
   LastEdit,
+  LogEntry,
+  LogLevel,
+  LogStreamMessage,
   PushRole,
   PushSubscriptionKeys,
   SessionInfo,

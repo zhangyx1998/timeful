@@ -254,6 +254,7 @@ describe("paths that do not resolve", () => {
       `/${event.slug}/ws`,
       `/${event.slug}/users/ada-lovelace`,
       `/${event.slug}/settings`,
+      `/${event.slug}/logs`,
       `/${event.id}/data/extra`,
     ]) {
       expect(await call("GET", route), route).toEqual({

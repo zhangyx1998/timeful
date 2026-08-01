@@ -14,7 +14,7 @@ import type { IncomingMessage, Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import express from "express";
 import type { Express, NextFunction, Request, Response } from "express";
-import { cookieParser, loadSession } from "./auth.ts";
+import { cookieParser, loadSession, sessionTokenFromHeader, touchSession } from "./auth.ts";
 import { realtimeEnabled } from "./config.ts";
 import { logError, redactPath, stackHead } from "./log.ts";
 // Runtime, like the slug rules: what a link-holder may see is one definition,
@@ -445,15 +445,29 @@ export async function serve(options: ServeOptions): Promise<Server> {
   });
 
   // Attached to the listening server, never to the app: an upgrade is a
-  // property of the HTTP connection and never reaches Express at all.
-  if (realtime) {
-    const hub = attachRealtime(server, {
-      resolveEvent,
-      writeResponse,
-      clientIp: (req) => upgradeClientIp(app, req),
-    });
-    server.on("close", () => void hub.close());
-  }
+  // property of the HTTP connection and never reaches Express at all. The
+  // listener is always registered now — it also carries the admin-only log
+  // streams (`/api/logs`, `/<slug>/logs`), which exist whatever the realtime
+  // switch says; with realtime off the event channel inside it is not served
+  // and those upgrades are destroyed unresolved, exactly as the absent
+  // listener used to leave them.
+  const hub = attachRealtime(server, {
+    resolveEvent,
+    writeResponse,
+    clientIp: (req) => upgradeClientIp(app, req),
+    realtime,
+    // The same cookie, the same session store, the same answer `requireAdmin`
+    // would give — read from the handshake's raw headers, because an upgrade
+    // never reaches Express and there is no middleware to have parsed them.
+    verifyAdmin: async (req) => {
+      const token = sessionTokenFromHeader(
+        Array.isArray(req.headers.cookie) ? req.headers.cookie[0] : req.headers.cookie,
+      );
+      if (!token) return false;
+      return (await touchSession(token)) !== null;
+    },
+  });
+  server.on("close", () => void hub.close());
 
   for (const line of startupLines(options, realtime)) console.log(line);
   return server;

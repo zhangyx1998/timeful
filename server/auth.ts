@@ -163,10 +163,9 @@ export async function purgeSessions({
 // cookies + middleware
 // ---------------------------------------------------------------------------
 
-/** Minimal cookie header parser; avoids a dependency for ~10 lines. */
-export function cookieParser(req: Request, _res: Response, next: NextFunction): void {
+/** Parses a raw `Cookie` header. Shared by the middleware and the upgrade path. */
+export function parseCookieHeader(header: string | undefined): Record<string, string> {
   const cookies: Record<string, string> = Object.create(null);
-  const header = req.headers.cookie;
   if (header) {
     for (const part of header.split(";")) {
       const eq = part.indexOf("=");
@@ -181,8 +180,25 @@ export function cookieParser(req: Request, _res: Response, next: NextFunction): 
       }
     }
   }
-  req.cookies = cookies;
+  return cookies;
+}
+
+/** Minimal cookie header parser; avoids a dependency for ~10 lines. */
+export function cookieParser(req: Request, _res: Response, next: NextFunction): void {
+  req.cookies = parseCookieHeader(req.headers.cookie);
   next();
+}
+
+/**
+ * The session token in a raw `Cookie` header, or null.
+ *
+ * For the WebSocket upgrade path, which never reaches Express and so never
+ * runs the middleware above: an admin-only upgrade has to read the same cookie
+ * the routes read, from the handshake's own headers.
+ */
+export function sessionTokenFromHeader(header: string | undefined): string | null {
+  const token = parseCookieHeader(header)[COOKIE_NAME];
+  return typeof token === "string" && token ? token : null;
 }
 
 /**

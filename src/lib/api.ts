@@ -170,6 +170,17 @@ export function eventPushPath(idOrSlug: string): string {
 }
 
 /**
+ * `GET /<idOrSlug>/logs` — one event's server-log stream, admin only.
+ *
+ * A WebSocket upgrade, not a fetchable route: the admin session cookie is
+ * verified before the handshake completes, and an upgrade without one is
+ * destroyed. A plain `GET` of this path is a 404 like the other socket paths.
+ */
+export function eventLogsPath(idOrSlug: string): string {
+  return `/${encodeURIComponent(idOrSlug)}/logs`;
+}
+
+/**
  * Extracts a human-readable message plus HTTP status from a caught error.
  * `detail` is the formatted admin-only elaboration when the response carried
  * one, and `""` otherwise — a guest's errors always come out with it empty.

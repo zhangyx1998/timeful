@@ -60,10 +60,20 @@ import {
 } from "../src/lib/realtime.ts";
 import { userKeyFromParam } from "../src/lib/user-key.ts";
 import { statusOf } from "./http.ts";
+import {
+  eventLogEntries,
+  globalLogEntries,
+  logInfo,
+  logWarn,
+  redactIp,
+  subscribeEventLog,
+  subscribeGlobalLog,
+} from "./log.ts";
 import { missTarpit } from "./tarpit.ts";
 import type {
   EditOrigin,
   EventDoc,
+  LogStreamMessage,
   PresenceEntry,
   RealtimeMessage,
   ResponseInput,
@@ -90,6 +100,12 @@ const BROWSE_PATH = /^\/([^/?#]+)\/ws(?:\?([^#]*))?$/;
 
 /** `/<slug>/users/<userKey>`, with an optional query, and nothing else. */
 const SESSION_PATH = /^\/([^/?#]+)\/users\/([^/?#]+)(?:\?([^#]*))?$/;
+
+/** `/<slug>/logs` — one event's admin log stream. */
+const EVENT_LOGS_PATH = /^\/([^/?#]+)\/logs(?:\?[^#]*)?$/;
+
+/** `/api/logs` — the global admin log stream. `/api` is global-only. */
+const GLOBAL_LOGS_PATH = /^\/api\/logs(?:\?[^#]*)?$/;
 
 /**
  * Longest display name accepted from the upgrade URL, matching the guest-name
@@ -273,6 +289,26 @@ export function sessionKeys(eventId: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// the admin log streams
+// ---------------------------------------------------------------------------
+
+/**
+ * Open log-viewer sockets — the admin's disposable view onto the in-memory
+ * log buffers, global (`/api/logs`) or one event's (`/<slug>/logs`).
+ *
+ * Deliberately not rooms: a viewer belongs to no event's presence, blocks
+ * nothing, and is never broadcast to. On connect the buffer is replayed in one
+ * frame and live entries follow; the client closes when the panel does, and
+ * there is no reconnect contract — it is a viewing session, not sync.
+ */
+const logViewers = new Set<WebSocket>();
+
+/** Test hook: how many log viewers are currently connected. */
+export function logViewerCount(): number {
+  return logViewers.size;
+}
+
+// ---------------------------------------------------------------------------
 // the upgrade listener
 // ---------------------------------------------------------------------------
 
@@ -310,6 +346,21 @@ export interface RealtimeOptions {
   clientIp?: (req: IncomingMessage) => string;
   /** Ping interval. Defaults to `HEARTBEAT_MS`; tests wind it on. */
   heartbeatMs?: number;
+  /**
+   * Whether the realtime event channel is served at all. With `false` only
+   * the admin log streams are: a `/<slug>/ws` or `/<slug>/users/<key>` upgrade
+   * is destroyed without resolving anything — the same closed door the absent
+   * listener used to be, behind one listener that still has to exist for the
+   * log streams. Defaults to true.
+   */
+  realtime?: boolean;
+  /**
+   * Whether the upgrade carries a valid admin session, for the log streams.
+   * Checked **before** the handshake is completed; an upgrade without one is
+   * destroyed exactly like any other refused upgrade. When absent, the log
+   * streams are off entirely — nothing can be verified, so nothing is served.
+   */
+  verifyAdmin?: (req: IncomingMessage) => Promise<boolean>;
 }
 
 export interface RealtimeServer {
@@ -367,6 +418,16 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
     // alone — production — behaviour is exactly what it was, tarpit and all,
     // whatever protocol a client claims.
     if (server.listenerCount("upgrade") > 1 && isViteHmr(req)) return;
+
+    // The admin log streams, global and per-event. Parsed ahead of the event
+    // channel because `/api/logs` is not an event path at all, and `/logs` is
+    // a reserved sub-segment the event channel must never read as a slug.
+    const logs = parseLogsUpgrade(req.url ?? "");
+    if (logs) {
+      void acceptLogs(req, socket, head, logs);
+      return;
+    }
+
     const target = parseUpgrade(req.url ?? "");
     if (!target) {
       // Not ours. Claiming it would break anything else that shares this
@@ -375,7 +436,95 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
       if (server.listenerCount("upgrade") === 1) socket.destroy();
       return;
     }
+    if (options.realtime === false) {
+      // The kill switch: the event channel is not served, and the door is as
+      // closed as the absent listener used to be — destroyed unresolved, so a
+      // scan learns nothing, hit or miss.
+      socket.destroy();
+      return;
+    }
     void accept(req, socket, head, target);
+  }
+
+  /**
+   * An admin log-stream upgrade: verify the session cookie **before** the
+   * handshake completes, then — for an event stream — resolve the event.
+   *
+   * A refusal is `socket.destroy()`, the same hangup every other refused
+   * upgrade gets: an unauthenticated caller learns nothing, not even that the
+   * path exists. The event lookup runs only after the session verified, so it
+   * cannot be used to probe slugs — and a miss then is a stale admin tab, not
+   * a scan, refused without a tarpit like every admin route.
+   */
+  async function acceptLogs(
+    req: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+    target: LogsUpgrade,
+  ): Promise<void> {
+    const authed = options.verifyAdmin ? await options.verifyAdmin(req) : false;
+    if (!authed) {
+      logWarn(
+        `Refused an unauthenticated log-stream upgrade from ${redactIp(peerAddress(req))}`,
+      );
+      if (!socket.destroyed) socket.destroy();
+      return;
+    }
+    let eventId: string | null = null;
+    if (target.scope === "event") {
+      const event = await options.resolveEvent(target.idOrSlug);
+      if (!event) {
+        if (!socket.destroyed) socket.destroy();
+        return;
+      }
+      eventId = event.id;
+    }
+    if (socket.destroyed) return;
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      attachLogViewer(ws, eventId);
+    });
+  }
+
+  /** Replay the buffer, then stream live entries until the viewer hangs up. */
+  function attachLogViewer(ws: WebSocket, eventId: string | null): void {
+    logViewers.add(ws);
+    alive.add(ws);
+    ws.on("pong", () => {
+      alive.add(ws);
+    });
+    ws.on("error", () => {
+      alive.delete(ws);
+    });
+
+    const sendFrame = (message: LogStreamMessage): void => {
+      if (ws.readyState !== ws.OPEN) return;
+      ws.send(JSON.stringify(message));
+    };
+
+    sendFrame({
+      type: "replay",
+      entries: eventId === null ? globalLogEntries() : eventLogEntries(eventId),
+    });
+    const unsubscribe =
+      eventId === null
+        ? subscribeGlobalLog((entry) => sendFrame({ type: "entry", entry }))
+        : subscribeEventLog(
+            eventId,
+            (entry) => sendFrame({ type: "entry", entry }),
+            () => {
+              // The event was deleted; the stream is over, in words first.
+              sendFrame({ type: "gone" });
+              ws.close(1000, "Event deleted");
+            },
+          );
+
+    // No `message` listener, like the browse socket: a viewer reads and never
+    // writes, so nothing a client sends here can reach any state.
+    ws.on("close", () => {
+      unsubscribe();
+      logViewers.delete(ws);
+      alive.delete(ws);
+    });
   }
 
   async function accept(
@@ -386,6 +535,11 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
   ): Promise<void> {
     const event = await options.resolveEvent(target.idOrSlug);
     if (!event) {
+      // The refusal, with the address down to a prefix — never the URL, whose
+      // first segment is whatever slug the caller guessed at.
+      logWarn(
+        `Refused a WebSocket upgrade for an unknown event from ${redactIp(peerAddress(req))}`,
+      );
       // The same queue an HTTP miss joins, so subscribing is no cheaper to scan
       // than fetching. Over the per-IP cap, `enter` refuses without spending
       // the delay and the socket goes immediately.
@@ -403,6 +557,9 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
     // the status — a failed upgrade is just a close to `WebSocket` — so the
     // client gives up after a few refusals rather than on the code.
     if (!realtimeAllowed(event)) {
+      logInfo("Refused an upgrade: live updates are off for this event", {
+        eventId: event.id,
+      });
       socket.end(
         "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
       );
@@ -456,12 +613,16 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
         // completed, which is the point: a close code is readable by the
         // browser where an HTTP status on a refused upgrade is not. The socket
         // never joins the room, so nothing about the incumbent changes.
+        logInfo(`Refused a second write session for "${target.key}": occupied`, {
+          eventId,
+        });
         ws.close(CLOSE_OCCUPIED, "occupied");
         return;
       }
       // A takeover the page asked for after being told the key was busy. The
       // incumbent is told in words before it is hung up on, so its own page can
       // say what happened rather than showing a dropped connection.
+      logInfo(`Write session for "${target.key}" taken over`, { eventId });
       sendTo(incumbent, { type: "replaced" });
       // Dropped from the map first: the incumbent's `close` handler then sees a
       // session it no longer holds and leaves the newcomer's claim alone.
@@ -561,6 +722,16 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
         ws.ping();
       }
     }
+    // Log viewers are reaped by the same rule: a dialog that vanished with its
+    // network must not hold a subscription to the log forever.
+    for (const ws of logViewers) {
+      if (!alive.has(ws)) {
+        ws.terminate();
+        continue;
+      }
+      alive.delete(ws);
+      ws.ping();
+    }
   }, options.heartbeatMs ?? HEARTBEAT_MS);
   heartbeat.unref?.();
 
@@ -570,6 +741,8 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
       server.off("upgrade", handleUpgrade);
       for (const room of rooms.values()) for (const ws of room.sockets) ws.terminate();
       rooms.clear();
+      for (const ws of logViewers) ws.terminate();
+      logViewers.clear();
       return new Promise<void>((resolve) => wss.close(() => resolve()));
     },
   };
@@ -600,6 +773,20 @@ function frameText(data: unknown): string | null {
   if (Array.isArray(data) && data.every((part) => Buffer.isBuffer(part)))
     return Buffer.concat(data as Buffer[]).toString("utf8");
   return null;
+}
+
+/** What a log-stream upgrade URL is asking for, or null when it is not one. */
+type LogsUpgrade = { scope: "global" } | { scope: "event"; idOrSlug: string };
+
+function parseLogsUpgrade(url: string): LogsUpgrade | null {
+  if (GLOBAL_LOGS_PATH.test(url)) return { scope: "global" };
+  const event = EVENT_LOGS_PATH.exec(url);
+  if (!event) return null;
+  const idOrSlug = decodeParam(event[1]);
+  if (idOrSlug === null) return null;
+  // `/api/logs` won the test above; any other `/api/...` is not an event path.
+  if (idOrSlug === "api") return null;
+  return { scope: "event", idOrSlug };
 }
 
 /**
