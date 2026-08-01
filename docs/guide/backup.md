@@ -1,8 +1,12 @@
 # Backup and restore
 
-The backup procedure is: **copy `var/`**. The restore procedure is: **put it
-back**. There is no dump command, no export format, and nothing to remember,
-because there is no database to be consistent with.
+The backup procedure is: **copy the data directory**. The restore procedure
+is: **put it back**. There is no dump command, no export format, and nothing
+to remember, because there is no database to be consistent with.
+
+The data directory is wherever `varDir` in `timeful.config.json` points — the
+webroot itself for newly initialized webroots, `var/` inside it for older
+ones. The examples below say `var/`; read them as your data directory.
 
 ## What is in there
 
@@ -83,6 +87,9 @@ directory your backup tool already watches — point `varDir` at it:
 { "varDir": "/mnt/backup-me/timeful" }
 ```
 
-The webroot then holds only `timeful.config.json`. Under the hardened system
-service, remember that `ReadWritePaths` is derived from the webroot: a `varDir`
-outside it will not be writable.
+The webroot then holds only `timeful.config.json`. The hardened system
+service's write grant (`ReadWritePaths=`) and the `timeful` group ownership
+both follow `varDir` itself, so a data directory outside the webroot works —
+but they are applied at install time, so after moving `varDir`, rerun
+`timeful service install --system` (or `npx timeful@latest upgrade`) to point
+the unit and the ownership at the new location.

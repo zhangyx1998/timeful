@@ -30,9 +30,11 @@ npm test             # vitest run
 npm run typecheck    # vue-tsc --noEmit
 ```
 
-`npm run dev` and `npm start` both read `var/` from the working directory, the
-same way the packaged CLI does — a checkout is just another webroot. Server
-flags pass through after `--`:
+`npm run dev` and `npm start` both read `var/` from the working directory —
+that is the bare server's default and it stays that way for the checkout, so
+dev data never mixes with tracked files. (Webroots initialized by the CLI are
+different: their `varDir` defaults to the webroot itself.) Server flags pass
+through after `--`:
 
 ```sh
 npm start -- --port=8080 --trusted-proxy=10.0.0.0/8

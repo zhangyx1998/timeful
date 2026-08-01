@@ -185,9 +185,8 @@ DynamicUser=yes
 SupplementaryGroups=timeful
 UMask=0002
 ProtectSystem=strict
-ProtectHome=tmpfs
-BindReadOnlyPaths=/srv/scheduling
-BindPaths=/srv/scheduling/var
+ProtectHome=off
+ReadWritePaths=/srv/scheduling/var
 NoNewPrivileges=yes
 PrivateTmp=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
@@ -200,19 +199,25 @@ What each buys you:
   owned by it.
 - **`ProtectSystem=strict`** — the entire filesystem is read-only to the
   process. A bug that wants to write somewhere it should not simply cannot.
-- **`ProtectHome=tmpfs`** — `/home`, `/root` and `/run/user` are replaced with
-  empty directories. Every home on the machine is invisible, including yours,
-  except for whatever is mounted back below.
-- **`BindReadOnlyPaths=<webroot>`** — your webroot, visible and read-only. This
-  is the mount that reaches back through the tmpfs, which is why a webroot in
-  your home directory works.
-- **`BindPaths=<var dir>`** — the data directory, and the only writable path the
-  service has. Not the whole webroot: the config file is only ever read, and the
-  unit logs to the journal rather than to a file.
+- **`ReadWritePaths=<data dir>`** — the one exception: the only writable path
+  the service has. Not the whole webroot when the two differ: the config file
+  is only ever read, and the unit logs to the journal rather than to a file.
+- **`ProtectHome=off`** — deliberate, and the product of testing on a real
+  box: every combination of `ProtectHome=tmpfs` with bind mounts left the
+  data directory visible but *read-only* (saves failed with EROFS however
+  the writable bind was spelled), so homes are not hidden. They are still
+  protected by their own permissions — as against any other unprivileged
+  account — and read-only to the service like everything else.
 - **`NoNewPrivileges=yes`** — the process cannot gain privileges, ever, not even
   through a setuid binary.
 - **`PrivateTmp=yes`** — its own `/tmp`, thrown away on stop.
 - **`RestrictAddressFamilies=…`** — IP and Unix sockets only.
+
+After activating it, `install` (and `upgrade`) watches the unit for a few
+seconds and refuses to claim success over a service that did not stay up — a
+crash loop is reported immediately, with the `journalctl` command that shows
+why. The server also probes its own data directory at boot and exits with a
+diagnosis rather than starting unwritable.
 
 ### The `timeful` group
 
@@ -243,16 +248,24 @@ to the group and log in again:
 sudo usermod -aG timeful $USER
 ```
 
-### Two permissions it does not change
+### The permissions it needs from you
 
-The tmpfs shadows your home directory's permissions, but the **webroot's own**
-still apply, because that directory is bound in with its real inode:
+The service reaches your webroot by ordinary permission checks, as any other
+account would:
 
-- the webroot needs `o+x` — the 0755 a directory is normally born with;
+- every directory above the webroot — including your home, if it lives there —
+  needs `o+x`, so the service user can pass through. Traverse-only: `o+x`
+  without `o+r` lets a process walk a path it names exactly, without listing
+  or reading anything;
+- the webroot itself needs `o+x` — the 0755 a directory is normally born with;
 - `timeful.config.json` needs `o+r` — the 0644 the CLI writes it as.
 
-If you have tightened either, loosen it again or the service cannot read its own
-configuration. Nothing else in the webroot needs to be readable.
+`install` checks the home-directory part for you and refuses with the exact
+`chmod o+x` command when a directory would block the service (a 0700 or 0750
+home, for instance). If you have tightened the others, loosen them again or
+the service cannot read its own configuration. Nothing else in the webroot
+needs to be readable, and the data directory itself is opened up by the
+`timeful` group instead.
 
 ### What it costs
 
@@ -263,34 +276,46 @@ configuration. Nothing else in the webroot needs to be readable.
 ### When it refuses
 
 There is one setup the hardened tier cannot serve, and it says so instead of
-installing something that would crash-loop: **a `node` binary inside a home
-directory**, which is what nvm, fnm, asdf and volta all give you. Timeful's own
-webroot and package are mounted back through the tmpfs, but a version manager's
-tree cannot be — where it begins and ends is its own business, and guessing
-wrong would trade an error message for a service that never starts.
+installing something that would crash-loop: **a home directory the service
+user cannot pass through**. The install checks every home-directory ancestor
+of the paths the service uses (the webroot, the data directory, `node`, the
+CLI), and a directory without `o+x` — a 0700 or 0750 home — is refused with
+the exact one-bit cure printed:
 
-Run it as yourself instead. Lingering is what makes a user service start at boot
-rather than at login, which is the part people usually want the system tier for:
+```sh
+chmod o+x /home/you   # traverse-only; nothing becomes listable or readable
+```
+
+If you would rather not touch your home's permissions, run it as yourself
+instead. Lingering is what makes a user service start at boot rather than at
+login, which is the part people usually want the system tier for:
 
 ```sh
 timeful service install             # user tier, runs as you
 sudo loginctl enable-linger $USER   # start at boot, survive logout
 ```
 
-Or install Timeful under a system-wide Node — one outside a home directory — and
-install the hardened service from that.
+(A version manager's `node` — nvm, fnm, asdf, volta — is fine now, as long as
+its directories are traversable like everything else. Earlier versions
+refused it outright.)
 
 ### If you have an old, broken hardened unit
 
-Versions before this one wrote `ProtectHome=yes`, which covers `/home` with a
-mount nothing can be bound through. A webroot in a home directory could never be
-entered, and the unit crash-looped with `status=200/CHDIR` — while
-`timeful service status` cheerfully reported it as running, because
-`systemctl is-active` calls a restart loop `activating`. Both halves of that are
-fixed; the status command now says `failed (12 automatic restarts)`.
+Two earlier generations of this unit were broken, each differently:
 
-Upgrading regenerates the unit in the new shape, resets the latched failure and
-restarts it:
+- **`ProtectHome=yes`** (the first shape) covered `/home` with a mount nothing
+  can be bound through. A webroot in a home directory could never be entered,
+  and the unit crash-looped with `status=200/CHDIR` — while
+  `timeful service status` cheerfully reported it as running, because
+  `systemctl is-active` calls a restart loop `activating`. The status command
+  now says `failed (12 automatic restarts)`, and install itself watches the
+  unit after starting it.
+- **`ProtectHome=tmpfs` + `BindPaths=`** (the 0.0.2 shape) started fine and
+  *read* fine — and every save failed, because the bind surfaces the data
+  directory read-only under `ProtectSystem=strict`. See below.
+
+Upgrading regenerates the unit in the proven shape, resets any latched failure
+and restarts it:
 
 ```sh
 cd /srv/scheduling && npx timeful@latest upgrade
@@ -301,6 +326,40 @@ have. If you patched the unit by hand in the meantime — a drop-in under
 `/etc/systemd/system/timeful-<hash>.service.d/` — delete that directory once the
 new unit is in place and run `sudo systemctl daemon-reload`. The generated unit
 now carries the same fix natively, and a stale override will only fight it.
+
+### If saves fail with EROFS after an upgrade
+
+The symptom of the 0.0.2 unit: the site loads, every event page reads
+perfectly, and saving availability fails ("Could not save your availability"),
+with the journal showing `EROFS` on a `…events/<uuid>.json.<pid>.<hex>.tmp`
+path. The server now also refuses to start in this state, naming the same
+errno and this cure.
+
+The fix is the upgrade above, which rewrites the unit as
+`ProtectHome=off` + `ReadWritePaths=<data dir>`. Until you can run it, a
+drop-in gets a 0.0.2 unit writing again — this exact combination is what the
+regenerated unit converges on:
+
+```ini
+# /etc/systemd/system/timeful-<hash>.service.d/override.conf
+[Service]
+ProtectHome=off
+BindPaths=
+ReadWritePaths=/path/to/your/data-dir
+```
+
+(`BindPaths=` with an empty value clears the unit's bind list; the plain
+`ReadWritePaths=` carve-out is what actually makes the path writable. Adding
+`ReadWritePaths=` *without* clearing the tmpfs and the bind does **not** work
+— that combination was tested on a real box and still returns EROFS.) Then:
+
+```sh
+sudo systemctl daemon-reload && sudo systemctl restart timeful-<hash>.service
+```
+
+Delete the drop-in directory and `daemon-reload` again after your next
+`npx timeful@latest upgrade`; the regenerated unit makes it redundant, and a
+stale override will only fight some future shape.
 
 ### macOS and Windows
 

@@ -79,15 +79,20 @@ is a crash on startup for the packaged CLI rather than a warning.
 
 ## Storage
 
-Everything lives under `varDir()` — `process.env.VAR_DIR` or `<cwd>/var`.
+Everything lives under `varDir()` — `process.env.VAR_DIR` or `<cwd>/var`. The
+CLI resolves the webroot's `varDir` config key and publishes it as `VAR_DIR`
+before serving; that key **defaults to `./`, the webroot itself**, for webroots
+initialized from here on (it used to be `./var`, and existing config files keep
+whatever they say). The bare-server default of `<cwd>/var` is what a repo
+checkout's `npm run dev` still uses.
 
 ```
-var/credential.json      the single owner account
-var/sessions.json        active session tokens
-var/links.json           slug -> event id
-var/events/<uuid>.json   one file per event, guest answers inline
-var/push.json            push subscriptions, across all events
-var/vapid.json           the server's VAPID key pair, minted on first use
+credential.json      the single owner account
+sessions.json        active session tokens
+links.json           slug -> event id
+events/<uuid>.json   one file per event, guest answers inline
+push.json            push subscriptions, across all events
+vapid.json           the server's VAPID key pair, minted on first use
 ```
 
 There are no migrations and no schema version. If you change the event shape,
@@ -109,7 +114,22 @@ cannot lose each other. Content is `JSON.stringify(data, null, 2) + "\n"`.
 Reading a missing file returns a fallback (`null` or `{}`) rather than throwing.
 
 **Going around this module reintroduces exactly the bugs it exists to prevent.**
-It is also what makes "copy `var/`" a valid backup of a running server.
+It is also what makes "copy the data directory" a valid backup of a running
+server.
+
+### The startup write probe
+
+At boot, before the server listens, both entry points (`server/index.ts` and
+the CLI's serve path) call `probeVarDirWritable()`: write and delete a
+throwaway file in the data directory, and refuse to start — one diagnostic,
+exit non-zero — when it fails. A sandboxed service that can read everything
+looks perfectly healthy until the first guest saves; failing at start instead
+puts the failure where `journalctl` and the service install's post-start watch
+can see it. The diagnostic (`explainWriteFailure`) distinguishes the two
+errnos that mean different things: **EROFS** is the sandbox speaking (a
+hardened unit missing its `ReadWritePaths=` carve-out, or a drop-in overriding
+it), **EACCES/EPERM** is ownership (the `timeful` group chown/chmod that
+`timeful service install` performs has not happened).
 
 ### `events/<uuid>.json`
 
@@ -1651,10 +1671,8 @@ UMask=0002
 WorkingDirectory=<webroot>
 ExecStart=<node> <cli> serve
 ProtectSystem=strict
-ProtectHome=tmpfs
-BindReadOnlyPaths=<webroot>
-BindReadOnlyPaths=<cli package dir>   # only when the CLI is under a home dir
-BindPaths=<varDir>
+ProtectHome=off
+ReadWritePaths=<varDir>
 NoNewPrivileges=yes
 PrivateTmp=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
@@ -1662,7 +1680,10 @@ Restart=on-failure
 RestartSec=5
 ```
 
-#### Why `tmpfs`, and why binds
+#### Why `ProtectHome=off`: three shapes, one survivor
+
+This shape is empirical, not derived. Three generations were tried, the last
+two live on a production box (systemd 255, Ubuntu 24.04):
 
 ::: danger `ProtectHome=yes` is a working directory nothing can enter.
 It covers /home, /root and /run/user with an **inaccessible** mount, and no
@@ -1673,35 +1694,42 @@ The tier shipped that way because service tests are dry-run by design and never
 boot a real unit.
 :::
 
-`ProtectHome=tmpfs` is the combination systemd documents for this: the three
-directories become empty tmpfs instances, and a path listed in `BindPaths=` or
-`BindReadOnlyPaths=` is made visible through one, with systemd creating the
-intermediate directories inside the tmpfs as `root:755`. The operator's real
-0700 home is **shadowed rather than traversed**, so an arbitrary UID walks a
-synthetic parent it is allowed to walk. No chmod on anybody's home directory,
-and every other home stays as hidden as it was under `yes`.
+::: danger `ProtectHome=tmpfs` + `BindPaths=` surfaces a *read-only* data directory.
+The replacement (the 0.0.2 shape) followed the documentation: the tmpfs hides
+homes, `BindPaths=<varDir>` — read-write by default — mounts the data
+directory back through it. On a real systemd 255 the path is visible, reads
+work, and **every write fails with EROFS**: nothing exempts the bound path
+from `ProtectSystem=strict`'s read-only remount, so the service looks healthy
+until the first guest saves. Adding `ReadWritePaths=<varDir>` alongside the
+bind — the fix the manual suggests, since `ReadWritePaths=` is the directive
+that carves writable exceptions out of `strict` — was **also tested and also
+fails**: `systemctl show` confirms all four settings applied together, and
+writes still die with EROFS. On this systemd, `ReadWritePaths=` does not
+deliver write access to a path surfaced through the ProtectHome tmpfs by
+`BindPaths=`; the read-only application wins regardless.
 
-What the tmpfs does *not* bypass is the bound directory's own permissions: the
-webroot keeps its real inode, so it needs `o+x` and `timeful.config.json` needs
-`o+r` — the 0755 and 0644 both are born with.
+Both shapes read as if they should work. Do not re-derive a tmpfs-plus-binds
+design from first principles — boot it on a real unit first.
+:::
 
-The two mounts are binds rather than `ReadWritePaths=` because only a bind can
-make a path *appear* through the tmpfs; `ReadWritePaths=` merely changes whether
-an already-visible path is writable, and naming one the tmpfs has hidden is a
-start failure. `BindPaths=` is read-write by default, and systemd applies mount
-entries **deepest-path-last**, so a writable `varDir` nested inside a read-only
-webroot survives both the webroot's mount and `ProtectSystem=strict`. Order in
-the file is irrelevant.
+What survived: `ProtectHome=off`, `ProtectSystem=strict`, and a single plain
+`ReadWritePaths=<varDir>` carve-out, with no binds at all. Writes succeed;
+this is the exact combination running in production, and `unitFor` emits
+nothing else. A `varDir` that *is* the webroot (the default layout now) is the
+same single line. No `ReadOnlyPaths=<webroot>` is emitted — `strict` already
+makes it read-only, and stacking an unverified directive onto the write path
+is the exact class of mistake the tmpfs shapes were.
 
-Read-write is `varDir` alone, not the whole webroot as before: tighter, and
-sufficient — `timeful.config.json` is only ever read, and a systemd unit logs to
-the journal rather than to the `timeful.*.log` files the LaunchAgent writes.
-
-The CLI's package directory is bound **only when it is under a home directory**,
-which an npx cache is. Everywhere else `ProtectSystem=strict` leaves it visible
-and read-only, so there is nothing to add and the unit carries no mount it does
-not need. An npx path moves with each version and `timeful upgrade` rewrites the
-unit each time, so the bind cannot outlive the package it names.
+What `off` costs: nothing is shadowed, so the ephemeral UID reaches the
+webroot, the data directory, node and the CLI by ordinary permission checks —
+every home-directory ancestor of those paths needs `o+x` (traverse-only;
+nothing needs to be listable or readable), the webroot needs `o+x`, and
+`timeful.config.json` needs `o+r` (the 0755/0644 they are born with). Other
+users' homes are protected by their own modes, exactly as they are from any
+other unprivileged account, and remain read-only to the service under
+`strict` besides. systemd silently ignores a `ReadWritePaths=` path that does
+not exist when the unit starts, which is why activation `mkdir -p`s the data
+directory before anything else.
 
 #### The `timeful` group
 
@@ -1717,18 +1745,29 @@ data is still reachable only through its own unit's bind mount.
 Uninstall removes neither the group nor the data, and the printed undo text says
 so: another webroot's unit may be using both.
 
-#### The one refusal
+#### The one refusal: an untraversable home
 
-A **node binary inside a home directory** — nvm, fnm, asdf, volta — is the one
-thing the binds cannot fix. Delimiting a version manager's tree means guessing,
-and a wrong guess is another crash loop rather than an error message. So
-`installService` refuses it **before printing anything**, with the alternative
-attached:
+`systemTierProblem` stats, through `ServiceHost.mode`, every home-directory
+ancestor of the paths the unit uses — the webroot, the data directory's
+parent, the CLI's directory, node's directory — and refuses the install when
+one of them lacks `o+x`: a 0700 or 0750 home stops the ephemeral UID's walk
+cold, and that failure is `status=200/CHDIR` in a crash loop rather than an
+error message. The refusal happens **before printing anything**, lists what
+was found with the one-bit cure (`chmod o+x <dir>` — traverse-only, nothing
+becomes listable or readable), and attaches the alternative:
 
 ```sh
 timeful service install            # user tier, runs as you
 sudo loginctl enable-linger <user> # start at boot, survive logout
 ```
+
+The data directory itself (and below) is exempt from the check — activation
+chowns it to the `timeful` group, which is the service's own way in. A
+directory that cannot be statted is let through rather than refused: the check
+is a courtesy, and the post-start watch is the backstop. A version manager's
+node (nvm, fnm, asdf, volta) is **no longer refused for living in a home** —
+with no tmpfs there is nothing to delimit, so it works exactly when its
+ancestors are traversable.
 
 The refusal sits in `installService` rather than in unit generation, which
 covers `service install --system`, the wizard and `timeful upgrade` alike while
@@ -1760,9 +1799,23 @@ and the host is what writes and executes. Rules:
   turn a `ServiceRef` — platform, tier, id, file, uid — into commands without
   touching anything, which is what lets a service found by scanning be started
   and stopped without recovering its whole spec.
-- `ServiceHost.readFile` is the exception to the dry-run rule, and only because
-  a read is not a change: `upgrade --dry-run` has to be able to say what the
-  installed unit execs today.
+- `ServiceHost.readFile` and `ServiceHost.mode` are the exceptions to the
+  dry-run rule, and only because a read (or a stat) is not a change:
+  `upgrade --dry-run` has to be able to say what the installed unit execs
+  today, and the traversal check has to be able to refuse a dry run too.
+- **The post-start watch.** After the hardened tier's activation,
+  `installService` keeps probing the unit (`watchAfterStart`, the same
+  `systemctl show` probe the status verb uses) across a short window — ~3
+  seconds at the defaults, deliberately shorter than the unit's
+  `RestartSec=5`. A probe answering `failed`, `activating (auto-restart)`, or
+  any counted restart throws a `CliError` — non-zero exit, no "Installed and
+  started" claim — pointing at `journalctl -u <id> -e` and naming the EROFS
+  trap. Only a service still up at the end of the window is called good. The
+  pacing is injectable (`VerifyOptions.sleep`), which is how tests cover it
+  without sleeping; `timeful upgrade` inherits the watch by going through
+  `installService`. System tier only: its activation always ends in
+  `reset-failed` + `restart`, so the state the watch reads belongs to this
+  install and nothing older.
 - **Never activate a real service from a test or a dev session.** Stub the host.
 
 #### Upgrading
@@ -1820,16 +1873,21 @@ Rules that fall out of it:
   `installService`'s `confirmPrivileged` and the `sudo systemctl` commands
   `controlFor` already generates. There is no second escalation path.
 - **A legacy unit comes back in the current shape.** Re-pinning goes through
-  `specFor`/`unitFor`, so a unit written with `ProtectHome=yes` and
-  `ReadWritePaths=<webroot>` is regenerated with the tmpfs, the binds and the
-  `timeful` group without anybody hand-editing `/etc/systemd/system` — and the
-  activation that follows resets the failure and restarts the process, rather
-  than leaving the old one up. `upgrade` is therefore the migration path for a
-  box the old hardened tier is crash-looping on, and it is subject to the same
-  refusal: a node binary under a home directory stops it with the cure printed,
-  including `timeful service uninstall --system`.
-- **`var/` and `timeful.config.json` are never touched.** There are no
-  migrations to run (see [Storage](#storage)), so there is nothing to convert.
+  `specFor`/`unitFor`, so both broken generations are regenerated into the
+  proven one without anybody hand-editing `/etc/systemd/system`: a
+  `ProtectHome=yes` unit (crash-looping on `200/CHDIR`) and a 0.0.2
+  `ProtectHome=tmpfs` + `BindPaths=` unit (running, but EROFS on every save)
+  alike come back as `ProtectHome=off` + `ReadWritePaths=<varDir>` with the
+  `timeful` group — and the activation that follows resets any latched
+  failure and restarts the process rather than leaving the old one up. A box
+  that was carrying the stop-gap drop-in for the EROFS bug converges on the
+  same effective settings, so the drop-in can be deleted after the upgrade.
+  `upgrade` is subject to the same refusal as install: an untraversable home
+  stops it with the `chmod o+x` cure printed, including
+  `timeful service uninstall --system`.
+- **The data directory and `timeful.config.json` are never touched.** There
+  are no migrations to run (see [Storage](#storage)), so there is nothing to
+  convert.
 
 ## Scope
 

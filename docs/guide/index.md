@@ -48,7 +48,7 @@ Initialize a Timeful webroot here? (Y/n) yes
 
 Port [3000]:
 Bind address [127.0.0.1]:
-Data directory [./var]:
+Data directory [./]:
 Trusted proxy — who may speak for a client's address?
   > loopback — trust 127.0.0.1 and ::1 — a reverse proxy on this machine
     none — ignore X-Forwarded-* entirely
@@ -60,7 +60,7 @@ Then, once the config file and the data directory exist:
 
 ```
 Wrote /srv/scheduling/timeful.config.json
-Created /srv/scheduling/var
+Created /srv/scheduling
 
 Start the server now? (Y/n) yes
 Install as a system service so Timeful starts automatically? (y/N) no

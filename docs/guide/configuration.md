@@ -12,7 +12,7 @@ Written by the [first-run wizard](/guide/), and yours to edit afterwards:
 {
   "port": 3000,
   "host": "127.0.0.1",
-  "varDir": "./var",
+  "varDir": "./",
   "trustedProxy": ["127.0.0.1", "::1"],
   "realtime": true
 }
@@ -22,7 +22,7 @@ Written by the [first-run wizard](/guide/), and yours to edit afterwards:
 | -------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `port`         | `3000`                 | Port to listen on.                                                                                                 |
 | `host`         | `127.0.0.1`            | Interface to bind. Keep this on loopback when something else terminates TLS in front of you.                        |
-| `varDir`       | `"./var"`              | Data directory. Relative paths resolve against the webroot; absolute paths are taken as-is.                         |
+| `varDir`       | `"./"`                 | Data directory — the webroot itself by default. Relative paths resolve against the webroot; absolute paths are taken as-is. Webroots initialized by older versions say `"./var"`, which keeps working unchanged. |
 | `trustedProxy` | `["127.0.0.1", "::1"]` | Peers allowed to speak `X-Forwarded-For` on a client's behalf. `"none"` ignores forwarded headers; `"loopback"` is shorthand for the default pair. |
 | `realtime`     | `true`                 | Server-wide switch for [live updates](#live-updates). `false` turns them off for every event, whatever the events themselves say. |
 
