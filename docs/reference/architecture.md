@@ -43,6 +43,7 @@ server/
   leases.ts     in-memory slug reservations
   tarpit.ts     per-IP serial miss queue
   realtime.ts   per-event WebSocket rooms, write sessions, the upgrade listener
+  log.ts        the in-memory admin log: ring buffers, redaction helpers
   not-found.ts  the standalone 404 page, and the one way to send it
   proxy.ts      --trusted-proxy parsing
   config.ts     env-only runtime knobs
@@ -433,6 +434,30 @@ session to show. The first ask mints the pair (under the file lock, so two
 concurrent first asks cannot each mint one); every later ask answers the stored
 key, because subscriptions are bound to it.
 
+### The admin log streams
+
+| Route | Auth | Response |
+| ----- | ---- | -------- |
+| `GET /api/logs` | admin | WebSocket upgrade — the global [server-log stream](#the-server-log). A non-upgrade `GET` falls to the `/api` catch-all `404` |
+
+The server keeps a short in-memory log of what it has been doing (see
+[The server log](#the-server-log)), and this socket is how the signed-in owner
+reads it: one `{ type: "replay", entries }` frame carrying the buffer, then a
+`{ type: "entry", entry }` per new line. Its event-scoped sibling is
+`GET /<slug>/logs` in the table above — same frames, one event's buffer, plus a
+terminal `{ type: "gone" }` when that event is deleted. The global stream lives
+under `/api` because the `/api` namespace is global-only, and the buffer it
+serves is a property of the server, not of any event.
+
+Both are **disposable viewing sessions, not sync**: the client opens one when
+the panel showing it opens, closes it when the panel closes, and never
+reconnects on its own. The session cookie is verified **before** the handshake
+is completed — an upgrade without a valid one is destroyed exactly like any
+other refused upgrade, so an unauthenticated caller learns nothing, and for the
+event-scoped path the event lookup runs only *after* the session verified, so
+the path cannot be used to probe slugs. A viewer socket is read-only in the
+browse socket's strict sense: no `message` listener is ever registered on one.
+
 ### Slug leases
 
 Admin-only. See [Slug leases](#slug-leases-1) for what they are for.
@@ -466,8 +491,9 @@ safer choice from a page that might be open across a rename.
 | `DELETE /<slug>/push` | **public** | `{ role, endpoint }` → `{ ok: true }`, idempotent — the endpoint named is itself a secret only the subscribing browser ever held |
 | `GET /<slug>/ws` | **public** | WebSocket upgrade — the [browse socket](#realtime-updates), read-only. A non-upgrade `GET` is a plain `404` |
 | `GET /<slug>/users/<userKey>` | **public** | WebSocket upgrade — the [named write session](#named-write-sessions). A non-upgrade `GET` is a plain `404` |
+| `GET /<slug>/logs` | admin | WebSocket upgrade — this event's [server-log stream](#the-admin-log-streams). The session cookie is verified **before** the handshake completes; without one the socket is destroyed. A non-upgrade `GET` is a JSON `404` |
 
-`data`, `details`, `settings`, `users`, `push` and `ws` are therefore
+`data`, `details`, `settings`, `users`, `push`, `ws` and `logs` are therefore
 **reserved sub-segments**.
 Slugs themselves are single segments and are unaffected; the reserved-slug list
 in `slug-rules.ts` is unchanged.
@@ -531,7 +557,7 @@ the `{ error }` field. `fetchIsAdmin()` fails **closed**.
 automatically: there are two namespaces now, and a client that guessed between
 them would be guessing. The event-scoped ones have builders —
 `eventDataPath`, `eventDetailsPath`, `eventSettingsPath`, `userPath`,
-`eventPushPath` — so no call site spells one by hand.
+`eventPushPath`, `eventLogsPath` — so no call site spells one by hand.
 
 ## Realtime updates
 
@@ -728,8 +754,13 @@ normal close rather than `gone`: the event still exists and is still answerable
 over REST, so `gone` would be a lie.
 
 **Server-wide.** `realtime` in `timeful.config.json`, overridden by
-`TIMEFUL_REALTIME`, is a kill switch above that. Off means **no upgrade listener
-is registered at all**, whatever the individual events say.
+`TIMEFUL_REALTIME`, is a kill switch above that. Off means **the event channel
+is not served at all**, whatever the individual events say: a `/<slug>/ws` or
+`/<slug>/users/<key>` upgrade is destroyed without resolving anything — hit and
+miss indistinguishable, the same closed door the absent listener used to be.
+(The upgrade *listener* itself is now always registered, because it also
+carries the [admin log streams](#the-admin-log-streams), which are not realtime
+and exist regardless of this switch.)
 
 Both switches take the write sessions with them, and with the sessions goes the
 exclusivity — see the warning under
@@ -1066,6 +1097,40 @@ tarpitted. And `MISS_DELAY_MS` / `MISS_QUEUE_CAP` are read **once at process
 start**; changing them needs a restart.
 :::
 
+### The server log
+
+The owner can watch what their server is doing — the admin panel's Logs tab
+and the event Details dialog's "Server logs" tab, fed by
+[the admin log streams](#the-admin-log-streams). What makes that safe to exist
+is a short list of rules, enforced in `server/log.ts` and pinned by its tests:
+
+- **In-memory only.** Two kinds of ring buffer — one global (last 500
+  entries), one per event (last 200, keyed by the uuid and dropped when the
+  event is deleted). Nothing is persisted to disk, nothing new goes to stdout
+  or the journal, and a restart starts empty. The buffers are a richer,
+  admin-only view beside the console output the server already prints.
+- **An event slug never enters the global buffer.** A slug is the capability
+  that protects its event, and the global log must be safe to read aloud.
+  Uuids are fine — they address nothing without the login the log already sits
+  behind — so an entry about one event is tagged with its uuid, and request
+  paths are redacted before logging (`/my-slug/data` becomes `/:event/data`; a
+  uuid path is kept). A per-event buffer belongs to its event and may name its
+  own slug, though today none of its entries do.
+- **A push endpoint is never logged at all**, in either buffer — it is a
+  capability to message somebody's browser, treated exactly like a session
+  token (§ Notifications). Delivery failures and prunes log the endpoint's
+  **host** only.
+- **Client IPs are redacted to a coarse prefix** (`203.0.x.x`) wherever one is
+  worth mentioning — enough to see one address misbehaving, not enough to
+  identify a guest. Failed logins log the refusal and the prefix, never the
+  email that was tried.
+
+What gets logged: 500s from the error middleware (message, errno, redacted
+path, first stack call site), storage write failures, push delivery failures
+and prunes, realtime session churn (occupied refusals, takeovers, upgrades for
+unknown events), tarpit refusals over the queue cap, and failed login/setup
+attempts.
+
 ### Passwords and sessions
 
 - **Passwords**: `crypto.scrypt` with Node's defaults (N=16384, r=8, p=1), a
@@ -1124,8 +1189,8 @@ event-scoped paths now gets.
 
 ### `/<slug>/…` — an event's own endpoints
 
-`data`, `details`, `settings`, `users`, `push` and `ws` are the reserved
-sub-segments. The
+`data`, `details`, `settings`, `users`, `push`, `ws` and `logs` are the
+reserved sub-segments. The
 event-scoped router is mounted after the static middleware (so a real file under
 `/assets/…` is still a file) and before the page handler (which owns
 single-segment paths).
@@ -1210,9 +1275,21 @@ other.
 ### Errors
 
 The error middleware takes an integer 400–599 from `err.status`, falls back to
-400 for a body-parse failure and 500 otherwise. Anything ≥ 500 is logged and
-answers "Internal server error". `/api*` gets JSON; everything else gets plain
-text.
+400 for a body-parse failure and 500 otherwise. Anything ≥ 500 is logged — to
+the console as before, and into [the server log](#the-server-log) with the
+request path redacted. `/api*` gets JSON; everything else gets plain text.
+
+**When the request carries a valid admin session**, a JSON error body may also
+carry a `detail` field — `{ message, code?, path? }`, typed as `ErrorDetail` in
+`src/lib/api.ts`: the underlying error's own message, and the errno code and
+file path when the cause had them. It is included only when it says more than
+the public message already does, so a 400 whose message is the whole story
+never repeats itself, and a 500's cause stops being reachable only over SSH.
+**A guest's error bodies are byte-identical to what they always were** — the
+field is admin-gated at the middleware, and the route tests pin the exact old
+shapes for unauthenticated callers. The client renders a detail wherever it
+already rendered the error: the sync indicator and `ErrorNote` print it as a
+muted monospace line under the generic message.
 
 ## Client model
 
@@ -1471,7 +1548,11 @@ a half-finished answer on the grid is undisturbed.
 **Details** is the one thing the respondents list cannot say: two answers filed
 under one name look identical there. It asks `GET /<slug>/details` on open —
 it is a log, so what matters is what it says now — and prints each respondent's
-address, raw user agent (one line, whole string in the tooltip) and time.
+address, raw user agent (one line, whole string in the tooltip) and time. The
+dialog's second tab, **Server logs**, streams the event's slice of
+[the server log](#the-server-log) over `GET /<slug>/logs` for as long as the
+tab is the one showing; leaving the tab or closing the dialog closes the
+socket.
 
 ## Packaging & CLI
 

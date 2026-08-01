@@ -79,6 +79,8 @@ server/
   storage.ts          atomic JSON store (temp file + rename, per-file queue)
   auth.ts             scrypt hashing, session tokens, requireAdmin
   slugs.ts leases.ts tarpit.ts proxy.ts config.ts http.ts not-found.ts
+  log.ts              in-memory admin log: ring buffers, redaction — see
+                      architecture § The server log
   realtime.ts         per-event WebSocket rooms, write sessions, the upgrade listener
   registry.ts         the npm version lookup — see architecture § The update check
   push/               Web Push: aes128gcm + VAPID crypto, subscriptions, delivery
