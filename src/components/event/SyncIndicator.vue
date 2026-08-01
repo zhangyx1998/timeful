@@ -57,21 +57,27 @@ const emit = defineEmits<{ retry: [] }>();
     <IconCheck class="icon" aria-hidden="true" />
     Saved
   </p>
-  <p v-else-if="status === 'error'" class="status failed" role="alert">
-    <IconAlertTriangle class="icon" aria-hidden="true" />
-    <!-- In its own element rather than loose text: this is the one string here
-         a server picks the length of, and an ellipsis needs a box to happen in.
-         Whatever the truncation eats is on the tooltip. -->
-    <span class="message" :title="error ?? 'Could not save your availability'">
-      {{ error ?? "Could not save your availability" }}
-    </span>
-    <button type="button" class="retry" @click="emit('retry')">Retry</button>
+  <!-- A column, not a row: the detail is its own line, and a column's
+       intrinsic width is its widest child rather than the sum — a wrapped row
+       would still ask for one-line width and crush the name beside it on the
+       phone's identity bar. -->
+  <div v-else-if="status === 'error'" class="status failed" role="alert">
+    <p class="failed__row">
+      <IconAlertTriangle class="icon" aria-hidden="true" />
+      <!-- In its own element rather than loose text: this is the one string
+           here a server picks the length of, and an ellipsis needs a box to
+           happen in. Whatever the truncation eats is on the tooltip. -->
+      <span class="message" :title="error ?? 'Could not save your availability'">
+        {{ error ?? "Could not save your availability" }}
+      </span>
+      <button type="button" class="retry" @click="emit('retry')">Retry</button>
+    </p>
     <!-- The cause, under the sentence: rendered only when the response carried
          it, which the server does only for the signed-in owner. Muted and
          monospace — a diagnostic, not a second message — and selectable,
          because its whole point is being pasted somewhere. -->
     <span v-if="detail" class="detail" :title="detail">{{ detail }}</span>
-  </p>
+  </div>
 </template>
 
 <style scoped>
@@ -115,17 +121,31 @@ const emit = defineEmits<{ retry: [] }>();
 }
 
 .failed {
-  /* The one state with a possible second line: the detail wraps under the
-     sentence while the sentence itself keeps its single-line rule. */
-  flex-wrap: wrap;
+  /* The one state with a possible second line: a column of the sentence row
+     and the detail, so the detail never widens the row it sits under. */
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
   color: var(--color-danger);
 }
 
-/* The admin's diagnostic line. Full width under the message, quiet, mono, and
-   selectable — it exists to be read closely and pasted, not to alarm. */
+.failed__row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  max-width: 100%;
+}
+
+/* The admin's diagnostic line. Its own line under the message, quiet, mono,
+   and selectable — it exists to be read closely and pasted, not to alarm.
+   Capped like the message above it: an errno line quotes a whole file path,
+   and without the cap its intrinsic width would out-compete the name on the
+   phone's identity bar. Whatever the ellipsis eats is on the tooltip. */
 .detail {
-  flex-basis: 100%;
   min-width: 0;
+  /* The message's own cap: the diagnostic must never be the widest line, or
+     it decides the bar's width instead of the sentence above it. */
+  max-width: 12rem;
   overflow: hidden;
   font-family: var(--font-mono);
   font-size: 0.6875rem;
@@ -133,6 +153,7 @@ const emit = defineEmits<{ retry: [] }>();
   color: var(--color-text-muted);
   text-overflow: ellipsis;
   user-select: text;
+  white-space: nowrap;
 }
 
 .icon {
