@@ -20,6 +20,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createStaticRenderer, serve } from "../app.ts";
 import { resolveAssets } from "../paths.ts";
+import { probeVarDirWritable } from "../storage.ts";
 import { parseArgs, usage, type CliArgs, type ServiceAction } from "./args.ts";
 import {
   CONFIG_FILE,
@@ -218,6 +219,13 @@ async function start(config: ResolvedConfig, args: CliArgs): Promise<void> {
   // The storage layer reads VAR_DIR at call time; this is the one place the
   // resolved data directory has to be published to it.
   process.env.VAR_DIR = config.varDir;
+
+  // Before listening: a data directory this process cannot write fails every
+  // save, and a sandboxed service that can read everything looks healthy
+  // right up to the first one. Dying here puts the diagnosis in journalctl
+  // and in front of the service install's post-start watch.
+  const unwritable = await probeVarDirWritable();
+  if (unwritable) throw new CliError(unwritable);
 
   const assets = resolveAssets(import.meta.url);
   await assertBuilt(assets.templateFile);

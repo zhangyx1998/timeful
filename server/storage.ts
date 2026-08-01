@@ -38,6 +38,83 @@ function errorCode(err: unknown): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// startup write probe
+// ---------------------------------------------------------------------------
+
+/**
+ * One operator-facing paragraph for a data directory this process cannot
+ * write, keyed on the errno. Split from `probeVarDirWritable` so both
+ * branches are unit-testable with a synthetic error — a test machine has no
+ * polite way to produce a real EROFS.
+ *
+ * The two failures mean different things and get different cures:
+ * - EROFS is a *sandbox* answer: the mount is read-only no matter who asks.
+ *   Under the hardened systemd unit that means the `ReadWritePaths=` carve-out
+ *   is missing or overridden (the 0.0.2 units shipped without it).
+ * - EACCES/EPERM is an *ownership* answer: the mount is writable but this
+ *   user is not allowed. That is the `timeful` group chown/chmod not having
+ *   happened, which `timeful service install` performs.
+ */
+export function explainWriteFailure(dir: string, err: unknown): string {
+  const code = errorCode(err);
+  if (code === "EROFS")
+    return [
+      `The data directory is on a read-only file system (EROFS):`,
+      "",
+      `  ${dir}`,
+      "",
+      "Reads work, so the server would come up looking healthy and then fail",
+      "the first save. Under the hardened systemd service this means the unit",
+      `is missing its 'ReadWritePaths=${dir}' line, or a drop-in overrides it.`,
+      "Rerun 'npx timeful@latest upgrade' to regenerate the unit, and clear",
+      "stale drop-ins under /etc/systemd/system/timeful-*.service.d/.",
+    ].join("\n");
+  if (code === "EACCES" || code === "EPERM")
+    return [
+      `This process is not allowed to write to the data directory (${code}):`,
+      "",
+      `  ${dir}`,
+      "",
+      "The directory's ownership or mode does not admit this user. For the",
+      "hardened service, the data directory belongs to the 'timeful' group:",
+      "",
+      `  sudo chown -R :timeful ${dir}`,
+      `  sudo chmod -R g+rwX ${dir}`,
+      "",
+      "or rerun 'timeful service install', which performs both.",
+    ].join("\n");
+  const reason = code ?? (err instanceof Error ? err.message : String(err));
+  return `Could not write to the data directory ${dir} (${reason}).`;
+}
+
+/**
+ * Writes and deletes a throwaway file in the data directory. Run at server
+ * boot, before listening: a data directory this process cannot write means
+ * every save is going to fail, and failing *now* — one diagnostic, exit
+ * non-zero, visible in `journalctl` and to the service install's post-start
+ * watch — beats 500ing on the first guest who submits availability days
+ * later. Returns null when writable, the diagnostic to die with otherwise.
+ */
+export async function probeVarDirWritable(): Promise<string | null> {
+  const dir = varDir();
+  const file = path.join(
+    dir,
+    `.write-probe.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`,
+  );
+  try {
+    // The same shape writeRaw uses: create the directory if it is absent,
+    // then prove a file can be born and removed in it.
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(file, "write probe\n", "utf8");
+    await fs.rm(file, { force: true });
+    return null;
+  } catch (err) {
+    await fs.rm(file, { force: true }).catch(() => {});
+    return explainWriteFailure(dir, err);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // per-file write queue
 // ---------------------------------------------------------------------------
 

@@ -12,6 +12,7 @@ import type { Server } from "node:http";
 import { fileURLToPath } from "node:url";
 import { serve, createStaticRenderer, type Renderer } from "./app.ts";
 import { resolveAssets } from "./paths.ts";
+import { probeVarDirWritable } from "./storage.ts";
 import { parseTrustedProxies, type TrustProxySetting } from "./proxy.ts";
 
 const isDev = process.argv.includes("--dev");
@@ -124,6 +125,15 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     if (isDev) console.error(`[timeful] ${signal} received from outside (parent pid ${process.ppid}) — exiting.`);
     process.exit(signal === "SIGTERM" ? 143 : 130);
   });
+}
+
+// The same startup write probe the CLI's serve path runs: a data directory
+// this process cannot write fails every save, and saying so now — one
+// diagnostic, exit non-zero — beats a 500 on the first one.
+const unwritable = await probeVarDirWritable();
+if (unwritable) {
+  console.error(unwritable);
+  process.exit(1);
 }
 
 await serve({
