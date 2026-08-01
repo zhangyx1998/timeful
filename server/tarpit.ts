@@ -13,6 +13,7 @@
  */
 import type { Request, Response } from "express";
 import { missDelayMs, missQueueCap } from "./config.ts";
+import { logWarn, redactIp } from "./log.ts";
 
 export interface TarpitOptions {
   /** Delay per queued miss, in ms. */
@@ -110,6 +111,12 @@ export function clientIp(req: Request): string {
 }
 
 function tooManyRequests(req: Request, res: Response): void {
+  const ip = clientIp(req);
+  // The address down to a prefix and the pending count — never the path, whose
+  // first segment is whatever slug the caller guessed at.
+  logWarn(
+    `Tarpit refused a request from ${redactIp(ip)}: ${missTarpit.pending(ip)} misses already queued`,
+  );
   res.status(429).set("Retry-After", String(missTarpit.retryAfterSeconds()));
   if (req.path.startsWith("/api")) {
     res.json({ error: "Too many requests" });

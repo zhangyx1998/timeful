@@ -13,8 +13,9 @@ import {
   verifyPassword,
 } from "../auth.ts";
 import { asRecord } from "../http.ts";
+import { logWarn, redactIp } from "../log.ts";
 import { readCredential, writeCredential } from "../storage.ts";
-import { tarpitMiss } from "../tarpit.ts";
+import { clientIp, tarpitMiss } from "../tarpit.ts";
 import type { Request, Response } from "express";
 
 const MIN_PASSWORD_LENGTH = 8;
@@ -32,6 +33,9 @@ function authFailure(
   status: number,
   error: string,
 ): Promise<void> {
+  // The refusal and a coarse address prefix — never the email that was tried,
+  // which is a guess at the owner's identity and nobody else's business.
+  logWarn(`Auth failure from ${redactIp(clientIp(req))}: ${error}`);
   return tarpitMiss(req, res, () => {
     res.status(status).json({ error });
   });

@@ -12,6 +12,7 @@ import crypto from "node:crypto";
 // the slug rules in slugs.ts: what an old event file means is a rule both
 // halves have to read the same way, so there is one copy of it.
 import { normalizeResponses } from "../src/lib/event.ts";
+import { logError, stackHead } from "./log.ts";
 import type {
   Credential,
   LinksMap,
@@ -84,15 +85,34 @@ async function readRaw<T>(relPath: string, fallback: T): Promise<T> {
   }
 }
 
+/** The event uuid a storage path is about, when it is an event file. */
+function eventIdOf(relPath: string): string | undefined {
+  const match = /^events\/(.+)\.json$/.exec(relPath);
+  return match && isUuid(match[1]) ? match[1] : undefined;
+}
+
 async function writeRaw<T>(relPath: string, data: T): Promise<T> {
   const file = resolve(relPath);
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`;
   try {
-    await fs.writeFile(tmp, JSON.stringify(data, null, 2) + "\n", "utf8");
-    await fs.rename(tmp, file);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+    try {
+      await fs.writeFile(tmp, JSON.stringify(data, null, 2) + "\n", "utf8");
+      await fs.rename(tmp, file);
+    } catch (err) {
+      await fs.rm(tmp, { force: true }).catch(() => {});
+      throw err;
+    }
   } catch (err) {
-    await fs.rm(tmp, { force: true }).catch(() => {});
+    // Into the owner's in-memory log before it travels: a failed write is the
+    // one storage error worth a line of its own, and the path here is the
+    // operator's own data directory — never a slug.
+    logError(err instanceof Error ? err.message : "Storage write failed", {
+      code: errorCode(err),
+      path: relPath,
+      stack: stackHead(err instanceof Error ? err.stack : undefined),
+      eventId: eventIdOf(relPath),
+    });
     throw err;
   }
   return data;

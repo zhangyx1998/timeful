@@ -4,6 +4,7 @@ import type { Request, Response } from "express";
 import { requireAdmin } from "../auth.ts";
 import { asRecord, BadRequest, jsonRoute, param } from "../http.ts";
 import { claimSlug, releaseSlug } from "../links.ts";
+import { dropEventLog } from "../log.ts";
 import {
   notifyEventChanged,
   notifyEventDeleted,
@@ -233,6 +234,9 @@ function publicEventRoute(handler: EventHandler) {
       await eventMiss(req, res);
       return;
     }
+    // For the error middleware: a failure past this point belongs to this
+    // event, and the uuid is what tags its entry in the owner's log.
+    res.locals.eventId = event.id;
     await handler(req, res, event);
   });
 }
@@ -253,6 +257,7 @@ function adminEventRoute(handler: EventHandler) {
       res.status(404).json({ error: "Event not found" });
       return;
     }
+    res.locals.eventId = event.id;
     await handler(req, res, event);
   });
 }
@@ -281,6 +286,7 @@ function publicUserRoute(
       await eventMiss(req, res);
       return;
     }
+    res.locals.eventId = event.id;
     await handler(req, res, event, key);
   });
 }
@@ -428,6 +434,9 @@ async function deleteEventRoute(
   await deleteEvent(existing.id);
   // Only once it is actually gone from disk; the room is closed with it.
   broadcastGone(existing.id);
+  // And so is its log buffer: a log for a document that no longer exists is
+  // not history, and any open log viewer is told the stream is over.
+  dropEventLog(existing.id);
   // Told immediately — there is nothing left to coalesce with — and the
   // event's subscriptions are dropped once the notice has gone out.
   notifyEventDeleted(existing);
