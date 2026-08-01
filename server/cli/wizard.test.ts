@@ -38,8 +38,8 @@ describe("runWizard", () => {
     expect(answers?.config).toMatchObject({
       port: 3000,
       host: "127.0.0.1",
-      varDirRaw: "./var",
-      varDir: path.join(CWD, "var"),
+      varDirRaw: "./",
+      varDir: CWD,
       trustedProxy: ["127.0.0.1", "::1"],
     });
     // Start defaults to yes, installing a service defaults to no.

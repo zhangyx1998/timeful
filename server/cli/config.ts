@@ -1,9 +1,10 @@
 /**
  * `timeful.config.json` — the file that makes a directory a webroot.
  *
- * A webroot holds the operator's data, not the application: this file and
- * `var/` are the only things in it, and both resolve from the working
- * directory (the built assets never do — see server/paths.ts).
+ * A webroot holds the operator's data, not the application: this file and the
+ * data directory — by default the webroot itself — are all there is, and both
+ * resolve from the working directory (the built assets never do — see
+ * server/paths.ts).
  *
  * Precedence, lowest first: built-in defaults, the config file, the
  * environment, the command line.
@@ -51,7 +52,16 @@ export interface ResolvedConfig {
 
 export const DEFAULT_PORT = 3000;
 export const DEFAULT_HOST = "127.0.0.1";
-export const DEFAULT_VAR_DIR = "./var";
+/**
+ * The webroot itself. New webroots used to default to "./var", and existing
+ * config files keep whatever they say — nothing migrates. The webroot won:
+ * it gives the hardened service one directory to own and one
+ * `ReadWritePaths=` line to grant, instead of a writable subdirectory nested
+ * inside a read-only parent, and it matches how deployed boxes are actually
+ * laid out. (The repo checkout's own dev data stays in `var/` — that default
+ * lives in server/storage.ts and is unchanged.)
+ */
+export const DEFAULT_VAR_DIR = "./";
 
 /**
  * Realtime is on unless it is turned off. It degrades to nothing — a page

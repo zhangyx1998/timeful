@@ -69,8 +69,10 @@ describe("mergeConfig", () => {
     expect(config).toMatchObject({
       port: 3000,
       host: "127.0.0.1",
-      varDirRaw: "./var",
-      varDir: path.join(cwd, "var"),
+      // The webroot itself, since the default stopped being "./var": one
+      // directory to own, one ReadWritePaths= line for the hardened unit.
+      varDirRaw: "./",
+      varDir: cwd,
       trustedProxy: ["127.0.0.1", "::1"],
     });
   });
@@ -163,7 +165,7 @@ describe("writeConfigFile", () => {
       `{
   "port": 8080,
   "host": "127.0.0.1",
-  "varDir": "./var",
+  "varDir": "./",
   "trustedProxy": "none",
   "realtime": true
 }

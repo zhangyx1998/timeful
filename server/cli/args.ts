@@ -261,7 +261,7 @@ Service tiers (--user is the default; --system is Linux + systemd only):
 Options:
   --port <n>              port to listen on (default 3000)
   --host <addr>           interface to bind (default 127.0.0.1)
-  --var-dir <path>        data directory (default ./var)
+  --var-dir <path>        data directory (default ./, the webroot itself)
   --trusted-proxy <list>  peers allowed to send X-Forwarded-For:
                           'loopback' (default), 'none', or IPs/CIDRs
   -A, --all               act on every installed webroot (service verbs,

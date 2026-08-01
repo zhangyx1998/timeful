@@ -113,11 +113,13 @@ describe("timeful --yes", () => {
     expect(JSON.parse(await fs.readFile(path.join(cwd, CONFIG_FILE), "utf8"))).toEqual({
       port,
       host: "127.0.0.1",
-      varDir: "./var",
+      varDir: "./",
       trustedProxy: ["127.0.0.1", "::1"],
       realtime: true,
     });
-    expect((await entries()).sort()).toEqual([CONFIG_FILE, "var"]);
+    // The data directory is the webroot itself now, so nothing else appears
+    // until the first event is saved.
+    expect((await entries()).sort()).toEqual([CONFIG_FILE]);
   }, 30000);
 
   it("starts an existing webroot without re-initializing it", async () => {
@@ -174,7 +176,9 @@ describe("timeful init", () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("Run 'timeful serve'");
     expect(result.stdout).not.toContain("server on http://");
-    expect((await entries()).sort()).toEqual([CONFIG_FILE, "var"]);
+    // The data directory defaults to the webroot itself, so init creates
+    // nothing beside the config.
+    expect((await entries()).sort()).toEqual([CONFIG_FILE]);
   }, 30000);
 
   it("refuses a directory that is already a webroot", async () => {
@@ -196,7 +200,7 @@ describe("timeful init", () => {
 
     expect(result.code).toBe(0);
     expect(result.stdout).toContain(`would write ${path.join(cwd, CONFIG_FILE)}`);
-    expect(result.stdout).toContain(`would create ${path.join(cwd, "var")}`);
+    expect(result.stdout).toContain(`would create ${cwd}`);
     // The contents are printed in full, so there is nothing to find out later.
     expect(result.stdout).toContain(`"port": 4100`);
     expect(await entries()).toEqual([]);

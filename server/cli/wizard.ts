@@ -61,9 +61,10 @@ export async function runWizard(options: WizardOptions): Promise<WizardResult | 
     say(io);
 
     // The built-in defaults, resolved once, so the questions need not restate
-    // them. `varDirRaw`, not `varDir`: the wizard proposes "./var", not an
-    // absolute path. The command-line values stay raw on purpose — a typo in
-    // `--trusted-proxy` is prefilled below for fixing, never thrown over.
+    // them. `varDirRaw`, not `varDir`: the wizard proposes "./" (the webroot
+    // itself), not an absolute path. The command-line values stay raw on
+    // purpose — a typo in `--trusted-proxy` is prefilled below for fixing,
+    // never thrown over.
     const fallback = mergeConfig({ cwd });
 
     const port = await askPort(io, defaults.port ?? fallback.port);
