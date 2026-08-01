@@ -14,8 +14,9 @@ import type { IncomingMessage, Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import express from "express";
 import type { Express, NextFunction, Request, Response } from "express";
-import { cookieParser } from "./auth.ts";
+import { cookieParser, loadSession } from "./auth.ts";
 import { realtimeEnabled } from "./config.ts";
+import { logError, redactPath, stackHead } from "./log.ts";
 // Runtime, like the slug rules: what a link-holder may see is one definition,
 // and the SSR page applies exactly the one the JSON route applies.
 import { publicEvent } from "../src/lib/event.ts";
@@ -37,7 +38,7 @@ import { sessionsRouter } from "./routes/sessions.ts";
 import { updateRouter } from "./routes/update.ts";
 import { readEvent, readLinks } from "./storage.ts";
 import { tarpitMiss } from "./tarpit.ts";
-import type { StoredEvent } from "./types.ts";
+import type { ErrorDetail, StoredEvent } from "./types.ts";
 
 // Re-exported from where it used to live, so importers keep working; the page
 // itself moved to its own module because the event-scoped router needs it too.
@@ -246,25 +247,77 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
     sendNotFoundPage(res);
   });
 
-  app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
+  app.use(async (err: unknown, req: Request, res: Response, _next: NextFunction) => {
     const isParseFailure =
       typeof err === "object" && err !== null && "type" in err
         ? err.type === "entity.parse.failed"
         : false;
     const status = statusOf(err) ?? (isParseFailure ? 400 : 500);
-    if (status >= 500) console.error(err);
-    const detail = err instanceof Error ? err.message : "";
-    const message = status >= 500 ? "Internal server error" : detail || "Bad request";
+    const raw = err instanceof Error ? err.message : "";
+    if (status >= 500) {
+      console.error(err);
+      // Into the owner's log too, with the request path made safe for the
+      // global buffer: the first segment of an event-scoped path is the slug.
+      logError(raw || "Internal server error", {
+        code: errnoCode(err),
+        path: redactPath(req.path),
+        stack: stackHead(err instanceof Error ? err.stack : undefined),
+        eventId: typeof res.locals.eventId === "string" ? res.locals.eventId : undefined,
+      });
+    }
+    const message = status >= 500 ? "Internal server error" : raw || "Bad request";
+    // The admin gets the cause; a guest's body stays byte-identical to what it
+    // has always been. Included only where it says more than the public
+    // message already does — a 500's real error, or an errno with a path —
+    // never as a duplicate line under a 400 that already spoke plainly.
+    const detail = (await loadSession(req).catch(() => null))
+      ? adminDetail(err, raw, message)
+      : undefined;
     // `/api/*` by its prefix, and the event-scoped endpoints by the mark
     // `jsonRoute` leaves — their paths look exactly like page URLs.
     if (req.path.startsWith("/api") || res.locals.jsonRoute === true) {
-      res.status(status).json({ error: message });
+      res.status(status).json({ error: message, ...(detail ? { detail } : {}) });
       return;
     }
     res.status(status).set("Content-Type", "text/plain; charset=utf-8").end(message);
   });
 
   return app;
+}
+
+/** The `code` of a Node system error, when the value carries one. */
+function errnoCode(err: unknown): string | undefined {
+  if (typeof err !== "object" || err === null || !("code" in err)) return undefined;
+  return typeof err.code === "string" ? err.code : undefined;
+}
+
+/** The filesystem path of an errno error — the operator's own disk, never a slug. */
+function errnoPath(err: unknown): string | undefined {
+  if (typeof err !== "object" || err === null || !("path" in err)) return undefined;
+  return typeof err.path === "string" ? err.path : undefined;
+}
+
+/**
+ * What an authenticated admin is told about an error, beyond the public body.
+ *
+ * Only when it adds something: a 4xx whose message already is the whole story
+ * gets no `detail`, so the panel never prints the same sentence twice. A 500's
+ * public body says "Internal server error" and the detail says why.
+ */
+function adminDetail(
+  err: unknown,
+  raw: string,
+  publicMessage: string,
+): ErrorDetail | undefined {
+  const code = errnoCode(err);
+  const path = errnoPath(err);
+  const message = raw || String(err ?? "");
+  if (message === publicMessage && !code && !path) return undefined;
+  return {
+    message,
+    ...(code ? { code } : {}),
+    ...(path ? { path } : {}),
+  };
 }
 
 function eventHead(event: StoredEvent, url: string): { title: string; tags: string } {

@@ -14,6 +14,7 @@ import type {
   LastEdit,
 } from "../src/lib/event.ts";
 import type {
+  ErrorDetail,
   EventDetails,
   EventSummary,
   PushRole,
@@ -33,6 +34,7 @@ import type { EditOrigin, ResponseInput, ResponseWrite } from "./routes/events.t
 
 export type {
   EditOrigin,
+  ErrorDetail,
   EventDetails,
   EventDoc,
   EventResponse,

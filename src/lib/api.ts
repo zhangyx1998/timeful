@@ -17,15 +17,56 @@
  */
 import type { EventType, LastEdit } from "./event";
 
+/**
+ * The admin-only elaboration an error response may carry beside its public
+ * `error` message: the underlying cause, and — for an errno — its code and the
+ * path involved. **A guest never receives this field**: the server includes it
+ * only when the request carried a valid admin session, so a body holding one
+ * is by construction the owner reading about their own server.
+ */
+export interface ErrorDetail {
+  message: string;
+  /** An errno-style code — `EACCES`, `ENOSPC` — when the cause carried one. */
+  code?: string;
+  /** The file involved, on the operator's own disk. Never an event slug. */
+  path?: string;
+}
+
+/** The `detail` of an error body, when the shape holds a usable one. */
+export function errorDetailOf(body: unknown): ErrorDetail | null {
+  if (typeof body !== "object" || body === null) return null;
+  const detail = (body as { detail?: unknown }).detail;
+  if (typeof detail !== "object" || detail === null) return null;
+  const { message, code, path } = detail as Record<string, unknown>;
+  if (typeof message !== "string" || !message) return null;
+  return {
+    message,
+    ...(typeof code === "string" && code ? { code } : {}),
+    ...(typeof path === "string" && path ? { path } : {}),
+  };
+}
+
+/** One line for a detail, for the muted print under a generic message. */
+export function formatErrorDetail(detail: ErrorDetail): string {
+  const parts = [detail.message];
+  if (detail.code && !detail.message.includes(detail.code))
+    parts.push(`[${detail.code}]`);
+  if (detail.path && !detail.message.includes(detail.path)) parts.push(detail.path);
+  return parts.join(" ");
+}
+
 export class ApiError extends Error {
   status: number;
   body: unknown;
+  /** Present only on responses to the authenticated admin. */
+  detail: ErrorDetail | null;
 
   constructor(message: string, status: number, body: unknown = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.body = body;
+    this.detail = errorDetailOf(body);
   }
 }
 
@@ -128,14 +169,24 @@ export function eventPushPath(idOrSlug: string): string {
   return `/${encodeURIComponent(idOrSlug)}/push`;
 }
 
-/** Extracts a human-readable message plus HTTP status from a caught error. */
+/**
+ * Extracts a human-readable message plus HTTP status from a caught error.
+ * `detail` is the formatted admin-only elaboration when the response carried
+ * one, and `""` otherwise — a guest's errors always come out with it empty.
+ */
 export function apiError(
   err: unknown,
   fallback: string,
-): { message: string; status: number } {
-  if (err instanceof ApiError) return { message: err.message, status: err.status };
-  if (err instanceof Error && err.message) return { message: err.message, status: 0 };
-  return { message: fallback, status: 0 };
+): { message: string; status: number; detail: string } {
+  if (err instanceof ApiError)
+    return {
+      message: err.message,
+      status: err.status,
+      detail: err.detail ? formatErrorDetail(err.detail) : "",
+    };
+  if (err instanceof Error && err.message)
+    return { message: err.message, status: 0, detail: "" };
+  return { message: fallback, status: 0, detail: "" };
 }
 
 // ---------------------------------------------------------------------------
