@@ -318,6 +318,14 @@ export interface RealtimeOptions {
 
 export interface RealtimeHandle {
   /**
+   * Whether the connector has given up for good — `close()`, a `gone`, or the
+   * failure budget spent (`MAX_FAILED_ATTEMPTS`). Terminal by design: nothing
+   * short of a reload brings a stopped connector back, so once this is true,
+   * `setSession` is a no-op and a prompt offering to claim a session has
+   * nothing to stand behind. The page reads it to decline the offer instead.
+   */
+  readonly stopped: boolean;
+  /**
    * Claims a write session, gives one up (`null`), or switches to another. A
    * no-op when nothing has actually changed, so it is safe to call on every
    * identity event.
@@ -345,6 +353,8 @@ export interface RealtimeHandle {
 
 /** A handle that does nothing, for the environments this cannot run in. */
 const INERT: RealtimeHandle = {
+  // Nothing will ever open here, which is what stopped reports.
+  stopped: true,
   setSession() {},
   save() {
     return null;
@@ -639,6 +649,9 @@ export function connectRealtime(
   open();
 
   return {
+    get stopped() {
+      return stopped;
+    },
     setSession(next: RealtimeSession | null, opts?: { takeover?: boolean }) {
       const value = normalizeSession(next);
       const wantsTakeover = opts?.takeover === true;

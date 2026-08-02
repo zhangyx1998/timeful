@@ -189,6 +189,11 @@ function takeOver(): void {
   const session = occupiedBy.value;
   occupiedBy.value = null;
   if (!session) return;
+  // A connector that has given up can claim nothing: `setSession` is a no-op
+  // once it is stopped, so "Take over" would be a button that does nothing.
+  // The dialog has already closed above; the page stays in the group view,
+  // and the footer is already saying live updates are unavailable.
+  if (realtime?.stopped) return;
   resumeOnOpen = true;
   realtime?.setSession(session, { takeover: true });
 }
