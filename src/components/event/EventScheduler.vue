@@ -786,9 +786,8 @@ function onSolo(person: { key: string; displayName: string } | null) {
       @confirm="clearEverything"
       @close="clearOpen = false"
     >
-      This wipes everything <strong>{{ guestName }}</strong> marked on this
-      event and takes you off the respondents list. You can always fill it in
-      again.
+      This wipes everything <strong>{{ guestName }}</strong> marked and takes
+      you off the respondents list. You can fill it in again.
     </ConfirmDialog>
   </section>
 </template>
