@@ -181,10 +181,7 @@ async function signOut(): Promise<void> {
            exists while its tab is showing, so closing the tab — or the dialog —
            closes the socket behind it. -->
       <template v-if="detailTab === 'logs'">
-        <p class="details__note">
-          What the server has logged about this event, live, and visible only
-          to you.
-        </p>
+        <p class="details__note">Live, and visible only to you.</p>
         <LogViewer
           :path="eventLogsPath(props.eventId)"
           empty-text="Nothing logged for this event yet"
