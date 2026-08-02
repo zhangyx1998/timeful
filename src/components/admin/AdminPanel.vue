@@ -131,6 +131,19 @@ onMounted(loadEvents);
       </div>
 
       <ErrorNote :message="error" :detail="errorDetail" />
+      <!-- loadEvents() is idempotent, so a failure is not terminal. The button
+           rides the error's own v-if: pressing it clears the message, and both
+           leave together. -->
+      <Button
+        v-if="error"
+        class="retry"
+        variant="secondary"
+        size="sm"
+        :disabled="loading"
+        @click="loadEvents"
+      >
+        Try again
+      </Button>
 
       <EventFormDialog
         :open="form !== null"
@@ -218,6 +231,13 @@ onMounted(loadEvents);
   width: 1rem;
   height: 1rem;
   flex: none;
+}
+
+/* Under the banner's left edge, so it reads as the banner's own action rather
+   than a control of the list below. */
+.retry {
+  align-self: flex-start;
+  margin-top: -0.75rem;
 }
 
 .logs {

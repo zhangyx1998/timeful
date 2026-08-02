@@ -10,6 +10,7 @@ import { api, apiError } from "../lib/api";
 import LoginView from "../components/admin/LoginView.vue";
 import SetupView from "../components/admin/SetupView.vue";
 import AppHeader from "../components/ui/AppHeader.vue";
+import Button from "../components/ui/Button.vue";
 import ThemeToggle from "../components/ui/ThemeToggle.vue";
 import type { StatusResponse } from "../lib/api";
 
@@ -34,6 +35,28 @@ async function refresh(): Promise<void> {
     status.value = await api.get<StatusResponse>("/api/status");
   } catch (err) {
     error.value = apiError(err, "Could not reach the server").message;
+  }
+}
+
+const retrying = ref(false);
+
+/**
+ * The error view's own way back in. Not `refresh()`: that clears `error`
+ * synchronously, which would swap the view to "Loading…" and unmount the very
+ * button being pressed. Here the message stands until a new answer has
+ * actually landed, so a still-down server just leaves the view as it was.
+ */
+async function retry(): Promise<void> {
+  if (retrying.value) return;
+  retrying.value = true;
+  try {
+    const next = await api.get<StatusResponse>("/api/status");
+    error.value = "";
+    status.value = next;
+  } catch (err) {
+    error.value = apiError(err, "Could not reach the server").message;
+  } finally {
+    retrying.value = false;
   }
 }
 
@@ -66,7 +89,10 @@ onMounted(() => {
       <ThemeToggle />
     </AppHeader>
     <main class="screen">
-      <p v-if="view === 'error'" class="message message--error">{{ error }}</p>
+      <div v-if="view === 'error'" class="trouble">
+        <p class="message message--error">{{ error }}</p>
+        <Button variant="secondary" :loading="retrying" @click="retry">Try again</Button>
+      </div>
       <p v-else class="message">Loading…</p>
     </main>
   </div>
@@ -83,6 +109,13 @@ onMounted(() => {
   align-items: center;
   justify-content: center;
   padding: 4rem var(--page-pad);
+}
+
+.trouble {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
 }
 
 .message {
