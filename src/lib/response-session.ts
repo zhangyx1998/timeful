@@ -200,10 +200,18 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     overRest: (payload) => {
       const session = savingAs;
       if (!session) return Promise.resolve();
-      return api.put(userPath(options.event.value.id, session.key), {
-        displayName: session.displayName,
-        ...payload,
-      });
+      // `keepalive`, because this same PUT is what the flush on
+      // `pagehide`/`visibilitychange` dispatches: the browser must not cancel
+      // it with the document. Harmless on every ordinary save — it only caps
+      // the body, and `request` falls back to a plain fetch over the cap.
+      return api.put(
+        userPath(options.event.value.id, session.key),
+        {
+          displayName: session.displayName,
+          ...payload,
+        },
+        { keepalive: true },
+      );
     },
   });
 
@@ -254,7 +262,37 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     mark(change.slots, change.type);
   }
 
+  /**
+   * The flush on the way out of the page itself.
+   *
+   * The Vue unmount hook below covers a component torn down inside a living
+   * document; it never runs when the document goes — a closed tab, a
+   * navigation, Safari backgrounded mid-edit — which is exactly when a mark
+   * made inside the debounce window would otherwise be lost while the
+   * indicator's last word was "Saving…". `pagehide` covers desktop unload and
+   * the bfcache; `visibilitychange → hidden` is the only signal mobile honours
+   * reliably. Neither fires for anything inside the page — a drawer, a view
+   * switch — so these cannot double up on `stopEditing`'s flush-then-release,
+   * and a flush with nothing queued is a no-op anyway. The REST leg of the
+   * flushed save survives the document via `keepalive` (see `overRest` above).
+   */
+  function flushOnHide(): void {
+    engine.flush();
+  }
+  function onVisibility(): void {
+    if (document.visibilityState === "hidden") engine.flush();
+  }
+
+  // Registered in `onMounted`, so SSR never sees them, and removed on unmount
+  // or a remounted scheduler would leak a listener flushing a dead engine.
+  onMounted(() => {
+    window.addEventListener("pagehide", flushOnHide);
+    document.addEventListener("visibilitychange", onVisibility);
+  });
+
   onBeforeUnmount(() => {
+    window.removeEventListener("pagehide", flushOnHide);
+    document.removeEventListener("visibilitychange", onVisibility);
     engine.flush();
     engine.dispose();
   });
