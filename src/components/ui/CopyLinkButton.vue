@@ -7,7 +7,10 @@
  *
  * Feedback is the icon turning into a tick plus a brief tooltip; the tooltip
  * is also the live region, so the confirmation is announced rather than only
- * drawn. Nothing is claimed unless the copy actually succeeded.
+ * drawn. Nothing is claimed unless the copy actually succeeded — and a failure
+ * says so the same way, because on the plain-http LAN deployments this app is
+ * built for (see src/lib/clipboard.ts) the copy genuinely can fail, and a
+ * button that swallows that leaves the host pasting nothing.
  */
 import { onBeforeUnmount, ref } from "vue";
 import IconButton from "./IconButton.vue";
@@ -26,14 +29,17 @@ const props = withDefaults(
 );
 
 const copied = ref(false);
+const failed = ref(false);
 let timer: ReturnType<typeof setTimeout> | undefined;
 
 async function copy(): Promise<void> {
-  if (!(await copyText(props.url || window.location.href))) return;
-  copied.value = true;
   clearTimeout(timer);
+  const ok = await copyText(props.url || window.location.href);
+  copied.value = ok;
+  failed.value = !ok;
   timer = setTimeout(() => {
     copied.value = false;
+    failed.value = false;
   }, 1500);
 }
 
@@ -42,13 +48,16 @@ onBeforeUnmount(() => clearTimeout(timer));
 
 <template>
   <span class="copy">
-    <IconButton :label="copied ? 'Copied' : props.label" @click="copy">
+    <IconButton
+      :label="copied ? 'Copied' : failed ? 'Copy failed' : props.label"
+      @click="copy"
+    >
       <IconCheckWide v-if="copied" class="icon icon--done" aria-hidden="true" />
-      <IconLink v-else class="icon" aria-hidden="true" />
+      <IconLink v-else class="icon" :class="{ 'icon--failed': failed }" aria-hidden="true" />
     </IconButton>
 
-    <span class="tip" :class="{ 'tip--on': copied }" role="status">
-      {{ copied ? "Copied" : "" }}
+    <span class="tip" :class="{ 'tip--on': copied || failed }" role="status">
+      {{ copied ? "Copied" : failed ? "Couldn’t copy" : "" }}
     </span>
   </span>
 </template>
@@ -62,6 +71,10 @@ onBeforeUnmount(() => clearTimeout(timer));
 
 .icon--done {
   color: var(--color-success);
+}
+
+.icon--failed {
+  color: var(--color-danger);
 }
 
 /* Same bubble as the grid's slot tooltip: dark chip, small text, out of the
