@@ -41,8 +41,6 @@ import type { GridMode } from "../../lib/event";
 
 defineProps<{
   open: boolean;
-  /** The footer's warning: live updates expected, connection stayed down. */
-  realtimeDown: boolean;
   timezones: string[];
   referenceDate: Date;
   autoTimezone: string;
@@ -155,11 +153,12 @@ const emit = defineEmits<{
       />
 
       <!-- The same footer that closes the desktop sidebar, closing the drawer
-           that stands in for it: the colophon, and the sign-in for the owner
-           who is not signed in yet — the one admin thing on the page a guest
-           is allowed to find, and there is nowhere else on a phone to put
-           it. -->
-      <EventFooter :realtime-down="realtimeDown" />
+           that stands in for it — here for the colophon and the sign-in: the
+           one admin thing on the page a guest is allowed to find, and there is
+           nowhere else on a phone to put it. The connection row is not its
+           concern any more; on a phone that line lives on the identity bar,
+           where it can be seen without opening this sheet. -->
+      <EventFooter />
     </div>
   </Dialog>
 </template>

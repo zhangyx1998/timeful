@@ -29,6 +29,7 @@ import EventSettingsDrawer from "./EventSettingsDrawer.vue";
 import GuestIdentityDialog from "./GuestIdentityDialog.vue";
 import IdentityCard from "./IdentityCard.vue";
 import ModePills from "./ModePills.vue";
+import OfflineNotice from "./OfflineNotice.vue";
 import RespondentsPanel from "./RespondentsPanel.vue";
 import TimezoneField from "./TimezoneField.vue";
 import Button from "../ui/Button.vue";
@@ -75,7 +76,8 @@ const props = withDefaults(
     /**
      * Live updates were expected on this event and the connection has stayed
      * down. Decided by the page — it owns the socket — and only carried
-     * through here to the footer's two mounts.
+     * through here to the notice's two mounts: the desktop footer, and the
+     * line above the identity bar on a phone.
      */
     realtimeDown?: boolean;
   }>(),
@@ -634,6 +636,12 @@ function onSolo(person: { key: string; displayName: string } | null) {
           @reset="resetTimezone"
         />
 
+        <!-- On a phone the footer is behind the gear, which nobody has a
+             reason to open — so the one line that can matter sits here, above
+             the identity bar, where the state of your own answer already
+             draws the eye. The desktop keeps it in the footer below. -->
+        <OfflineNotice v-if="compact && realtimeDown" />
+
         <IdentityCard
           :name="guestName"
           :status="syncStatus"
@@ -748,7 +756,6 @@ function onSolo(person: { key: string; displayName: string } | null) {
       v-model:clock="clock"
       v-model:best-times="showBestTimes"
       :open="settingsOpen"
-      :realtime-down="realtimeDown"
       :timezones="timezones"
       :reference-date="referenceDate"
       :auto-timezone="autoTimezone"

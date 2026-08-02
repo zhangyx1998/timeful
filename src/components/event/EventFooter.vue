@@ -19,6 +19,7 @@
  *    signed in — the owner's tools live elsewhere.
  */
 import AdminLoginLink from "./AdminLoginLink.vue";
+import OfflineNotice from "./OfflineNotice.vue";
 import IconGitHub from "../../assets/icons/github.svg";
 import { isAdmin } from "../../lib/admin";
 import { VERSION } from "../../lib/version";
@@ -40,12 +41,7 @@ withDefaults(
 
 <template>
   <footer class="footer">
-    <!-- Honest and small: the page is not broken — saves and reloads still go
-         over plain requests — but nothing new arrives on its own any more. -->
-    <p v-if="realtimeDown" class="offline" role="status">
-      Live updates are unavailable. The page still works — others' changes
-      appear on reload.
-    </p>
+    <OfflineNotice v-if="realtimeDown" class="footer__offline" />
 
     <div class="colophon">
       <span class="version">Timeful v{{ VERSION }}</span>
@@ -73,18 +69,10 @@ withDefaults(
   align-items: center;
 }
 
-/* The one row here that talks about a problem. Quiet-but-visible: the danger
-   pair at small size, because the page is degraded rather than broken. */
-.offline {
-  align-self: stretch;
+/* The one row here that talks about a problem — its look lives in
+   `OfflineNotice`; only the footer's own spacing under it belongs here. */
+.footer__offline {
   margin-bottom: 0.4rem;
-  padding: 0.45rem 0.6rem;
-  font-size: 0.75rem;
-  line-height: 1.45;
-  text-align: center;
-  color: var(--color-danger);
-  background: var(--color-danger-soft);
-  border-radius: var(--radius-md);
 }
 
 .colophon {
