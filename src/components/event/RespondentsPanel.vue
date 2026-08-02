@@ -298,6 +298,7 @@ function onRowEnter(key: string, event: PointerEvent) {
   emit("highlight", key);
 }
 
+
 function confirmDelete() {
   const key = confirming.value;
   confirming.value = null;
@@ -465,9 +466,9 @@ function confirmSwitch() {
       @confirm="confirmDelete"
       @close="confirming = null"
     >
-      This deletes everything <strong>{{ confirmingName }}</strong> marked on this
-      event and takes them off the respondents list. They can answer again
-      from the same link.
+      This deletes everything <strong>{{ confirmingName }}</strong> marked and
+      takes them off the respondents list. They can answer again from the same
+      link.
     </ConfirmDialog>
 
     <ConfirmDialog
@@ -478,9 +479,8 @@ function confirmSwitch() {
       @confirm="confirmSwitch"
       @close="switching = null"
     >
-      You’ll be editing their availability: the grid loads what
-      <strong>{{ switchingName }}</strong> marked, and anything you change is
-      saved as them.
+      The grid loads what <strong>{{ switchingName }}</strong> marked, and
+      anything you change is saved as them.
     </ConfirmDialog>
   </aside>
 </template>
