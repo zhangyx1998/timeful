@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
- * Modal dialog: backdrop, Escape to close, focus moved to the panel, and the
- * page behind it locked so a touch scroll cannot run away underneath.
+ * Modal dialog: backdrop, Escape to close, focus moved to the panel, kept
+ * inside it while it is open and handed back when it closes, and the page
+ * behind it locked so a touch scroll cannot run away underneath.
  *
  * Sized for phones first — the panel never exceeds the visual viewport
  * (`100dvh`, which excludes mobile browser chrome) and its body scrolls on its
@@ -82,6 +83,19 @@ const panel = ref<HTMLElement | null>(null);
 let locks = 0;
 let previousOverflow: { root: string; body: string } | null = null;
 
+/**
+ * Whatever had focus when a dialog opened, so closing can hand it back. A
+ * teleported panel destroyed by `v-if` otherwise drops focus on `<body>`,
+ * losing the reader's place — and `history.ts` treats focus inside a
+ * `[role="dialog"]` as blocking the chart's shortcuts, so the restore is also
+ * what re-arms cmd+Z after a confirm.
+ *
+ * Module scope like the lock above: dialogs stack (a confirm over a drawer),
+ * and the one closing restores to whatever was focused when it opened — for a
+ * stacked confirm, a control inside the drawer under it.
+ */
+let opener: HTMLElement | null = null;
+
 function lockPage() {
   if (locks++ > 0) return;
   const root = document.documentElement;
@@ -105,6 +119,57 @@ function dismiss() {
 
 function onKeydown(event: KeyboardEvent) {
   if (event.key === "Escape") dismiss();
+  else if (event.key === "Tab") containTab(event);
+}
+
+/**
+ * What Tab can land on inside the panel: the practical subset the app's
+ * dialogs actually contain. Anything with no client rects is skipped — a
+ * `v-show`-hidden control is not tabbable however it matches.
+ */
+const TABBABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * Keeps Tab inside the panel while it is open.
+ *
+ * `aria-modal="true"` is a promise to assistive tech that the rest of the page
+ * is inert, and nothing else was keeping it: without this, Tab walks straight
+ * off the panel onto the page behind the dim. Keydown only, so it never fights
+ * the `[autofocus]` move the open watcher makes.
+ */
+function containTab(event: KeyboardEvent) {
+  const root = panel.value;
+  const active = document.activeElement;
+  // A dialog stacked on top of this one (a confirm over a drawer) holds the
+  // focus and runs its own trap; wrapping from underneath would yank focus out
+  // of the topmost panel.
+  if (!root || !(active instanceof HTMLElement) || !root.contains(active)) return;
+  const tabbables = Array.from(root.querySelectorAll<HTMLElement>(TABBABLE)).filter(
+    (el) => el.getClientRects().length > 0,
+  );
+  if (tabbables.length === 0) {
+    // Nothing to land on; the panel itself keeps focus.
+    event.preventDefault();
+    return;
+  }
+  const first = tabbables[0];
+  const last = tabbables[tabbables.length - 1];
+  if (!tabbables.includes(active)) {
+    // ConfirmDialog marks no [autofocus], so focus starts on the panel itself
+    // (`tabindex="-1"`): from there Tab enters at one end, Shift+Tab at the
+    // other, rather than falling out of the dialog altogether.
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+    return;
+  }
+  if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  } else if (event.shiftKey && active === first) {
+    event.preventDefault();
+    last.focus();
+  }
 }
 
 /**
@@ -130,6 +195,8 @@ watch(
   (open) => {
     if (typeof document === "undefined") return;
     if (open) {
+      opener =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
       document.addEventListener("keydown", onKeydown);
       lockPage();
       // Focus an [autofocus] element if the content marks one (dynamically
@@ -145,16 +212,35 @@ watch(
     } else {
       document.removeEventListener("keydown", onKeydown);
       unlockPage();
+      restoreFocus();
     }
   },
   { immediate: true },
 );
 
+/**
+ * Hands focus back to whatever opened the dialog. `preventScroll` for the same
+ * reason the open branch gives; `isConnected` declines to restore to a node
+ * that was torn down while the dialog was up — the drawer-to-identity chain
+ * closes one dialog and opens another in the same tick, and focusing a
+ * disconnected button would silently drop focus on `<body>` anyway.
+ */
+function restoreFocus() {
+  const back = opener;
+  opener = null;
+  if (back?.isConnected) back.focus({ preventScroll: true });
+}
+
 onBeforeUnmount(() => {
   if (typeof document === "undefined") return;
   document.removeEventListener("keydown", onKeydown);
-  // Only if this instance is holding one; the count is shared.
-  if (props.open) unlockPage();
+  // Only if this instance is holding one; the count is shared. A dialog torn
+  // down while still open restores focus too — `v-if` around the whole
+  // component is a way dialogs close.
+  if (props.open) {
+    unlockPage();
+    restoreFocus();
+  }
 });
 </script>
 
