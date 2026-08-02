@@ -83,9 +83,11 @@ withDefaults(
 
 /* Held, not taken away: a disabled instance keeps its place and its glyph —
    the dialog's close stays put while `locked` so the header does not reflow —
-   and only the cursor says it is not answering right now. */
+   but it dims like every other gated control, and the cursor says it is not
+   answering right now. */
 .icon-button:disabled {
-  cursor: default;
+  opacity: var(--disabled-opacity);
+  cursor: not-allowed;
 }
 
 .icon-button--sm {
