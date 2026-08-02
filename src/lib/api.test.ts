@@ -16,6 +16,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  api,
   ApiError,
   apiError,
   eventDataPath,
@@ -68,6 +69,47 @@ describe("request", () => {
     respondWith(200, { ok: true });
     await request("/rainy-otter/data");
     expect(lastCall()[1].credentials).toBe("include");
+  });
+});
+
+describe("keepalive", () => {
+  // The flush on `pagehide`/`visibilitychange` is only worth having if the
+  // request it dispatches survives the document that dispatched it — that is
+  // what the flag asks the browser for, and it must reach `fetch` verbatim.
+  it("passes keepalive through for a small body", async () => {
+    respondWith(200, { ok: true });
+    const body = { displayName: "Ada Lovelace", availability: ["2026-08-03T13:00:00.000Z"] };
+    await api.put("/rainy-otter/users/ada-lovelace", body, { keepalive: true });
+
+    const [, init] = lastCall();
+    expect(init.keepalive).toBe(true);
+    // The body is untouched by the detour through serialization.
+    expect(init.body).toBe(JSON.stringify(body));
+    expect(init.method).toBe("PUT");
+  });
+
+  it("drops keepalive for a body over the 64 KB quota, and still sends it", async () => {
+    // Browsers refuse a keepalive fetch whose body exceeds their in-flight
+    // quota — a throw, not a truncation — so an oversized flush goes out as a
+    // plain fetch instead. It may lose the race with the closing tab; a
+    // guaranteed throw loses it always.
+    respondWith(200, { ok: true });
+    const body = {
+      displayName: "Ada Lovelace",
+      availability: Array.from({ length: 3000 }, () => "2026-08-03T13:00:00.000Z"),
+    };
+    expect(JSON.stringify(body).length).toBeGreaterThan(60_000);
+    await api.put("/rainy-otter/users/ada-lovelace", body, { keepalive: true });
+
+    const [, init] = lastCall();
+    expect(init.keepalive).toBeUndefined();
+    expect(init.body).toBe(JSON.stringify(body));
+  });
+
+  it("asks for nothing without the option, exactly as before", async () => {
+    respondWith(200, { ok: true });
+    await api.put("/rainy-otter/users/ada-lovelace", { displayName: "Ada Lovelace" });
+    expect(lastCall()[1].keepalive).toBeUndefined();
   });
 });
 

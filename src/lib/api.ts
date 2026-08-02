@@ -76,6 +76,14 @@ export interface RequestOptions {
   method?: HttpMethod;
   body?: unknown;
   signal?: AbortSignal;
+  /**
+   * Ask the browser to let this request outlive its page. For the autosave
+   * flush on `pagehide`/`visibilitychange`: a save dispatched as the tab closes
+   * would otherwise be cancelled with the document, and the mark it carried
+   * would never reach the server. Best-effort — bodies over the browser's
+   * 64 KB keepalive quota are sent as a plain fetch instead (see `request`).
+   */
+  keepalive?: boolean;
 }
 
 /** Options accepted by the per-verb helpers, which supply the method. */
@@ -83,17 +91,23 @@ export type CallOptions = Omit<RequestOptions, "method" | "body">;
 
 export async function request<T>(
   path: string,
-  { method = "GET", body, signal }: RequestOptions = {},
+  { method = "GET", body, signal, keepalive }: RequestOptions = {},
 ): Promise<T> {
+  const serialized = body === undefined ? undefined : JSON.stringify(body);
+  // `keepalive` caps the body at 64 KB. An answer that big is a page that was
+  // going to lose the race anyway; a plain fetch is strictly better than a
+  // throw.
+  const survives = keepalive === true && (serialized?.length ?? 0) <= 60_000;
   const res = await fetch(path, {
     method,
     credentials: "include",
     signal,
-    ...(body === undefined
+    ...(survives ? { keepalive: true } : {}),
+    ...(serialized === undefined
       ? {}
       : {
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: serialized,
         }),
   });
 
