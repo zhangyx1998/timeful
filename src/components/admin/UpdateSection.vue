@@ -117,8 +117,8 @@ async function copy(): Promise<void> {
             </Button>
           </div>
           <p class="note">
-            It restarts the service on the new version. Your events, responses
-            and settings are left exactly as they are.
+            It restarts the service. Your events, responses and settings are
+            untouched.
           </p>
         </template>
       </template>

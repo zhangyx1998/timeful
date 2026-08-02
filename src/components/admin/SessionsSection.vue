@@ -171,14 +171,13 @@ defineExpose({ load });
       @close="confirming = null"
     >
       <template v-if="confirming?.kind === 'purge'">
-        Every signed-in device except this one is signed out. They will each
-        need the password again.
+        Each of them will need the password again.
       </template>
       <template v-else-if="confirming?.session.current">
-        This browser is signed out and you will need the password again.
+        You will need the password again on this browser.
       </template>
       <template v-else>
-        That device is signed out and needs the password again.
+        That device will need the password again.
       </template>
     </ConfirmDialog>
   </Card>

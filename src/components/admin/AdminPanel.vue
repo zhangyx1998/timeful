@@ -167,10 +167,7 @@ onMounted(loadEvents);
            stream, and returning replays the buffer afresh. -->
       <template v-else-if="tab === 'logs'">
         <section class="logs" aria-label="Server logs">
-          <p class="logs__note">
-            What the server has logged recently — errors, refused requests, and
-            housekeeping. Kept in memory only, and visible only to you.
-          </p>
+          <p class="logs__note">Kept in memory only, and visible only to you.</p>
           <LogViewer path="/api/logs" empty-text="Nothing logged yet" />
         </section>
       </template>
