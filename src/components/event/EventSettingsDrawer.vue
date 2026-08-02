@@ -142,7 +142,9 @@ const emit = defineEmits<{
       <!-- The respondent's bell, for the phone: the desktop keeps it on the
            identity card, and this drawer is the phone's version of that
            column. Only with a name adopted — no name, nobody to subscribe as
-           — and rendered at all only where push can actually work. -->
+           — and rendered where push can actually work, plus the one case it
+           can be made to work: iOS before a home-screen install, where it is
+           disabled and says what to do. -->
       <PushToggle
         v-if="push"
         variant="setting"

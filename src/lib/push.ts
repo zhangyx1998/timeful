@@ -41,7 +41,8 @@ const STORAGE_KEY = "timeful.push";
  * non-secure context has no service workers, iOS before home-screen install
  * has no `PushManager`, and either can be missing independently. Callers hide
  * the bell entirely when this is false — an explanation of why a feature
- * cannot work is chrome the page does not need.
+ * cannot work is chrome the page does not need — except for the one case
+ * `pushBlock` names, where the explanation is an instruction.
  */
 export function pushSupported(): boolean {
   return (
@@ -51,6 +52,42 @@ export function pushSupported(): boolean {
     "PushManager" in window &&
     "Notification" in window
   );
+}
+
+/** The one blocked case worth a control on screen. */
+export type PushBlock = "install";
+
+/** iPhone, iPad, or an iPad wearing a desktop user agent (which reports
+ *  itself as a Mac with a touchscreen). Same kind of sniff, and the same
+ *  justification, as `isMacPlatform` in lib/history.ts. */
+function isIosLike(): boolean {
+  return (
+    /iphone|ipad|ipod/i.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
+/** Already opened from a home-screen icon, one way or the other. */
+function isStandalone(): boolean {
+  return (
+    window.matchMedia?.("(display-mode: standalone)").matches === true ||
+    (navigator as { standalone?: boolean }).standalone === true
+  );
+}
+
+/**
+ * Why the bell is here but cannot work — and only when the visitor is the one
+ * who can fix it. iOS delivers push to a web app added to the home screen and
+ * to nothing else, which is one tap in the share sheet away. Everything else
+ * that stops push — a page served over plain http, a browser without the APIs —
+ * is not the visitor's to resolve, and a permanently dead control aimed at
+ * somebody who cannot act is chrome, not honesty: those keep no bell at all.
+ */
+export function pushBlock(): PushBlock | null {
+  if (typeof window === "undefined" || pushSupported()) return null;
+  if (!window.isSecureContext) return null;
+  if (!isIosLike() || isStandalone()) return null;
+  return "install";
 }
 
 /** Permission is refused for good until the visitor changes it themselves. */

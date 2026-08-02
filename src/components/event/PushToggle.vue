@@ -7,8 +7,11 @@
  * Three rules, all about consent:
  *
  * - it renders **nothing** where push cannot work — an insecure context, a
- *   browser without the API, iOS before install-to-home-screen. A control
- *   that only ever explains why it is disabled is chrome, not a control;
+ *   browser without the API. A control that only ever explains why it is
+ *   disabled is chrome, not a control — unless the explanation is an
+ *   instruction the person reading it can act on, which is the one exception:
+ *   iOS before install-to-home-screen shows the bell disabled with the tap
+ *   that would bring it to life (`pushBlock`);
  * - the permission prompt fires only from a press on this bell, never on
  *   load (`lib/push.ts` is written so that is the only call site);
  * - a **denied** permission is shown quietly as a disabled bell with one line
@@ -18,13 +21,14 @@
  * Two shapes for its two homes: `tool` is a row in the admin tools' column,
  * `setting` is a label-and-checkbox row like the settings drawer's own.
  */
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, useId, watch } from "vue";
 import Spinner from "../ui/Spinner.vue";
 import IconBell from "../../assets/icons/bell.svg";
 import IconBellOff from "../../assets/icons/bell-off.svg";
 import {
   disablePush,
   enablePush,
+  pushBlock,
   pushEnabled,
   pushPermissionDenied,
   pushSupported,
@@ -50,11 +54,17 @@ const binding = computed<PushBinding>(() => ({
   ...(props.userKey === null ? {} : { userKey: props.userKey }),
 }));
 
-const supported = pushSupported();
-const enabled = ref(supported && pushEnabled(binding.value));
+// Refs, not constants: a disabled bell is a standing on-screen claim, so
+// what it claims has to be re-readable after setup.
+const supported = ref(pushSupported());
+const block = ref(pushBlock());
+const enabled = ref(supported.value && pushEnabled(binding.value));
 const denied = ref(pushPermissionDenied());
 const busy = ref(false);
 const failed = ref(false);
+
+/** Ties the install instruction to the bell it explains. */
+const blockNoteId = useId();
 
 onMounted(() => {
   // Heal a subscription the server pruned or the push service rotated. Never
@@ -72,7 +82,7 @@ watch(
 );
 
 async function toggle(): Promise<void> {
-  if (busy.value || denied.value) return;
+  if (busy.value || denied.value || block.value !== null) return;
   busy.value = true;
   failed.value = false;
   try {
@@ -92,13 +102,14 @@ async function toggle(): Promise<void> {
 </script>
 
 <template>
-  <div v-if="supported" class="push" :class="`push--${variant}`">
+  <div v-if="supported || block" class="push" :class="`push--${variant}`">
     <button
       type="button"
       class="bell"
       :class="{ 'bell--on': enabled }"
       :aria-pressed="enabled"
-      :disabled="busy || denied"
+      :disabled="busy || denied || block !== null"
+      :aria-describedby="block ? blockNoteId : undefined"
       @click="toggle"
     >
       <span class="bell__glyph" aria-hidden="true">
@@ -112,9 +123,16 @@ async function toggle(): Promise<void> {
       </span>
     </button>
 
+    <!-- Not a shrug but an instruction: this is the one tap that brings the
+         bell to life on iOS, and the only reason a disabled bell renders at
+         all (`pushBlock`). -->
+    <p v-if="block" :id="blockNoteId" class="note">
+      Add to Home Screen to get notifications.
+    </p>
+
     <!-- The browser will not ask again; only its own site settings can. Said
          once, quietly, under the bell it explains. -->
-    <p v-if="denied" class="note">
+    <p v-else-if="denied" class="note">
       Notifications are blocked for this site in your browser settings.
     </p>
     <p v-else-if="failed" class="note note--error" role="alert">

@@ -36,7 +36,8 @@ own site settings.
   counts as secure for development.
 - **iPhone and iPad.** iOS only delivers push to a web app that has been
   **added to the home screen** (Share → Add to Home Screen, from the event's
-  page). Open it from that icon once, and the bell appears. This is an iOS
+  page). Until then the bell is on the page but greyed out and says so;
+  opening the app from its home-screen icon brings it to life. This is an iOS
   platform rule, not a Timeful one; Android and desktop browsers need no
   install.
 

@@ -134,9 +134,11 @@ async function signOut(): Promise<void> {
       </Button>
 
       <!-- The owner's bell: this browser asking to hear when answers change.
-           Hidden entirely where push cannot work; the prompt fires only from
-           the press. In the drawer and the sidebar alike, because both render
-           this same component. -->
+           Hidden entirely where push cannot work, plus the one case it can be
+           made to work — on iOS before a home-screen install it renders
+           disabled and says what to do. The prompt fires only from the press.
+           In the drawer and the sidebar alike, because both render this same
+           component. -->
       <PushToggle
         :event-id="eventId"
         role="owner"
