@@ -366,10 +366,8 @@ onBeforeUnmount(() => {
 
       <div v-else-if="gone" class="gone">
         <h2 class="gone__title">Event deleted</h2>
-        <p class="gone__text">
-          This event was removed while you had it open. Nothing further can be
-          filled in here.
-        </p>
+        <p class="gone__text">It was removed while you had it open.</p>
+        <a class="gone__home" href="/">Go home</a>
       </div>
 
       <p v-else class="loading">No event data.</p>
@@ -511,6 +509,17 @@ onBeforeUnmount(() => {
   font-size: 0.875rem;
   line-height: 1.5;
   color: var(--color-text-muted);
+}
+
+/* The same quiet way out the standalone 404 page offers: a plain link to `/`,
+   because leaving the event page is the point. The padding is invisible but
+   keeps the tap target at the floor. */
+.gone__home {
+  display: inline-block;
+  padding: 0.75rem 1rem;
+  margin-top: 0.25rem;
+  font-size: 0.875rem;
+  color: var(--color-accent);
 }
 
 
