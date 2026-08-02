@@ -21,7 +21,7 @@
  * Two shapes for its two homes: `tool` is a row in the admin tools' column,
  * `setting` is a label-and-checkbox row like the settings drawer's own.
  */
-import { computed, onMounted, ref, useId, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
 import Spinner from "../ui/Spinner.vue";
 import IconBell from "../../assets/icons/bell.svg";
 import IconBellOff from "../../assets/icons/bell-off.svg";
@@ -66,10 +66,54 @@ const failed = ref(false);
 /** Ties the install instruction to the bell it explains. */
 const blockNoteId = useId();
 
+/**
+ * Re-reads what the bell claims. Strictly passive — it must never call
+ * `enablePush` or `resyncPush`: the prompt only ever fires from a press on
+ * the bell, and `onMounted`'s resync stays the only place a re-registration
+ * belongs.
+ */
+function readState(): void {
+  if (busy.value) return; // a toggle in flight owns these refs
+  supported.value = pushSupported();
+  block.value = pushBlock();
+  denied.value = pushPermissionDenied();
+  enabled.value = supported.value && pushEnabled(binding.value);
+}
+
+function onVisibility(): void {
+  if (document.visibilityState === "visible") readState();
+}
+
+let permission: PermissionStatus | null = null;
+
 onMounted(() => {
   // Heal a subscription the server pruned or the push service rotated. Never
   // prompts: it only runs where permission is already granted.
   if (enabled.value) void resyncPush(binding.value);
+
+  // A disabled bell is a standing on-screen claim, and the visitor changes
+  // its facts elsewhere — installing to the home screen, flipping the site's
+  // permission — so coming back into view re-reads them.
+  document.addEventListener("visibilitychange", onVisibility);
+
+  // The authoritative signal, where the browser offers it. It throws or is
+  // absent in older Safari, so it can never be the only path.
+  try {
+    void navigator.permissions
+      ?.query({ name: "notifications" })
+      .then((status) => {
+        permission = status;
+        status.onchange = readState;
+      })
+      .catch(() => undefined);
+  } catch {
+    // visibilitychange above covers it.
+  }
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("visibilitychange", onVisibility);
+  if (permission) permission.onchange = null;
 });
 
 // Answering as somebody else re-files the respondent subscription under the
@@ -172,8 +216,8 @@ async function toggle(): Promise<void> {
 }
 
 .bell:disabled {
-  cursor: default;
-  opacity: 0.55;
+  cursor: not-allowed;
+  opacity: var(--disabled-opacity);
 }
 
 /* The state is the glyph's colour as much as its shape: an accent bell is

@@ -257,7 +257,7 @@ const emit = defineEmits<{
 /* Dimmed rather than gone: the pair stays where it was so the one that still
    works is in the same place it was a moment ago. */
 .step:disabled {
-  opacity: 0.4;
+  opacity: var(--disabled-opacity);
   cursor: not-allowed;
 }
 </style>
