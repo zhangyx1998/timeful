@@ -276,7 +276,8 @@ const switchingName = computed(() =>
 );
 
 /**
- * The hover highlight, which is a hover and nothing else.
+ * The hover highlight, which is a hover and nothing else — the keyboard's
+ * version of it follows below.
  *
  * Two things kept it from being one. Inside a drawer there is nothing to
  * highlight *for*: the sheet is over the chart the highlight would change, so
@@ -298,6 +299,22 @@ function onRowEnter(key: string, event: PointerEvent) {
   emit("highlight", key);
 }
 
+/** Focus is the keyboard's hover, and has none of the phantom-pointerenter
+ *  problem the comment above describes. Same rule as the pointer: inside a
+ *  drawer there is nothing to highlight for. */
+function onRowFocus(key: string) {
+  if (props.embedded) return;
+  emit("highlight", key);
+}
+
+/** Moving between controls inside one row is not leaving it. */
+function onRowBlur(event: FocusEvent) {
+  if (props.embedded) return;
+  const next = event.relatedTarget;
+  const row = event.currentTarget;
+  if (next instanceof Node && row instanceof Node && row.contains(next)) return;
+  emit("highlight", null);
+}
 
 function confirmDelete() {
   const key = confirming.value;
@@ -359,6 +376,8 @@ function confirmSwitch() {
         }"
         @pointerenter="onRowEnter(row.key, $event)"
         @pointerleave="emit('highlight', null)"
+        @focusin="onRowFocus(row.key)"
+        @focusout="onRowBlur"
       >
         <span
           class="avatar"
