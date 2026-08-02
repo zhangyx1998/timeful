@@ -170,6 +170,9 @@
   /* `--tap-min` is the ≥44px touch target floor from ARCHITECTURE.md § UX bar;
      primitives apply it under coarse pointers. */
   --tap-min: 44px;
+  /* How far a disabled control dims — one value, so every gated control in the
+     app reads as gated to the same degree. */
+  --disabled-opacity: 0.5;
   --header-height: 3.25rem;
   --page-max: 64rem;
   --page-pad: 1rem;

@@ -235,6 +235,12 @@ the thing is. Every colour comes from a `var(--*)` token in
 hardcode a hex in a component**. Code that needs a colour at runtime resolves it
 through computed styles (`src/lib/colors.ts`) rather than parsing the token.
 
+A disabled control keeps its place, dims to `--disabled-opacity`, and takes
+`cursor: not-allowed` — one look, not a per-component opacity. The one standing
+exception is `AvailabilityGrid`'s `.knob:disabled`: a scroll affordance that is
+meant to disappear entirely when there is nowhere left to scroll, not to sit
+there dimmed.
+
 ### Theming
 
 `prefers-color-scheme` by default, overridden by `data-theme="light|dark"` on

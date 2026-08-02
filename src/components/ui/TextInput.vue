@@ -120,7 +120,7 @@ const messageId = computed(() => `${inputId.value}-message`);
 }
 
 .text-field__control:has(.text-field__input:disabled) {
-  opacity: 0.6;
+  opacity: var(--disabled-opacity);
 }
 
 /* Truncates from the *left* when there is not enough room: the end of an origin
