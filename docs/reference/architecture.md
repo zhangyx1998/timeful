@@ -1016,9 +1016,10 @@ There is no notifications switch, env var aside (`TIMEFUL_PUSH_COALESCE_MS`
 exists for tests). The feature is inert by construction: with no
 subscriptions there are no deliveries, no key pair is minted until a browser
 first asks for the public key, and a server nobody subscribed to makes no
-outbound connection at all. The bell renders only where push can actually
-work (`isSecureContext`, a service worker, a `PushManager`); everywhere else
-the page simply has no bell.
+outbound connection at all. The bell renders where push can actually work
+(`isSecureContext`, a service worker, a `PushManager`), plus one blocked case
+the visitor can resolve themselves: on iOS before a home-screen install it
+renders disabled and says so. Everywhere else the page simply has no bell.
 
 ## Security
 
