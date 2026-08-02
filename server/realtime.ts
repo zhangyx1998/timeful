@@ -4,7 +4,9 @@
  * A page holding an event open joins that event's room over one of two
  * upgrades, and every successful mutation broadcasts a **full hydrated
  * snapshot** to the room, so a second browser sees an answer land without
- * reloading. Deletion broadcasts `{ type: "gone" }`.
+ * reloading. Joining is answered with the current snapshot too — a page that
+ * reconnects after missing a broadcast has no other way to ask what it missed.
+ * Deletion broadcasts `{ type: "gone" }`.
  *
  * **`GET /<slug>/ws` — the browse socket.** Read-only in the strictest sense
  * available: no `message` listener is ever registered on it, so no byte a
@@ -577,16 +579,17 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
     };
 
     wss.handleUpgrade(req, socket, head, (ws) => {
-      subscribe(ws, event.id, target, origin);
+      subscribe(ws, event, target, origin);
     });
   }
 
   function subscribe(
     ws: WebSocket,
-    eventId: string,
+    event: StoredEvent,
     target: Upgrade,
     origin: EditOrigin,
   ): void {
+    const eventId = event.id;
     alive.add(ws);
     ws.on("pong", () => {
       alive.add(ws);
@@ -601,7 +604,7 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
       // The browse socket. No `message` listener, deliberately and permanently:
       // this one is a read-only channel and a client's bytes must never reach
       // any state. See the module header.
-      joinAndWatch(ws, eventId, null);
+      joinAndWatch(ws, event, null);
       return;
     }
 
@@ -630,7 +633,7 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
       incumbent.close(CLOSE_REPLACED, "replaced");
     }
 
-    joinAndWatch(ws, eventId, { key: target.key, displayName: target.displayName });
+    joinAndWatch(ws, event, { key: target.key, displayName: target.displayName });
 
     // The one inbound path in this file, and the only one there will be: a
     // save, validated by the REST route's own validator.
@@ -641,10 +644,19 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
 
   function joinAndWatch(
     ws: WebSocket,
-    eventId: string,
+    snapshot: StoredEvent,
     session: { key: string; displayName: string } | null,
   ): void {
+    const eventId = snapshot.id;
     const changed = join(eventId, ws, session);
+
+    // Whoever just arrived may have been away through somebody else's save —
+    // a laptop lid closed, a server restart — and the room's snapshot goes out
+    // on mutations only, so a page that missed one has no way to ask for it.
+    // Joining is answered with the document as it stands: the same public copy
+    // `broadcastEvent` sends, stripped of `lastEdit` like every other frame a
+    // browse socket can see.
+    sendTo(ws, { type: "event", event: publicEvent(snapshot) as EventDoc });
 
     // Whoever just arrived is told who is here, straight away — a list that
     // only fills in when the next person moves would be a list you cannot

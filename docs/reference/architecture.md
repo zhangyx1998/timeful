@@ -674,6 +674,11 @@ A create broadcasts nothing: nobody can be subscribed to an event that did not
 exist a moment ago. A clear that cleared nothing broadcasts nothing either — it
 is still acknowledged, because the save did land, but no room is woken for it.
 
+A **join** is not a mutation and wakes no room, but the socket that joined is
+sent the current snapshot to itself, ahead of the presence frame — a page that
+was away through somebody else's save has no other way to ask what it missed.
+A refused claim (`4409`) never joins, and is sent nothing.
+
 ### Named write sessions
 
 The session socket **is** the edit session. Claiming one, holding it and losing

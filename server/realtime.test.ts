@@ -7,6 +7,8 @@
  * under test are the ones the feature is only worth having if it holds:
  *
  * - a mutation reaches everyone watching that event, whichever way it arrived;
+ * - **joining is answered with the current snapshot**, ahead of the presence
+ *   frame, so a page that missed a broadcast catches up the moment it connects;
  * - **the browse socket is read-only** — a client can send whatever it likes
  *   down `/<slug>/ws` and change nothing;
  * - a **write session** accepts saves and validates them exactly as the REST
@@ -113,10 +115,24 @@ function put(
 
 interface Subscriber {
   socket: WebSocket;
-  /** Everything but presence — snapshots, acks, refusals, `gone`, `replaced`. */
+  /**
+   * Everything but presence — snapshots, acks, refusals, `gone`, `replaced` —
+   * with the join snapshot already lifted out into `joinSnapshot`, so every
+   * count a test asserts on is a count of what happened *after* the join.
+   */
   received: RealtimeMessage[];
   /** Every presence list this socket has been sent, in order. */
   presence: PresenceEntry[][];
+  /** The message type of every frame, in arrival order, presence included. */
+  frames: string[];
+  /**
+   * The snapshot the server answers a join with, or null when it hung up
+   * without one — a refused claim never joins, so it is never handed one.
+   * Filled in by `subscribe`/`session`; raw `openSocket` callers read frames.
+   */
+  joinSnapshot: RealtimeMessage | null;
+  /** Waits for the join snapshot and lifts it out of `received`. */
+  joined(): Promise<RealtimeMessage | null>;
   /** Resolves once at least `count` non-presence messages have arrived. */
   take(count: number): Promise<RealtimeMessage[]>;
   /** Resolves once at least `count` presence lists have arrived. */
@@ -133,10 +149,12 @@ function openSocket(url: string): Promise<Subscriber> {
   clients.push(socket);
   const received: RealtimeMessage[] = [];
   const presence: PresenceEntry[][] = [];
+  const frames: string[] = [];
   const waiting = new Set<() => void>();
 
   socket.addEventListener("message", (event: MessageEvent) => {
     const message = JSON.parse(String(event.data)) as RealtimeMessage;
+    frames.push(message.type);
     if (message.type === "presence") presence.push(message.people);
     else received.push(message);
     for (const notify of [...waiting]) notify();
@@ -177,12 +195,26 @@ function openSocket(url: string): Promise<Subscriber> {
       `${count} presence lists (${presence.length} arrived)`,
     );
 
+  const joined = (): Promise<RealtimeMessage | null> => {
+    const snapshot = waitFor(
+      () => (received[0]?.type === "event" ? (received.shift() as RealtimeMessage) : null),
+      "the join snapshot",
+    );
+    // A refused claim is hung up on without one; the loser of the race below
+    // must not surface its timeout as an unhandled rejection.
+    snapshot.catch(() => {});
+    return Promise.race([snapshot, closeEvent.then(() => null)]);
+  };
+
   return new Promise((resolve, reject) => {
     socket.addEventListener("open", () =>
       resolve({
         socket,
         received,
         presence,
+        frames,
+        joinSnapshot: null,
+        joined,
         take,
         takePresence,
         people: () => presence[presence.length - 1] ?? [],
@@ -194,15 +226,17 @@ function openSocket(url: string): Promise<Subscriber> {
 }
 
 /** The browse socket: watching, claiming nothing, sending nothing. */
-function subscribe(idOrSlug: string): Promise<Subscriber> {
-  return openSocket(`${wsBase}/${encodeURIComponent(idOrSlug)}/ws`);
+async function subscribe(idOrSlug: string): Promise<Subscriber> {
+  const subscriber = await openSocket(`${wsBase}/${encodeURIComponent(idOrSlug)}/ws`);
+  subscriber.joinSnapshot = await subscriber.joined();
+  return subscriber;
 }
 
 /**
  * The named write session. `name` is the spelling the room should render; a
  * takeover is only ever asked for after a `4409`.
  */
-function session(
+async function session(
   idOrSlug: string,
   key: string,
   options: { name?: string; takeover?: boolean } = {},
@@ -211,9 +245,11 @@ function session(
   if (options.name !== undefined) query.set("name", options.name);
   if (options.takeover) query.set("takeover", "1");
   const suffix = query.toString() ? `?${query.toString()}` : "";
-  return openSocket(
+  const subscriber = await openSocket(
     `${wsBase}/${encodeURIComponent(idOrSlug)}/users/${encodeURIComponent(key)}${suffix}`,
   );
+  subscriber.joinSnapshot = await subscriber.joined();
+  return subscriber;
 }
 
 /** One save frame, as the client's connector sends it. */
@@ -349,6 +385,84 @@ describe("the realtime channel", () => {
     expect(message.event.name).toBe("Offsite, moved");
     // The room is keyed by uuid, so a rename cannot orphan its subscribers.
     expect(clientCount(event.id)).toBe(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // the join snapshot
+  // -------------------------------------------------------------------------
+
+  describe("the join snapshot", () => {
+    it("hands a joining browse socket the document, ahead of presence", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      expect((await put(event.id, "alice", "Alice")).status).toBe(200);
+
+      // Raw, so the arrival order is on the record rather than absorbed by the
+      // helper: the snapshot must come first — a presence list for a document
+      // the page has not been given yet would be an answer out of order.
+      const watcher = await openSocket(`${wsBase}/${encodeURIComponent(event.slug)}/ws`);
+      const [snapshot] = await watcher.take(1);
+      await watcher.takePresence(1);
+
+      expect(watcher.frames.slice(0, 2)).toEqual(["event", "presence"]);
+      if (snapshot.type !== "event") throw new Error("expected a snapshot");
+      expect(snapshot.event.id).toBe(event.id);
+      expect(snapshot.event.responses.alice).toMatchObject({
+        displayName: "Alice",
+        availability: SLOTS,
+      });
+      // The same public copy a broadcast is: the strip is at the door here too.
+      expect(JSON.stringify(snapshot)).not.toContain("lastEdit");
+      expect((await readEvent(event.id))?.responses.alice.lastEdit).toBeDefined();
+    });
+
+    it("hands a joining write session the document too", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      await put(event.id, "alice", "Alice");
+
+      const bob = await session(event.slug, "bob", { name: "Bob" });
+      await bob.takePresence(1);
+
+      expect(bob.frames.slice(0, 2)).toEqual(["event", "presence"]);
+      if (bob.joinSnapshot?.type !== "event") throw new Error("expected a snapshot");
+      expect(bob.joinSnapshot.event.responses.alice.availability).toEqual(SLOTS);
+    });
+
+    it("catches a reconnecting page up on the save it missed", async () => {
+      // The case the snapshot exists for: a laptop lid closed through somebody
+      // else's save reconnects successfully — and, without this, would show
+      // the group's availability as of the disconnect until the next save.
+      attach();
+      const event = await createEvent(await adminCookie());
+      const before = await subscribe(event.slug);
+      if (before.joinSnapshot?.type !== "event") throw new Error("expected a snapshot");
+      expect(before.joinSnapshot.event.responses).toEqual({});
+
+      before.socket.close();
+      await until(() => clientCount(event.id) === 0, "the watcher to leave");
+      // The save lands while nobody is watching: no broadcast reaches anyone.
+      await put(event.id, "carol", "Carol");
+
+      const again = await subscribe(event.slug);
+      if (again.joinSnapshot?.type !== "event") throw new Error("expected a snapshot");
+      expect(again.joinSnapshot.event.responses.carol.availability).toEqual(SLOTS);
+      // And nothing further is owed: the page is current, not replaying.
+      expect(again.received).toEqual([]);
+    });
+
+    it("sends no snapshot to a claim it refuses", async () => {
+      attach();
+      const event = await createEvent(await adminCookie());
+      await session(event.slug, "ada-lovelace", { name: "Ada Lovelace" });
+
+      // A refused claim never joins the room, so it is told nothing at all —
+      // the close code carries the whole answer.
+      const second = await session(event.slug, "ada-lovelace", { name: "Ada Lovelace" });
+      expect((await second.closed()).code).toBe(CLOSE_OCCUPIED);
+      expect(second.joinSnapshot).toBeNull();
+      expect(second.received).toEqual([]);
+    });
   });
 
   // -------------------------------------------------------------------------
