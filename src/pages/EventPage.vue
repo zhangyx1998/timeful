@@ -232,6 +232,12 @@ const subtitle = computed(() =>
  * leaves the drag alone.
  */
 function applyEvent(next: EventDoc): void {
+  // Both pipes land here — the socket's snapshot and refresh()'s refetch — and
+  // a refetch issued before somebody else's save can arrive after it. Every
+  // broadcast path bumps `updatedAt` (ARCHITECTURE.md § Realtime), so an older
+  // document is an answer to a question already overtaken. `<` rather than
+  // `<=`, so an equal-timestamp re-render still lands.
+  if (event.value && next.updatedAt < event.value.updatedAt) return;
   const before = event.value?.slug;
   event.value = next;
   document.title = `${next.name} · Timeful`;
@@ -506,6 +512,7 @@ onBeforeUnmount(() => {
   line-height: 1.5;
   color: var(--color-text-muted);
 }
+
 
 /* The phone layout is an app, not a document: the page is exactly the viewport
    and does not scroll, so the scheduler can hand the chart a fixed pane and a
