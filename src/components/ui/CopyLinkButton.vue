@@ -12,11 +12,10 @@
  * built for (see src/lib/clipboard.ts) the copy genuinely can fail, and a
  * button that swallows that leaves the host pasting nothing.
  */
-import { onBeforeUnmount, ref } from "vue";
 import IconButton from "./IconButton.vue";
 import IconCheckWide from "../../assets/icons/check-wide.svg";
 import IconLink from "../../assets/icons/link.svg";
-import { copyText } from "../../lib/clipboard";
+import { useCopyFeedback } from "../../lib/copy-feedback";
 
 const props = withDefaults(
   defineProps<{
@@ -28,22 +27,11 @@ const props = withDefaults(
   { url: "", label: "Copy event link" },
 );
 
-const copied = ref(false);
-const failed = ref(false);
-let timer: ReturnType<typeof setTimeout> | undefined;
+const { copied, failed, copy: copyWith } = useCopyFeedback();
 
-async function copy(): Promise<void> {
-  clearTimeout(timer);
-  const ok = await copyText(props.url || window.location.href);
-  copied.value = ok;
-  failed.value = !ok;
-  timer = setTimeout(() => {
-    copied.value = false;
-    failed.value = false;
-  }, 1500);
+function copy(): Promise<void> {
+  return copyWith(props.url || window.location.href);
 }
-
-onBeforeUnmount(() => clearTimeout(timer));
 </script>
 
 <template>
