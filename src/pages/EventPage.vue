@@ -9,8 +9,8 @@
  */
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import AdminDrawer from "../components/event/AdminDrawer.vue";
-import CopyLinkButton from "../components/ui/CopyLinkButton.vue";
 import EventScheduler from "../components/event/EventScheduler.vue";
+import InviteButton from "../components/event/InviteButton.vue";
 import EventFormDialog from "../components/shared/EventFormDialog.vue";
 import AppHeader from "../components/ui/AppHeader.vue";
 import IconButton from "../components/ui/IconButton.vue";
@@ -327,8 +327,9 @@ onBeforeUnmount(() => {
            rather than to the page. -->
       <template #lead>
         <h1 v-if="event" class="name" :title="event.name">{{ event.name }}</h1>
-        <!-- Client-only: before hydration the button could not copy anything. -->
-        <CopyLinkButton v-if="mounted && event" />
+        <!-- Client-only: before hydration the dialog could not read the
+             address bar, let alone copy anything. -->
+        <InviteButton v-if="mounted && event" />
       </template>
 
       <!-- The dates belong with the name they qualify, so they lead the
