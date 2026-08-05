@@ -20,6 +20,14 @@ import { logError, redactPath, stackHead } from "./log.ts";
 // Runtime, like the slug rules: what a link-holder may see is one definition,
 // and the SSR page applies exactly the one the JSON route applies.
 import { publicEvent } from "../src/lib/event.ts";
+// Runtime too: the URL shapes an event page answers under, and the title each
+// one carries, are one definition — the hydrated title must be byte-equal to
+// the served one (ARCHITECTURE.md § Routing / SSR).
+import {
+  eventPageTitle,
+  parseEventPath,
+  type EventSubpage,
+} from "../src/lib/event-routes.ts";
 import { statusOf } from "./http.ts";
 import type { AssetPaths } from "./paths.ts";
 import { describeTrustedProxies, type TrustProxySetting } from "./proxy.ts";
@@ -179,6 +187,7 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
     template: string,
     stored: StoredEvent,
     req: Request,
+    sub: EventSubpage,
   ): Promise<string> {
     // The whole document is inlined into the page, so the page is a public
     // route like any other and takes the same strip. Done once, here: the
@@ -188,7 +197,7 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
     const render = await renderer.loadRender();
     const { html } = await render(req.path, { event });
     const absoluteUrl = `${req.protocol}://${req.get("host") ?? "localhost"}${req.path}`;
-    const { title, tags } = eventHead(event, absoluteUrl);
+    const { title, tags } = eventHead(event, absoluteUrl, sub);
 
     // Tells entry-client.ts there is real markup to hydrate. Stamped before the
     // markup goes in, so a rendered `<div id="app">` can never be hit instead.
@@ -223,8 +232,8 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
 
       // Resolve first: only an actual miss enters the tarpit, whatever the
       // method. A hit with an unusable method is a plain, undelayed 404.
-      const event = await resolveSlugPath(req.path);
-      if (!event) {
+      const resolved = await resolveSlugPath(req.path);
+      if (!resolved) {
         await tarpitMiss(req, res, () => sendHtml(404, NOT_FOUND_HTML));
         return;
       }
@@ -235,7 +244,12 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
 
       sendHtml(
         200,
-        await renderEventPage(await renderer.loadTemplate(req.originalUrl), event, req),
+        await renderEventPage(
+          await renderer.loadTemplate(req.originalUrl),
+          resolved.event,
+          req,
+          resolved.sub,
+        ),
       );
     } catch (err) {
       if (err instanceof Error) renderer.fixStacktrace?.(err);
@@ -320,7 +334,11 @@ function adminDetail(
   };
 }
 
-function eventHead(event: StoredEvent, url: string): { title: string; tags: string } {
+function eventHead(
+  event: StoredEvent,
+  url: string,
+  sub: EventSubpage,
+): { title: string; tags: string } {
   const name = escapeHtml(event.name);
   const description = escapeHtml(`Fill in your availability for ${event.name}.`);
   const tags = [
@@ -338,24 +356,28 @@ function eventHead(event: StoredEvent, url: string): { title: string; tags: stri
     `<meta name="twitter:title" content="${name}" />`,
     `<meta name="twitter:description" content="${description}" />`,
   ].join("\n    ");
-  return { title: `${event.name} · Timeful`, tags };
+  // The OG tags stay on the event's name whatever the shape: an unfurl
+  // identifies the event, while the window title identifies the page.
+  return { title: eventPageTitle(event, sub), tags };
 }
 
 /**
- * Resolves a request path to an event. Everything but `/` is a potential slug;
- * a path separator or a file extension can never be one.
+ * Resolves a request path to an event and the page shape asked for. The three
+ * shapes — `/<slug>`, `/<slug>/view`, `/<slug>/edit/<key>` — all answer with
+ * the same event page (`event-routes.ts` owns the parsing); anything else is
+ * the miss it always was. An edit key that names nobody still serves the page:
+ * the slug is the sole capability, and the page itself answers the question
+ * the key asks.
  */
-async function resolveSlugPath(pathname: string): Promise<StoredEvent | null> {
-  let slug: string;
-  try {
-    slug = decodeURIComponent(pathname.slice(1));
-  } catch {
-    return null; // malformed percent-encoding
-  }
-  if (!slug || slug.includes("/") || slug.includes(".")) return null;
+async function resolveSlugPath(
+  pathname: string,
+): Promise<{ event: StoredEvent; sub: EventSubpage } | null> {
+  const shape = parseEventPath(pathname);
+  if (!shape) return null;
   const links = await readLinks();
-  const id = links[slug];
-  return id ? readEvent(id) : null;
+  const id = links[shape.slug];
+  const event = id ? await readEvent(id) : null;
+  return event ? { event, sub: shape.sub } : null;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { Router } from "express";
-import type { Request, Response } from "express";
+import type { NextFunction, Request, Response } from "express";
 import { requireAdmin } from "../auth.ts";
 import { asRecord, BadRequest, jsonRoute, param } from "../http.ts";
 import { claimSlug, releaseSlug } from "../links.ts";
@@ -36,6 +36,7 @@ import { publicEvent, publicResponse } from "../../src/lib/event.ts";
 // Runtime, like the slug rules: the identity dialog has to reject exactly what
 // this rejects, in the same words (src/lib/user-key.ts).
 import { guestNameProblem, userKey, userKeyFromParam } from "../../src/lib/user-key.ts";
+import { parseEventPath } from "../../src/lib/event-routes.ts";
 import { RESERVED_SUBPATHS } from "../../src/lib/slug-rules.ts";
 
 /**
@@ -720,8 +721,23 @@ async function deleteResponse(
  * Registered last, so the real sub-paths always win. A plain `GET /<slug>/ws`
  * or `GET /<slug>/users/<key>` lands here too: those are WebSocket upgrades,
  * they never reach Express, and a non-upgrade request for them is not a route.
+ *
+ * The page sub-paths — `/<slug>/view`, `/<slug>/edit/<key>` — are not this
+ * router's to answer at all: an exact page shape falls through to the SSR
+ * handler behind it, which applies the same resolve-then-tarpit rule the bare
+ * `/<slug>` gets. Only the exact shapes pass; `/<slug>/view/extra` is a miss
+ * and stays here, so a resolvable slug keeps its ordinary, undelayed 404.
  */
-async function eventScopedCatchAll(req: Request, res: Response): Promise<void> {
+async function eventScopedCatchAll(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  const shape = parseEventPath(req.path);
+  if (shape && shape.sub.kind !== "root") {
+    next();
+    return;
+  }
   const wantsJson = RESERVED_SUBPATHS.has(req.path.split("/")[2] ?? "");
   if (wantsJson) res.locals.jsonRoute = true;
   const miss = () => {

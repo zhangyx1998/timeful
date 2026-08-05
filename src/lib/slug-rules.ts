@@ -41,6 +41,17 @@ export const RESERVED_SUBPATHS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The sub-segments an event's path spends on its own **pages**: `/<slug>/view`
+ * and `/<slug>/edit/<userKey>` (ARCHITECTURE.md § Routing / SSR). Reserved
+ * like the API set above, but kept apart from it on purpose: a miss under one
+ * of these is somebody's *browser* and gets the 404 page, never JSON — which
+ * is exactly the distinction `RESERVED_SUBPATHS` exists to draw. The
+ * event-scoped catch-all passes these through to the page handler instead of
+ * answering them.
+ */
+export const PAGE_SUBPATHS: ReadonlySet<string> = new Set(["view", "edit"]);
+
+/**
  * Letters, digits and hyphens, starting with a letter or a digit. Everything
  * else a path might carry — a slash, a dot, a space, a percent-escape — is out,
  * which is what keeps a slug a single path segment.
