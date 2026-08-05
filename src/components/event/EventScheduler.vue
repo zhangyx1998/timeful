@@ -27,6 +27,7 @@ import ColorLegend from "./ColorLegend.vue";
 import EventFooter from "./EventFooter.vue";
 import EventSettingsDrawer from "./EventSettingsDrawer.vue";
 import GuestIdentityDialog from "./GuestIdentityDialog.vue";
+import GuestWelcomeDialog from "./GuestWelcomeDialog.vue";
 import IdentityCard from "./IdentityCard.vue";
 import ModePills from "./ModePills.vue";
 import OfflineNotice from "./OfflineNotice.vue";
@@ -180,6 +181,7 @@ const {
   guestName,
   editing,
   identityOpen,
+  welcome,
   clearOpen,
   deletingKey,
   deleteError,
@@ -190,6 +192,10 @@ const {
   existingPeople,
   confirmIdentity,
   browseOnly,
+  confirmWelcome,
+  declineWelcome,
+  closeWelcome,
+  closeIdentity,
   clearMine,
   removeRespondent,
   startEditing,
@@ -771,12 +777,23 @@ function onSolo(person: { key: string; displayName: string } | null) {
       @redo="history.redo"
     />
 
+    <!-- A personalized link's greeting, ahead of the generic dialog: its
+         "Not <name>?" is what opens that dialog, blank as always. Closing it
+         answers nothing, so the session falls back to whatever this device
+         would have been without the query. -->
+    <GuestWelcomeDialog
+      :person="welcome"
+      @confirm="confirmWelcome"
+      @decline="declineWelcome"
+      @close="closeWelcome"
+    />
+
     <GuestIdentityDialog
       :open="identityOpen"
       :existing-people="existingPeople"
       @confirm="confirmIdentity"
       @browse="browseOnly"
-      @close="identityOpen = false"
+      @close="closeIdentity"
     />
 
     <ConfirmDialog

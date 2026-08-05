@@ -28,6 +28,7 @@ import {
   type Ref,
 } from "vue";
 import { api, apiError, userPath } from "./api";
+import { consumeEntryName, readEntryName, resolveEntryIdentity } from "./entry-identity";
 import { toAvailabilitySets, toIsoArray, type AvailabilityType, type EventDoc } from "./event";
 import type { RealtimeSession, SavePayload } from "./realtime";
 import { createSaveTransport } from "./save-transport";
@@ -72,6 +73,8 @@ export interface ResponseSession {
   guestName: ComputedRef<string | null>;
   editing: Ref<boolean>;
   identityOpen: Ref<boolean>;
+  /** The person a `?name=` link greeted, while the welcome prompt is up. */
+  welcome: ComputedRef<{ key: string; displayName: string; matched: boolean } | null>;
   clearOpen: Ref<boolean>;
   deletingKey: Ref<string | null>;
   deleteError: Ref<string | null>;
@@ -94,6 +97,10 @@ export interface ResponseSession {
   onFlip(change: { type: AvailabilityType; slots: number[] }): void;
   confirmIdentity(person: RealtimeSession): void;
   browseOnly(): void;
+  confirmWelcome(): void;
+  declineWelcome(): void;
+  closeWelcome(): void;
+  closeIdentity(): void;
   clearMine(): Promise<void>;
   removeRespondent(key: string): Promise<void>;
   startEditing(): void;
@@ -329,6 +336,9 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     identity.value = person;
     // A fresh claim, whatever the last one ended as.
     surrendered.value = false;
+    // Whoever was being held for a possible restore, the visitor has now
+    // answered the question themselves.
+    heldStoredName = null;
     writeStorage(STORAGE_KEYS.guestName, person.displayName);
     identityOpen.value = false;
     dirtySinceConfirm.value = false;
@@ -356,6 +366,10 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
   function browseOnly() {
     engine.flush();
     clearStorage(STORAGE_KEYS.guestName);
+    // "Do not take me as anyone" withdraws the remembered name entirely; a
+    // held identity quietly coming back afterwards would put them straight
+    // back under it.
+    heldStoredName = null;
     identityOpen.value = false;
     awaitingIdentityRefresh = null;
     identity.value = null;
@@ -366,6 +380,85 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     editing.value = false;
     dirtySinceConfirm.value = false;
     options.resetFocus();
+  }
+
+  // --- arriving by a personalized link --------------------------------------
+
+  /**
+   * The raw name a `?name=` link carried, while the welcome prompt is up. Only
+   * ever set to a name that passed `guestNameProblem` at boot; null once the
+   * prompt has been answered or dismissed.
+   */
+  const entryName = ref<string | null>(null);
+
+  /**
+   * A remembered identity held back while the welcome prompt (or the generic
+   * dialog behind its "Not you?" button) is up. The query wins the first move,
+   * but declining it must not have cost the device the person it remembered:
+   * only confirming somebody — or "Just browsing", which purges — settles the
+   * question. Closing either dialog without answering restores this silently,
+   * exactly as a visit with no query would have.
+   */
+  let heldStoredName: string | null = null;
+
+  /**
+   * Who the welcome prompt greets. Derived rather than stored, so a snapshot
+   * arriving while the prompt is up keeps the greeting on the event's own
+   * spelling and the already-answered line honest.
+   */
+  const welcome = computed(() => {
+    const raw = entryName.value;
+    if (raw === null) return null;
+    const person = adopt(raw);
+    return {
+      ...person,
+      matched: options.event.value.responses?.[person.key] !== undefined,
+    };
+  });
+
+  /** The welcome prompt's Continue: the identity dialog's confirm, exactly. */
+  function confirmWelcome() {
+    const person = welcome.value;
+    if (!person) return;
+    entryName.value = null;
+    heldStoredName = null;
+    confirmIdentity({ key: person.key, displayName: person.displayName });
+  }
+
+  /**
+   * "Not <name>?": the greeting was wrong, so ask properly. The generic dialog
+   * opens blank per its own contract — the declined name is not this visitor's
+   * and must not be offered back to them as a prefill.
+   */
+  function declineWelcome() {
+    entryName.value = null;
+    identityOpen.value = true;
+  }
+
+  /** The welcome prompt dismissed without an answer: back to what was. */
+  function closeWelcome() {
+    entryName.value = null;
+    restoreHeldIdentity();
+  }
+
+  /** The generic dialog closed without an answer: likewise. */
+  function closeIdentity() {
+    identityOpen.value = false;
+    restoreHeldIdentity();
+  }
+
+  /**
+   * Takes the remembered identity back up, silently, the way the boot path
+   * does — unless the visitor became somebody in the meantime, in which case
+   * there is nothing to restore and the hold is simply over.
+   */
+  function restoreHeldIdentity() {
+    const stored = heldStoredName;
+    heldStoredName = null;
+    if (stored === null || identity.value !== null) return;
+    identity.value = adopt(stored);
+    loadResponseFor(identity.value.key);
+    editing.value = true;
   }
 
   // A refresh triggered by confirming identity re-seeds the grid, unless the
@@ -541,14 +634,33 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     // A name stored before dashes were illegal cannot be saved under, so it is
     // not a name this page can be. Dropping it asks once, and the key the guest
     // retypes lands on the very record the old spelling pointed at.
-    if (stored && guestNameProblem(stored) === null) {
+    const storedUsable = stored !== "" && guestNameProblem(stored) === null;
+    if (stored && !storedUsable) clearStorage(STORAGE_KEYS.guestName);
+
+    // A personalized link may name the visitor. Ask before believing it —
+    // except when this device already is that person, where there is nothing
+    // to ask. Either way the query is consumed off the address bar, so a
+    // reload does not re-prompt and a copied URL does not carry the name on.
+    const query = readEntryName();
+    const decision = resolveEntryIdentity(
+      query,
+      storedUsable ? stored : null,
+      existingPeople.value,
+    );
+    if (decision.action !== "none") consumeEntryName();
+    if (decision.action === "welcome" && query !== null) {
+      entryName.value = query;
+      heldStoredName = storedUsable ? stored : null;
+      return;
+    }
+
+    if (storedUsable) {
       // A returning guest is not interrupted: their answer is loaded and the
       // grid opens ready to edit.
       identity.value = adopt(stored);
       loadResponseFor(identity.value.key);
       editing.value = true;
     } else {
-      if (stored) clearStorage(STORAGE_KEYS.guestName);
       identityOpen.value = true;
     }
   });
@@ -562,6 +674,7 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     guestName,
     editing,
     identityOpen,
+    welcome,
     clearOpen,
     deletingKey,
     deleteError,
@@ -576,6 +689,10 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     onFlip,
     confirmIdentity,
     browseOnly,
+    confirmWelcome,
+    declineWelcome,
+    closeWelcome,
+    closeIdentity,
     clearMine,
     removeRespondent,
     startEditing,
