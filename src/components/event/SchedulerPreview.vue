@@ -117,9 +117,10 @@ const model = computed(() => preview.value.model);
   gap: 0.75rem;
 }
 
-/* Space the scheduler's view switch will occupy, so the chart does not jump. */
+/* Space the scheduler's view switch will occupy — its 2.25rem minimum plus
+   its border — so the chart does not jump at mount. */
 .bar {
-  height: 2.25rem;
+  height: 2.375rem;
   margin: 0.75rem 0 1.75rem;
 }
 
