@@ -1617,6 +1617,13 @@ defineExpose({ measure, clearSelection });
         >
           <div ref="sheet" class="sheet">
             <div ref="gutter" class="gutter">
+              <!-- The start-edge fade rides the gutter it borders (see its
+                   rule): gutter, fade and columns then translate as one
+                   assembly during the platform's rubber-band, instead of the
+                   columns sliding past a fade that stayed put. Same
+                   visibility rule the stage-level fade had: only while
+                   something is actually clipped behind the gutter. -->
+              <div v-if="moreBefore" class="gutter-fade" aria-hidden="true" />
               <div class="gutter-head" :style="{ height: `${HEADER_HEIGHT}px` }" />
               <template v-for="(row, index) in model.rows" :key="`label-${index}`">
                 <div
@@ -1732,9 +1739,11 @@ defineExpose({ measure, clearSelection });
           </div>
         </div>
 
-        <!-- Over the chart, not beside it: the fades and the knobs live outside
-             the scrollport so they stay put while the track runs under them. -->
-        <div v-if="moreBefore" class="edge edge--start" aria-hidden="true" />
+        <!-- Over the chart, not beside it: the end fade and the knobs live
+             outside the scrollport so they stay put while the track runs
+             under them. The start fade is different — it decorates the
+             gutter's boundary, so it lives on the gutter (see above) and
+             moves with it. -->
         <div v-if="moreAfter" class="edge edge--end" aria-hidden="true" />
 
         <button
@@ -1854,17 +1863,18 @@ defineExpose({ measure, clearSelection });
    natural height and the page scrolls past it. On a phone the chart is given a
    bounded height instead and this scrolls both ways, like a spreadsheet.
 
-   Overscroll is per axis, and deliberately so. The horizontal one is `none`:
-   `contain` already kept a swipe off the end of the track from becoming the
-   browser's back gesture, but it still allowed the platform's rubber-band —
-   and during that bounce the compositor translates the scrollport's contents
-   wholesale, sticky time gutter included, so day columns slid out from under
-   the gutter and past the stationary edge fade. No stationary mask can cover
-   that without also covering the gutter's own labels, and un-sticking the
-   gutter into an overlay would re-create the synced-scrollports design this
-   chart exists to avoid — so the bounce goes instead, on this one axis of
-   this one scroller. Vertical is untouched and chains to the page: a wheel
-   over the chart is the page's gesture, and the page keeps its own feel. */
+   Containment is per axis, and deliberately so. On the horizontal one it keeps
+   a swipe that runs off the end of the track from turning into the browser's
+   back gesture — while leaving the platform's rubber-band alone, which is a
+   boundary cue worth keeping: the bounce is how a fling says "this is the
+   end". (During that bounce the compositor translates the scrollport's
+   contents wholesale, sticky gutter included — which is why the start-edge
+   fade rides the gutter rather than sitting stationary over the stage; see
+   `.gutter-fade`.) Applied to both axes, containment would also swallow a
+   vertical wheel: `overflow-y: hidden` still makes this a scroll container on
+   that axis, and a contained one refuses to hand the scroll on to the page —
+   so a wheel over the chart would do nothing at all. Vertical chains to the
+   page, which is whose gesture it is. */
 .viewport {
   --focus-ring-inset: calc(var(--focus-ring-offset) * -1);
 
@@ -1873,7 +1883,7 @@ defineExpose({ measure, clearSelection });
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  overscroll-behavior-x: none;
+  overscroll-behavior-x: contain;
   scrollbar-width: none;
 }
 
@@ -2063,9 +2073,11 @@ defineExpose({ measure, clearSelection });
   border-radius: var(--radius-pill);
 }
 
-/* The clipped edge, dissolved rather than cut: with the peeked column showing
-   through it, the grid reads as continuing under the knob instead of ending.
-   Inert — the cells beneath it take the pointer. */
+/* The clipped end edge, dissolved rather than cut: with the peeked column
+   showing through it, the grid reads as continuing under the knob instead of
+   ending. Inert — the cells beneath it take the pointer. Stationary is right
+   for this edge: during a rubber-band the columns simply slide under it, the
+   ordinary look of content scrolling beneath a fade. */
 .edge {
   position: absolute;
   top: 0;
@@ -2075,14 +2087,31 @@ defineExpose({ measure, clearSelection });
   pointer-events: none;
 }
 
-.edge--start {
-  left: var(--gutter);
-  background: linear-gradient(to right, var(--color-bg), transparent);
-}
-
 .edge--end {
   right: 0;
   background: linear-gradient(to left, var(--color-bg), transparent);
+}
+
+/* The clipped start edge, riding the gutter it borders instead of sitting
+   stationary over the stage. During the platform's rubber-band the compositor
+   translates the scrollport's contents wholesale, sticky gutter included — a
+   stationary fade sat still while the boundary it decorated moved, and the
+   columns slid visibly past it. Attached here, gutter, fade and columns
+   translate as one assembly, and what a bounce exposes at the container's
+   border is plain page background: the native rubber-band look, which is the
+   boundary cue itself. Starts exactly at the gutter's right border, so the
+   hour labels are never tinted; inert like the stage-level fade it replaces,
+   so the cells beneath it take the pointer; painted in the gutter's own
+   stacking level, which sits above the header and the cells exactly as the
+   old z-index did. */
+.gutter-fade {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 100%;
+  width: var(--fade);
+  pointer-events: none;
+  background: linear-gradient(to right, var(--color-bg), transparent);
 }
 
 /* --- chart --------------------------------------------------------------- */
