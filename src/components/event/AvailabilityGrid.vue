@@ -10,13 +10,19 @@ import {
   columnWidthFor,
   edgeGlideStep,
   edgeScrollDirection,
+  GAP_HEIGHT,
+  GAP_WIDTH,
   geometryFor,
+  HEADER_HEIGHT,
   heatmapColor,
   hitTest,
   inRectangle,
   isBestTime,
+  MIN_COL_WIDTH,
   overlayCenterX,
+  PEEK,
   rectangleSlots,
+  rowHeightFor,
   scrollEdges,
   scrollStepFor,
   selectionCorners,
@@ -76,12 +82,6 @@ defineSlots<{
   foot?: () => unknown;
 }>();
 
-const HOUR_HEIGHT = 60;
-const GAP_WIDTH = 16;
-const GAP_HEIGHT = 28;
-const MIN_COL_WIDTH = 34;
-/** Height reserved for the column headers; the gutter's spacer matches it. */
-const HEADER_HEIGHT = 42;
 /** Matches `.tooltip { max-width }`; used to keep the bubble on screen. */
 const TOOLTIP_MAX_WIDTH = 180;
 /** How long it waits to be used before it takes itself away. */
@@ -90,8 +90,6 @@ const MENU_LINGER_MS = 5000;
 const MENU_LINGER_TOUCH_MS = 12000;
 /** How far a finger may travel and still be a tap; the browser's pointercancel usually settles it first. */
 const TAP_SLOP = 12;
-/** How much of the neighbouring column shows past the clipped edge. */
-const PEEK = 15;
 /** How far a mouse has to travel before it is panning rather than clicking. */
 const PAN_THRESHOLD = 5;
 /** How deep a drag reaches before the track comes by itself: roughly the fade's width, wider for a finger. */
@@ -136,9 +134,7 @@ const reducedMotion = ref(false);
 /** Whether the pointer is a finger: the menu is sized for one if it is. */
 const coarsePointer = ref(false);
 
-const rowHeight = computed(() =>
-  Math.max(14, Math.round((HOUR_HEIGHT * props.model.slotMinutes) / 60)),
-);
+const rowHeight = computed(() => rowHeightFor(props.model.slotMinutes));
 
 const columns = computed(() => props.model.columns);
 

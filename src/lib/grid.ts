@@ -763,6 +763,22 @@ export interface ColumnWidthOptions {
   minWidth: number;
 }
 
+// Chart dimensions, shared by the live grid and the SSR preview so the two
+// cannot drift apart (ARCHITECTURE.md § Routing / SSR).
+export const HOUR_HEIGHT = 60;
+export const GAP_WIDTH = 16;
+export const GAP_HEIGHT = 28;
+export const MIN_COL_WIDTH = 34;
+/** Height reserved for the column headers; the gutter's spacer matches it. */
+export const HEADER_HEIGHT = 42;
+/** How much of the neighbouring column shows past the clipped edge. */
+export const PEEK = 15;
+
+/** A slot row's height, floored so tiny increments stay visible. */
+export function rowHeightFor(slotMinutes: number): number {
+  return Math.max(14, Math.round((HOUR_HEIGHT * slotMinutes) / 60));
+}
+
 /** The width below which the event page stops being a document and becomes an app. */
 export const COMPACT_MAX_WIDTH = 820;
 
