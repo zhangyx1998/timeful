@@ -1148,6 +1148,11 @@ function onSolo(person: { key: string; displayName: string } | null) {
   .compact .side {
     flex: none;
     width: 100%;
+    /* The desktop cap that keeps the column from resizing under its cards
+       (see .side) would otherwise pin this to 14rem — but here it is not a
+       column beside the chart, it is the identity bar across the bottom of
+       the screen, and it takes the full width back. */
+    max-width: none;
   }
 
 }
