@@ -102,6 +102,44 @@ function replaceOnce(html: string, marker: string, value: string): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * Replaces each same-origin stylesheet `<link>` in the built template with an
+ * inline `<style>` block carrying the asset's contents
+ * (ARCHITECTURE.md § Routing / SSR).
+ *
+ * Every served page is dynamic HTML — the document caches nothing either way —
+ * so shipping the one built stylesheet inside it costs a compressed ~13 kB and
+ * removes the render-blocking fetch entirely: no flash of unstyled content,
+ * and no way for a proxy hiccup, a poisoned cache, or a half-finished deploy
+ * to leave the page styleless. The asset itself stays in `client/assets/` and
+ * keeps being served; nothing references it any more.
+ *
+ * A link whose asset cannot be read is left as the link it was: a page that
+ * can still try to fetch its styles beats one with neither. Cross-origin
+ * hrefs (none today) are not ours to read and are left alone too.
+ */
+export async function inlineStylesheets(
+  template: string,
+  clientDir: string,
+): Promise<string> {
+  const links = template.match(/<link\b[^>]*\brel="stylesheet"[^>]*>/g) ?? [];
+  let out = template;
+  for (const tag of links) {
+    const href = /\bhref="([^"]*)"/.exec(tag)?.[1];
+    if (!href?.startsWith("/")) continue;
+    let css: string;
+    try {
+      css = await fs.readFile(path.join(clientDir, href), "utf8");
+    } catch {
+      continue;
+    }
+    // Never inline something that could close the element early.
+    if (css.includes("</style")) continue;
+    out = replaceOnce(out, tag, `<style>${css.trim()}</style>`);
+  }
+  return out;
+}
+
+/**
  * Production renderer: static files from the client build, `render` from the
  * SSR bundle. Both are read from `assets`, which is resolved relative to the
  * running module (see paths.ts) — never from the working directory.
@@ -123,7 +161,13 @@ export function createStaticRenderer(assets: AssetPaths): Renderer {
       app.use(express.static(assets.clientDir, { index: false }));
     },
     async loadTemplate() {
-      templateCache ??= await fs.readFile(assets.templateFile, "utf8");
+      // The stylesheet is folded in once, here, so both the '/' shell and
+      // every SSR event page serve it inline; the transformed result is what
+      // gets cached.
+      templateCache ??= await inlineStylesheets(
+        await fs.readFile(assets.templateFile, "utf8"),
+        assets.clientDir,
+      );
       return templateCache;
     },
     async loadRender() {
