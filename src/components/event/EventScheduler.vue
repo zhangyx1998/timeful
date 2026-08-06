@@ -1030,12 +1030,18 @@ function onSolo(person: { key: string; displayName: string } | null) {
 }
 
 /* Who you are, then who else answered — the column beside the grid, in the
-   order you ask the questions. */
+   order you ask the questions. The width is pinned outright, not merely given
+   as a flex basis: a basis still yields to a child's min-content width, so a
+   card appearing with one long unwrappable line — a pinned slot's label, an
+   admin tool, a sync state — would widen the whole column and shove the chart
+   narrower mid-use. Cards wrap or truncate inside; the column never moves. */
 .side {
   display: flex;
   flex: 0 0 14rem;
   flex-direction: column;
   gap: 0.6rem;
+  min-width: 0;
+  max-width: 14rem;
 }
 
 /* --- the phone layout ---------------------------------------------------- */
