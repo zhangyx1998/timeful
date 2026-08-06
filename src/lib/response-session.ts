@@ -73,14 +73,15 @@ export interface ResponseSession {
   guestName: ComputedRef<string | null>;
   editing: Ref<boolean>;
   identityOpen: Ref<boolean>;
-  /**
-   * Whether the open identity dialog is a *landing* — the page's first
-   * question, whose quiet way out is "View only" — rather than a question the
-   * visitor asked for mid-page, whose way out stays "Just browsing".
-   */
-  identityLanding: Ref<boolean>;
   /** The person a landing greeted, while the welcome prompt is up. */
-  welcome: ComputedRef<{ key: string; displayName: string; matched: boolean } | null>;
+  welcome: ComputedRef<{
+    key: string;
+    displayName: string;
+    matched: boolean;
+    returning: boolean;
+    /** The link's greeting decoration; never part of the identity. */
+    prefix: string | null;
+  } | null>;
   clearOpen: Ref<boolean>;
   deletingKey: Ref<string | null>;
   deleteError: Ref<string | null>;
@@ -386,27 +387,31 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
   // --- landing --------------------------------------------------------------
 
   /**
-   * The name the landing greets, while the welcome prompt is up. Always a name
-   * that passed `guestNameProblem`; null once the prompt has been answered or
+   * The name the landing greets — and the link's greeting decoration, which
+   * exists only here — while the welcome prompt is up. Always a name that
+   * passed `guestNameProblem`; null once the prompt has been answered or
    * dismissed.
    */
-  const pendingName = ref<string | null>(null);
-
-  /** See `ResponseSession.identityLanding`. */
-  const identityLanding = ref(false);
+  const pendingGreeting = ref<{ name: string; prefix: string | null } | null>(null);
 
   /**
    * Who the welcome prompt greets. Derived rather than stored, so a snapshot
    * arriving while the prompt is up keeps the greeting on the event's own
-   * spelling and the already-answered line honest.
+   * spelling and the already-answered line honest. `returning` is what turns
+   * "Welcome" into "Welcome back": the page has met this person — their key
+   * already answered, or this device remembered the name.
    */
   const welcome = computed(() => {
-    const raw = pendingName.value;
-    if (raw === null) return null;
-    const person = adopt(raw);
+    const greeting = pendingGreeting.value;
+    if (greeting === null) return null;
+    const person = adopt(greeting.name);
+    const matched = options.event.value.responses?.[person.key] !== undefined;
+    const stored = readStorage(STORAGE_KEYS.guestName)?.trim() ?? "";
     return {
       ...person,
-      matched: options.event.value.responses?.[person.key] !== undefined,
+      matched,
+      returning: matched || (stored !== "" && userKey(stored) === person.key),
+      prefix: greeting.prefix,
     };
   });
 
@@ -414,7 +419,7 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
   function confirmWelcome() {
     const person = welcome.value;
     if (!person) return;
-    pendingName.value = null;
+    pendingGreeting.value = null;
     confirmIdentity({ key: person.key, displayName: person.displayName });
   }
 
@@ -427,8 +432,7 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
    * or browses.
    */
   function declineWelcome() {
-    pendingName.value = null;
-    identityLanding.value = false;
+    pendingGreeting.value = null;
     identityOpen.value = true;
   }
 
@@ -440,7 +444,7 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
    * above navigates accordingly.
    */
   function closeWelcome() {
-    pendingName.value = null;
+    pendingGreeting.value = null;
   }
 
   function closeIdentity() {
@@ -448,7 +452,7 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
   }
 
   function viewOnly() {
-    pendingName.value = null;
+    pendingGreeting.value = null;
     identityOpen.value = false;
   }
 
@@ -475,7 +479,7 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
       identity.value !== null &&
       userKeyFromParam(entry.key) === identity.value.key
     ) {
-      pendingName.value = null;
+      pendingGreeting.value = null;
       identityOpen.value = false;
       if (!editing.value) startEditing();
       return;
@@ -490,16 +494,15 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     if (editing.value) stopEditing();
     switch (decision.action) {
       case "view":
-        pendingName.value = null;
+        pendingGreeting.value = null;
         identityOpen.value = false;
         return;
       case "welcome":
         identityOpen.value = false;
-        pendingName.value = decision.displayName;
+        pendingGreeting.value = { name: decision.displayName, prefix: decision.prefix };
         return;
       case "ask":
-        pendingName.value = null;
-        identityLanding.value = true;
+        pendingGreeting.value = null;
         identityOpen.value = true;
         return;
     }
@@ -606,10 +609,9 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     // confirmation a landing gives it — and anyone else is asked properly.
     const stored = readStorage(STORAGE_KEYS.guestName)?.trim() ?? "";
     if (stored && guestNameProblem(stored) === null) {
-      pendingName.value = stored;
+      pendingGreeting.value = { name: stored, prefix: null };
       return;
     }
-    identityLanding.value = false;
     identityOpen.value = true;
   }
 
@@ -657,8 +659,6 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
   }
 
   function changeName() {
-    // Asked for mid-page: the dialog keeps "Just browsing", not "View only".
-    identityLanding.value = false;
     identityOpen.value = true;
   }
 
@@ -697,7 +697,6 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     guestName,
     editing,
     identityOpen,
-    identityLanding,
     welcome,
     clearOpen,
     deletingKey,

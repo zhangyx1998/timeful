@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  ENTRY_NAME_PARAM,
   inviteLink,
+  MAX_GREETING_PREFIX_LENGTH,
+  normalizeGreetingPrefix,
+  readEntryQuery,
   resolveEntryIdentity,
   type EntryRoute,
   type KnownPerson,
@@ -39,6 +41,7 @@ describe("resolveEntryIdentity on the root landing", () => {
       key: "grace-hopper",
       displayName: "Grace Hopper",
       matched: false,
+      prefix: null,
     });
   });
 
@@ -48,6 +51,7 @@ describe("resolveEntryIdentity on the root landing", () => {
       key: "ada-lovelace",
       displayName: "Ada  Lovelace",
       matched: false,
+      prefix: null,
     });
   });
 
@@ -59,6 +63,7 @@ describe("resolveEntryIdentity on the root landing", () => {
       key: "ada-lovelace",
       displayName: "Ada Lovelace",
       matched: false,
+      prefix: null,
     });
   });
 
@@ -79,6 +84,7 @@ describe("resolveEntryIdentity on the root landing", () => {
       key: "grace-hopper",
       displayName: "Grace Hopper",
       matched: false,
+      prefix: null,
     });
   });
 
@@ -94,6 +100,7 @@ describe("resolveEntryIdentity on the root landing", () => {
       key: "ada-lovelace",
       displayName: "Ada Lovelace",
       matched: true,
+      prefix: null,
     });
   });
 
@@ -104,6 +111,7 @@ describe("resolveEntryIdentity on the root landing", () => {
       key: "ada-lovelace",
       displayName: "Ada Lovelace",
       matched: true,
+      prefix: null,
     });
   });
 });
@@ -115,6 +123,7 @@ describe("resolveEntryIdentity on an edit landing", () => {
       key: "ada-lovelace",
       displayName: "Ada Lovelace",
       matched: true,
+      prefix: null,
     });
   });
 
@@ -124,6 +133,7 @@ describe("resolveEntryIdentity on an edit landing", () => {
       key: "ada-lovelace",
       displayName: "Ada Lovelace",
       matched: true,
+      prefix: null,
     });
   });
 
@@ -133,6 +143,7 @@ describe("resolveEntryIdentity on an edit landing", () => {
       key: "grace-hopper",
       displayName: "Grace Hopper",
       matched: false,
+      prefix: null,
     });
   });
 
@@ -142,6 +153,7 @@ describe("resolveEntryIdentity on an edit landing", () => {
       key: "grace-hopper",
       displayName: "grace hopper",
       matched: false,
+      prefix: null,
     });
   });
 
@@ -152,6 +164,7 @@ describe("resolveEntryIdentity on an edit landing", () => {
       key: "ada-lovelace",
       displayName: "ada lovelace",
       matched: true,
+      prefix: null,
     });
   });
 
@@ -164,15 +177,58 @@ describe("resolveEntryIdentity on an edit landing", () => {
   });
 });
 
-describe("inviteLink", () => {
-  const base = "https://timeful.example/happy-hour";
-
-  it("appends the URL-encoded name to the canonical URL", () => {
-    expect(inviteLink(base, "Ada Lovelace")).toBe(`${base}?name=Ada%20Lovelace`);
+describe("the greeting prefix", () => {
+  it("is decoration: dresses only a greeting sourced from the link itself", () => {
+    expect(
+      resolveEntryIdentity(
+        { kind: "root", queryName: "Ada Lovelace", queryPrefix: "Prof." },
+        null,
+        [ada],
+      ),
+    ).toEqual({
+      action: "welcome",
+      key: "ada-lovelace", // the key of the bare name — never the prefix
+      displayName: "Ada Lovelace",
+      matched: true,
+      prefix: "Prof.",
+    });
+    // A greeting that fell back to the remembered name is not the invitee's,
+    // so the link's decoration does not transfer to it.
+    const fallback = resolveEntryIdentity(
+      { kind: "root", queryName: "Ada-Lovelace", queryPrefix: "Prof." },
+      "Grace Hopper",
+      nobody,
+    );
+    expect(fallback).toMatchObject({ action: "welcome", prefix: null });
   });
 
-  it("trims before encoding", () => {
-    expect(inviteLink(base, "  Ada Lovelace  ")).toBe(`${base}?name=Ada%20Lovelace`);
+  it("is validated loosely and dropped rather than refused", () => {
+    expect(normalizeGreetingPrefix("  Prof.  ")).toBe("Prof.");
+    expect(normalizeGreetingPrefix("")).toBeNull();
+    expect(normalizeGreetingPrefix("   ")).toBeNull();
+    expect(normalizeGreetingPrefix(null)).toBeNull();
+    expect(normalizeGreetingPrefix("Prof-Dr")).toBeNull(); // the dash rule
+    expect(normalizeGreetingPrefix("a".repeat(MAX_GREETING_PREFIX_LENGTH + 1))).toBeNull();
+    expect(normalizeGreetingPrefix("a".repeat(MAX_GREETING_PREFIX_LENGTH))).toBe(
+      "a".repeat(MAX_GREETING_PREFIX_LENGTH),
+    );
+  });
+});
+
+describe("inviteLink and readEntryQuery — the wire form", () => {
+  const base = "https://timeful.example/happy-hour";
+
+  /** The query the producer put on a link, as the landing would read it. */
+  function queryOf(link: string): string {
+    return new URL(link).search;
+  }
+
+  it("produces one bare URL-safe token, visibly opaque", () => {
+    const link = inviteLink(base, "Ada Lovelace");
+    const token = queryOf(link).slice(1);
+    expect(link.startsWith(`${base}?`)).toBe(true);
+    expect(token).toMatch(/^[A-Za-z0-9_-]+$/); // no '=', '&', '%', padding
+    expect(token).not.toContain("Ada");
   });
 
   it("hands out the bare canonical URL for a blank name", () => {
@@ -185,16 +241,79 @@ describe("inviteLink", () => {
     expect(inviteLink(base, "a".repeat(MAX_GUEST_NAME_LENGTH + 1))).toBe(base);
   });
 
-  it("round-trips through the entry decision to a welcome for that name", () => {
+  it("round-trips the name, trimmed, through the token", () => {
+    expect(readEntryQuery(queryOf(inviteLink(base, "  Ada Lovelace  ")))).toEqual({
+      name: "Ada Lovelace",
+      prefix: null,
+    });
+  });
+
+  it("round-trips the prefix, and omits it when blank or unusable", () => {
+    expect(readEntryQuery(queryOf(inviteLink(base, "Ada Lovelace", "Prof.")))).toEqual({
+      name: "Ada Lovelace",
+      prefix: "Prof.",
+    });
+    for (const dropped of ["", "  ", "Prof-Dr", "a".repeat(21)]) {
+      expect(readEntryQuery(queryOf(inviteLink(base, "Ada Lovelace", dropped)))).toEqual(
+        { name: "Ada Lovelace", prefix: null },
+      );
+    }
+  });
+
+  it("survives UTF-8 far beyond ASCII", () => {
+    for (const name of ["山田 太郎", "Ada 🚀 Lovelace", "Élodie Ström"]) {
+      expect(readEntryQuery(queryOf(inviteLink(base, name))).name).toBe(name);
+    }
+  });
+
+  it("still consumes the plain ?name= form", () => {
+    expect(readEntryQuery("?name=Ada%20Lovelace")).toEqual({
+      name: "Ada Lovelace",
+      prefix: null,
+    });
+    expect(readEntryQuery("name=Ada%20Lovelace&prefix=Dr.")).toEqual({
+      name: "Ada Lovelace",
+      prefix: "Dr.",
+    });
+  });
+
+  it("reads anything undecodable as no query at all", () => {
+    expect(readEntryQuery("")).toEqual({ name: null, prefix: null });
+    expect(readEntryQuery("?")).toEqual({ name: null, prefix: null });
+    // Not base64url at all, or valid base64 of bytes that are not UTF-8 or
+    // not the inner query: silence, never an error.
+    expect(readEntryQuery("?not~a~token").name).toBeNull();
+    expect(readEntryQuery("?_w").name).toBeNull(); // 0xFF: invalid UTF-8
+    expect(readEntryQuery("?aGVsbG8").name).toBeNull(); // "hello": no params
+    expect(readEntryQuery("?x").name).toBeNull(); // impossible base64 length
+  });
+
+  it("round-trips through the entry decision to the prefixed welcome", () => {
     // The producer and the consumer are two halves of one contract: whatever
-    // the invite dialog generates, the root landing greets that invitee.
-    const url = new URL(inviteLink(base, "Ada Lovelace"));
-    const arrived = url.searchParams.get(ENTRY_NAME_PARAM);
-    expect(resolveEntryIdentity(root(arrived), null, nobody)).toEqual({
+    // the invite dialog generates, the root landing greets that invitee —
+    // decorated, but filed under the bare name's key.
+    const greeting = readEntryQuery(queryOf(inviteLink(base, "ada  LOVELACE", "Dr.")));
+    expect(
+      resolveEntryIdentity(
+        { kind: "root", queryName: greeting.name, queryPrefix: greeting.prefix },
+        null,
+        [ada],
+      ),
+    ).toEqual({
       action: "welcome",
       key: "ada-lovelace",
       displayName: "Ada Lovelace",
-      matched: false,
+      matched: true,
+      prefix: "Dr.",
     });
+  });
+
+  it("treats a token carrying an unusable name as absent at the decision", () => {
+    // has-dash by hand-crafted token: the name survives the wire but fails
+    // the guest-name rules, so the landing behaves as if there were no query.
+    expect(readEntryQuery("?bmFtZT1BZGEtTG92ZWxhY2U").name).toBe("Ada-Lovelace");
+    expect(
+      resolveEntryIdentity(root("Ada-Lovelace"), null, nobody),
+    ).toEqual({ action: "ask" });
   });
 });

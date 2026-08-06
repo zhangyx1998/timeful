@@ -48,7 +48,7 @@ import {
   getScheduleTimezoneOffset,
   getTimezoneReferenceDateForEvent,
 } from "../../lib/dates";
-import { ENTRY_NAME_PARAM, type EntryRoute } from "../../lib/entry-identity";
+import { readEntryQuery, type EntryRoute } from "../../lib/entry-identity";
 import { buildGrid, buildResponseIndex, maxRespondents, snapshotSlots } from "../../lib/grid";
 import type { EventDoc } from "../../lib/event";
 import { useUndoHistory } from "../../lib/history";
@@ -183,7 +183,6 @@ const {
   guestName,
   editing,
   identityOpen,
-  identityLanding,
   welcome,
   clearOpen,
   deletingKey,
@@ -221,8 +220,12 @@ const entryRoute = computed<EntryRoute>(() => {
   if (route.name === "event-view") return { kind: "view" };
   if (route.name === "event-edit")
     return { kind: "edit", key: String(route.params.userKey ?? "") };
-  const query = route.query[ENTRY_NAME_PARAM];
-  return { kind: "root", queryName: typeof query === "string" ? query : null };
+  // The raw query string, because an invite link's query is one bare token
+  // (`lib/entry-identity.ts`) that vue-router's parsed `query` would garble.
+  const path = route.fullPath.split("#")[0] ?? "";
+  const mark = path.indexOf("?");
+  const greeting = readEntryQuery(mark >= 0 ? path.slice(mark + 1) : "");
+  return { kind: "root", queryName: greeting.name, queryPrefix: greeting.prefix };
 });
 
 // URL → state: the mount is an arrival, and so is every later route change —
@@ -843,6 +846,7 @@ function onSolo(person: { key: string; displayName: string } | null) {
          answers nothing — the group view shows, and the URL follows. -->
     <GuestWelcomeDialog
       :person="welcome"
+      :event-name="event.name"
       @confirm="confirmWelcome"
       @decline="declineWelcome"
       @view="viewOnly"
@@ -852,10 +856,8 @@ function onSolo(person: { key: string; displayName: string } | null) {
     <GuestIdentityDialog
       :open="identityOpen"
       :existing-people="existingPeople"
-      :landing="identityLanding"
       @confirm="confirmIdentity"
       @browse="browseOnly"
-      @view="viewOnly"
       @close="closeIdentity"
     />
 

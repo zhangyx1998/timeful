@@ -17,12 +17,6 @@
  * "Just browsing" is not the same as dismissing the dialog: it says "do not
  * take me as anyone", which has to drop whatever identity the page was holding,
  * so it gets its own event. Closing (Escape, the backdrop, the X) only closes.
- *
- * As a *landing* (§ Guest UX) — the page's own first question, not one the
- * visitor asked for — the quiet exit is "View only" instead: the same refusal
- * to be anyone, without the purge, because somebody who was never asked before
- * has withdrawn nothing. Reached mid-page ("Not <name>?", switching person,
- * the add-respondent row) it keeps "Just browsing" exactly as it was.
  */
 import { computed, ref, watch } from "vue";
 import Button from "../ui/Button.vue";
@@ -49,17 +43,14 @@ const props = withDefaults(
     open: boolean;
     existingPeople: KnownPerson[];
     dismissible?: boolean;
-    /** Landing: the ghost exit is "View only" (`view`), not "Just browsing". */
-    landing?: boolean;
   }>(),
-  { dismissible: true, landing: false },
+  { dismissible: true },
 );
 
 const emit = defineEmits<{
   confirm: [person: KnownPerson];
   close: [];
   browse: [];
-  view: [];
 }>();
 
 /**
@@ -190,10 +181,7 @@ function pick(person: KnownPerson) {
       </div>
 
       <div class="actions">
-        <Button v-if="landing" variant="ghost" @click="emit('view')">
-          View only
-        </Button>
-        <Button v-else-if="dismissible" variant="ghost" @click="emit('browse')">
+        <Button v-if="dismissible" variant="ghost" @click="emit('browse')">
           Just browsing
         </Button>
         <!-- The name is the only part of this label that can be any length, so
