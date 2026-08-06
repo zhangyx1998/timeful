@@ -248,6 +248,13 @@ there dimmed.
 `index.html` is duplicated by hand in the standalone 404 page in
 `server/app.ts`; if you change one, change the other.
 
+The browser chrome's tint follows `<meta name="theme-color">`, and the browser
+takes the *first* such tag whose media query matches. The static pair in the
+head carries `prefers-color-scheme` media queries, which cannot see
+`data-theme` — so `src/lib/theme-color.ts` applies an override by *prepending*
+a tag with no media attribute, which always matches and therefore always wins.
+Removing it falls back to the static pair.
+
 ### Mobile matters
 
 Every view has to work at 360px wide: tap targets ≥ 44px, no horizontal page
@@ -268,6 +275,16 @@ Generated slugs are the only thing protecting an event. Do not log them, do not
 put them in error messages, and do not add anything that would let an
 unauthenticated caller enumerate events. Misses go through the tarpit for that
 reason; see [the security model](/reference/architecture#security).
+
+### Comments
+
+Let code self-explain; keep comments to the absolute minimum, and put detail in
+these docs instead. A comment earns its line only when it names a genuine
+non-obvious constraint the code cannot express — a browser quirk, a load-bearing
+order, a security invariant — in one short line, ideally citing the docs section
+that explains it ("ARCHITECTURE.md § X"). No narrative module headers, no
+rationale paragraphs, no history. When you find yourself writing the second
+sentence, move the substance into the right docs page and leave the pointer.
 
 ### Commits
 

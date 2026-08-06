@@ -536,6 +536,13 @@ Rejected with `400` and a message:
 `ifNeeded` entries that also appear in `availability` are dropped —
 availability wins, so the two sets are always disjoint.
 
+On `/​<slug>/users/<userKey>` routes the key validates **before** the slug
+resolves, and that order is load-bearing: an illegal key is a fast `400` on
+the request's own merits. Resolved first, an illegal key under an unknown slug
+would turn into a tarpitted `404`, and one under a valid slug would cost a
+links and event read before being refused. Pinned by
+`server/routes/user-key-order.test.ts`.
+
 #### Slugs on create
 
 A slug claim happens **inside** the `links.json` file lock, so two concurrent
@@ -861,6 +868,15 @@ out after 15s and counts as a transport failure.
 coalescing, retry, baselines and era counter all work off a single `save`
 promise; the transport is a wrapper around that promise, not a change to it, and
 the four indicator states mean exactly what they meant before over either pipe.
+
+**A leaving page flushes its debounce.** Vue unmount hooks never run when the
+document itself goes, so `response-session.ts` listens for `pagehide` (desktop
+unload and bfcache entry) and `visibilitychange → hidden` (the only exit signal
+mobile browsers fire reliably) and flushes any pending edit as a REST `PUT`
+with fetch's `keepalive`, which lets the request outlive its document. Bodies
+are kept under a 60 KB guard — `keepalive` caps in-flight bodies at 64 KB, and
+over the guard the flush falls back to a plain fetch, since a request that
+might be cut short beats one the browser refuses to start.
 
 #### The page
 
@@ -1366,6 +1382,13 @@ muted monospace line under the generic message.
   mutation natively — do not reintroduce `new Set(...)` reassignment.
 - `dates` are UTC day-start instants, one per column; the client derives the
   start and end hours from `dates[0]` and `duration`.
+- **A window crossing local midnight renders as two stacked blocks per column**
+  (`src/lib/grid.ts`): the top block is the *tail* of the previous day's window
+  (00:00 to the local end), the bottom the *head* of the day's own (local start
+  to 24:00), with one spillover column appended after each crossing date — so
+  the first column's top block is dead. Rows step directly in `timeIncrement`,
+  and the block boundary is the first slot boundary at or after local midnight,
+  which keeps the split slot-aligned in half-hour timezones.
 - Days-of-week events map onto a fixed reference week, **2018-06-17 to
   2018-06-24**, via `dateToDowDate`. It is arbitrary and load-bearing: stored
   DOW events reference it.
@@ -1427,7 +1450,10 @@ muted monospace line under the generic message.
 - A resize commits on every step, so its undo is a record that **grows** rather
   than a snapshot taken once (`selectionStep` in `src/lib/grid.ts`): a cell is
   recorded the first time the rectangle takes it in and never again, since after
-  that what it holds is the selection's own doing. Cancelling therefore restores
+  that what it holds is the selection's own doing. A plain drag, by contrast,
+  snapshots once at commit time, immediately before the emit — valid because
+  nothing the guest owns changes while the drag runs; the marks move when the
+  commit is emitted, not before. Cancelling therefore restores
   the state the tap interrupted however far the handles travelled, and a deletion
   region dragged over a mixed block puts each mark back as its own kind.
 - **Undo and redo are one stack, and it belongs to the edit session**
@@ -1513,7 +1539,11 @@ muted monospace line under the generic message.
   if-needed if they are free throughout but qualified anywhere, and available
   only if every cell is an unqualified yes — so "4 of 9 free" is four people who
   can make the whole span. A one-cell region is exactly the old slot reading,
-  and `slotDigest` is that function with one slot in it. The card does not
+  and `slotDigest` is that function with one slot in it. The digest's name cap
+  is a choice between two readings, not a truncation: under it everybody is
+  named, crosses included — three "can't make it" names are informative — while
+  over it only the people who *can* make it are named and the rest counted,
+  because an arbitrary subset of many crosses says nothing. The card does not
   auto-hide; it goes with its region, which a press outside it or its own cross
   takes away. A plain **click** with no drag still only pins, and a chart with
   no region on it hovers, tooltips and pins exactly as it did before regions
@@ -1864,7 +1894,11 @@ cannot be read contributes nothing; a unit that cannot be read or parsed is
 still reported, with a `problem` and no webroot, because hiding it would make an
 installed service impossible to uninstall from here. **The three parsers mirror
 the three generators — change one and change the other, or an installed service
-becomes invisible to the CLI that installed it.**
+becomes invisible to the CLI that installed it.** The mirroring is deliberately
+asymmetric: parsers stay looser than generators (longer hashes, re-cased
+extensions, an `ExecStart` without `serve`) so units written by older CLI
+versions remain discoverable and uninstallable — never tighten a parser to
+match only today's generator output.
 
 Running state comes from the cheapest question each platform answers *usefully*:
 `launchctl list`, `schtasks /query /fo list`, and on Linux
