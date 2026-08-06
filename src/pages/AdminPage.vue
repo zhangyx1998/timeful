@@ -40,12 +40,8 @@ async function refresh(): Promise<void> {
 
 const retrying = ref(false);
 
-/**
- * The error view's own way back in. Not `refresh()`: that clears `error`
- * synchronously, which would swap the view to "Loading…" and unmount the very
- * button being pressed. Here the message stands until a new answer has
- * actually landed, so a still-down server just leaves the view as it was.
- */
+// Not `refresh()`: that clears `error` synchronously, swapping the view to
+// "Loading…" and unmounting the very button being pressed.
 async function retry(): Promise<void> {
   if (retrying.value) return;
   retrying.value = true;

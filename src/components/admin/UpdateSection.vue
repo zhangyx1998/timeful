@@ -1,17 +1,6 @@
 <script setup lang="ts">
-/**
- * Is there a newer Timeful, and what is the ritual for taking it.
- *
- * The running version is always on screen; the registry is asked **only** when
- * the owner presses the button. Nothing here runs on mount, on an interval, or
- * on a tab switch — a self-hosted app that talks to npm without being asked is
- * not the app this one promises to be, and the check is the single outbound
- * call in the whole product (ARCHITECTURE.md § The update check).
- *
- * When there is something to take, the answer is one line to paste, because
- * the upgrade genuinely is one line: npx fetches the new version and the new
- * version re-points the service at itself.
- */
+// The registry is asked only when the owner presses the button — never on mount, an
+// interval, or a tab switch: the single outbound call in the product (ARCHITECTURE.md § The update check).
 import { computed, ref } from "vue";
 import { api, apiError } from "../../lib/api";
 import { copyText } from "../../lib/clipboard";
@@ -197,8 +186,6 @@ async function copy(): Promise<void> {
   color: var(--color-text);
 }
 
-/* The command is the deliverable, so it gets its own surface — and it scrolls
-   inside that surface rather than pushing the panel sideways on a phone. */
 .command {
   display: flex;
   align-items: center;
@@ -220,8 +207,6 @@ async function copy(): Promise<void> {
   color: var(--color-text);
 }
 
-/* Phones: the command and its button stack, so neither is squeezed to nothing
-   and the button keeps its full tap target. */
 @media (max-width: 30rem) {
   .command {
     flex-direction: column;

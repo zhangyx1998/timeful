@@ -1,15 +1,7 @@
 /**
- * The toggle's sun/moon animation is pure CSS: the knob slides and the icons
- * cross-fade because a rule keyed off `html[data-theme="dark"]` (or the dark
- * media query) matches the knob. That rule has to survive the scoped-style
- * compiler, and once it did not: wrapping the `html` ancestor in `:global()`
- * makes the compiler drop everything after it and emit `html[data-theme=dark]
- * { transform: … }`, which styles the root element instead of the knob. The
- * switch then never moved and the icon was always a sun, while the palette
- * still flipped — so nothing else in the app looked wrong.
- *
- * Compiling the real SFC is the only way to catch that: the source looks
- * correct either way, and jsdom does not apply stylesheets.
+ * Guards the theme rules against the scoped-style compiler: `:global()` around the
+ * `html` ancestor once made the compiler drop everything after it, so the knob never
+ * moved. Compiling the real SFC is the only way to catch it — jsdom applies no styles.
  */
 import fs from "node:fs";
 import path from "node:path";

@@ -1,21 +1,7 @@
 /**
  * Who this page is answering as, what they have marked, and how it is saved.
- *
- * One concern, and the event page's largest: adopting a name, loading that
- * name's stored answer, painting on it, autosaving every change over whichever
- * pipe is open, clearing it, and handing the identity back when somebody else
- * takes the write session. It lived inside `EventScheduler`, which also owns a
- * chart, two drawers, a sidebar and a phone layout; pulled out here it can be
- * read start to finish without any of that in the way.
- *
- * It is deliberately not a component and deliberately not a store. It is the
- * state of one open page, so it is created by the component that renders that
- * page and dies with it.
- *
- * What it does *not* own is the chart: the pinned slot and the hover highlight
- * belong to the view, and every change of identity drops them, so the caller
- * passes a `resetFocus` rather than this reaching into a grid it knows nothing
- * about.
+ * Per-page state, created by the component that renders the page and dying
+ * with it; the chart's focus belongs to the view, hence `resetFocus`.
  */
 import {
   computed,
@@ -36,10 +22,6 @@ import { clearStorage, readStorage, STORAGE_KEYS, writeStorage } from "./storage
 import { createSyncEngine, type SyncBaseline, type SyncStatus } from "./sync";
 import { adoptDisplayName, guestNameProblem, userKey, userKeyFromParam } from "./user-key";
 
-/**
- * The half of the realtime handle this needs: one method that either takes a
- * save or says it cannot.
- */
 export interface RealtimeWriter {
   save(payload: SavePayload): Promise<void> | null;
 }
@@ -52,11 +34,7 @@ export interface ResponseSessionOptions {
   onRefresh: () => void;
   /** Ask it to claim the write session for the identity already adopted. */
   onClaim: () => void;
-  /**
-   * Ask it to give the write session back. The identity is kept — this is the
-   * counterpart of `onClaim`, not of `onIdentity(null)` — so entering the edit
-   * tab again can ask for the same session by the same name.
-   */
+  /** Counterpart of `onClaim`, not of `onIdentity(null)`: the identity is kept. */
   onRelease: () => void;
   /** Tell it who this page is now, so the socket can carry the name. */
   onIdentity: (session: RealtimeSession | null) => void;
@@ -97,7 +75,6 @@ export interface ResponseSession {
     availability: Set<number>;
     ifNeeded: Set<number>;
   } | null>;
-  /** Everyone who has answered, as the identity dialog needs them. */
   existingPeople: ComputedRef<{ key: string; displayName: string }[]>;
   retry(): void;
   onPaint(change: { type: "add" | "remove"; slots: number[] }): void;
@@ -122,24 +99,10 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
   const availability = reactive(new Set<number>());
   const ifNeeded = reactive(new Set<number>());
 
-  /**
-   * Who this page is answering as: the key it files under and the name it
-   * shows.
-   *
-   * One ref for both halves rather than two, because they are one fact and the
-   * two must never disagree — a key without its spelling cannot render a row,
-   * and a spelling without its key cannot match one.
-   */
+  /** One ref for both halves, so the key and its spelling can never disagree. */
   const identity = ref<RealtimeSession | null>(null);
 
-  /**
-   * True while somebody *else* holds this identity's write session.
-   *
-   * The page still knows who it is — the name is remembered, and "My
-   * availability" can ask for the session back — but it is not the one writing
-   * as that person, so nothing it is holding locally has any authority. It
-   * shows the document instead.
-   */
+  /** True while somebody *else* holds this identity's write session. */
   const surrendered = ref(false);
   const guestKey = computed(() => identity.value?.key ?? null);
   const guestName = computed(() => identity.value?.displayName ?? null);
@@ -150,15 +113,8 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
   const dirtySinceConfirm = ref(false);
   let awaitingIdentityRefresh: string | null = null;
 
-  /**
-   * The visitor's own unsaved edits, layered over the group's answers so a drag
-   * shows up in the heatmap before it has been saved.
-   *
-   * Null once the session has been surrendered, which is the whole of what
-   * makes a replaced page honest: it has no unsaved edits to show, and the
-   * marks under that key belong to whoever holds the session now. Without this
-   * the page would keep painting its own last state over the top of theirs.
-   */
+  // Null once surrendered: the marks under this key belong to whoever holds
+  // the session now, so the replaced page must not paint over them.
   const override = computed(() =>
     identity.value && !surrendered.value
       ? {
@@ -170,56 +126,29 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
       : null,
   );
 
-  /**
-   * Everyone who has already answered, as the identity dialog needs them: the
-   * key to match on, the name to offer. Ordered by the name, which is read.
-   */
   const existingPeople = computed(() =>
     Object.entries(options.event.value.responses ?? {})
       .map(([key, response]) => ({ key, displayName: response?.displayName || key }))
       .sort((a, b) => a.displayName.localeCompare(b.displayName)),
   );
 
-  /**
-   * Announces the identity upwards so the realtime connection can carry it.
-   *
-   * A watcher rather than a call in each of the three places an identity is
-   * taken up or given up: it fires after the synchronous work of the switch —
-   * including `engine.flush()`, which has to reach the server as the person
-   * being stepped out of — so reconnecting cannot get ahead of the autosave it
-   * follows.
-   */
+  // A watcher, so it fires after the switch's synchronous work — including the
+  // engine.flush() that must reach the server as the person being stepped out of.
   watch(identity, (session) => options.onIdentity(session));
 
   // --- autosave -------------------------------------------------------------
 
-  /**
-   * Whose answer the queued payload is. Not `identity`: switching person while
-   * an edit is still queued must not post that edit under the person being
-   * switched *to*. It is set where the payload is built and left alone
-   * thereafter, so a flush during the switch still lands under the person who
-   * made the edit.
-   */
+  // Snapshotted where the payload is built: switching person while an edit is
+  // queued must not post that edit under the person being switched to.
   let savingAs: RealtimeSession | null = null;
 
-  /**
-   * One save, over whichever pipe is open — the write session when this page
-   * holds one, the REST `PUT` otherwise and whenever the socket lets it down.
-   * The rule lives in `save-transport.ts`; this only says who is saving.
-   *
-   * The sync engine above it is untouched by any of it: coalescing, the era
-   * counter, the baselines and the retry all work off one `save` promise, and
-   * this is that promise however it was kept.
-   */
   const saveResponse = createSaveTransport({
     overSocket: (payload) => options.writer.value?.save(payload) ?? null,
     overRest: (payload) => {
       const session = savingAs;
       if (!session) return Promise.resolve();
-      // `keepalive`, because this same PUT is what the flush on
-      // `pagehide`/`visibilitychange` dispatches: the browser must not cancel
-      // it with the document. Harmless on every ordinary save — it only caps
-      // the body, and `request` falls back to a plain fetch over the cap.
+      // keepalive: this same PUT is the pagehide/visibilitychange flush and
+      // must survive the document.
       return api.put(
         userPath(options.event.value.id, session.key),
         {
@@ -251,7 +180,6 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     });
   }
 
-  /** Move a set of slots into one of the two marks, or out of both. */
   function mark(slots: number[], as: AvailabilityType | null) {
     for (const slot of slots) {
       if (as === "available") {
@@ -278,20 +206,9 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     mark(change.slots, change.type);
   }
 
-  /**
-   * The flush on the way out of the page itself.
-   *
-   * The Vue unmount hook below covers a component torn down inside a living
-   * document; it never runs when the document goes — a closed tab, a
-   * navigation, Safari backgrounded mid-edit — which is exactly when a mark
-   * made inside the debounce window would otherwise be lost while the
-   * indicator's last word was "Saving…". `pagehide` covers desktop unload and
-   * the bfcache; `visibilitychange → hidden` is the only signal mobile honours
-   * reliably. Neither fires for anything inside the page — a drawer, a view
-   * switch — so these cannot double up on `stopEditing`'s flush-then-release,
-   * and a flush with nothing queued is a no-op anyway. The REST leg of the
-   * flushed save survives the document via `keepalive` (see `overRest` above).
-   */
+  // The unmount hook never runs when the document goes: `pagehide` covers
+  // desktop unload and the bfcache; `visibilitychange → hidden` is the only
+  // signal mobile honours reliably.
   function flushOnHide(): void {
     engine.flush();
   }
@@ -305,7 +222,7 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     if (identity.value === null) applyEntry(currentEntry);
   }
   function onStorage(event: StorageEvent): void {
-    // `key === null` is `clear()`; anything else only matters for the name.
+    // `key === null` is `clear()`.
     if (event.key !== null && event.key !== STORAGE_KEYS.guestName) return;
     reresolveEntry();
   }
@@ -313,8 +230,7 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     if (event.persisted) reresolveEntry();
   }
 
-  // Registered in `onMounted`, so SSR never sees them, and removed on unmount
-  // or a remounted scheduler would leak a listener flushing a dead engine.
+  // Registered in `onMounted` so SSR never sees them.
   onMounted(() => {
     window.addEventListener("pagehide", flushOnHide);
     window.addEventListener("pageshow", onPageShow);
@@ -334,15 +250,8 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
   // --- identity -------------------------------------------------------------
 
   /**
-   * Adopts a name's stored answer, and tells the autosave engine which of its
-   * two resting states that leaves it in.
-   *
-   * The distinction is the whole point of the two quiet indicator states: a
-   * name that came back with marks is already saved on the server ("Up to
-   * date"), while a name nobody has answered under yet has nothing behind it at
-   * all ("No selection"). The zero-record invariant (ARCHITECTURE.md § API)
-   * makes the two the same question — a stored response always has at least one
-   * mark, so an empty grid after loading means there is no response.
+   * Zero-record invariant (ARCHITECTURE.md § API): a stored response always
+   * has at least one mark, so an empty grid after loading means no response.
    */
   function loadResponseFor(key: string) {
     const sets = toAvailabilitySets(options.event.value.responses?.[key]);
@@ -356,12 +265,10 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
   }
 
   function confirmIdentity(person: RealtimeSession) {
-    // Whatever the person being stepped out of had queued goes to the server
-    // before the grid is re-seeded under someone else; `loadResponseFor` drops
-    // the queue, and an unsaved edit is not this new person's to carry.
+    // Flush the outgoing person's queue before the grid is re-seeded under
+    // someone else.
     engine.flush();
     identity.value = person;
-    // A fresh claim, whatever the last one ended as.
     surrendered.value = false;
     writeStorage(STORAGE_KEYS.guestName, person.displayName);
     identityOpen.value = false;
@@ -374,19 +281,8 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     options.onRefresh();
   }
 
-  /**
-   * "Just browsing": the visitor declined to be anyone, so the page must stop
-   * treating them as someone. Dropping the name is what actually stops the
-   * autosave — `queueSave` is a no-op without one — and the marks go with it,
-   * since they belong to the name that was just given up. Anything already
-   * typed under that name is flushed first rather than lost.
-   *
-   * The stored name goes too. It exists for one job — skipping the dialog for a
-   * visitor who already said who they are — and someone who just declined to be
-   * anyone has withdrawn exactly that. Leaving it behind meant the next refresh
-   * silently put them back under the name they had stepped out of. The response
-   * on the server is untouched; they can pick the name again and edit it.
-   */
+  // Dropping the name is what stops the autosave; the stored name goes too, or
+  // the next refresh would silently re-adopt it. The server response is untouched.
   function browseOnly() {
     engine.flush();
     clearStorage(STORAGE_KEYS.guestName);
@@ -404,24 +300,14 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
 
   // --- landing --------------------------------------------------------------
 
-  /**
-   * The name the landing greets — and the link's greeting decoration, which
-   * exists only here — while the welcome prompt is up. Always a name that
-   * passed `guestNameProblem`; null once the prompt has been answered or
-   * dismissed.
-   */
+  /** Set while the welcome prompt is up; always a name that passed `guestNameProblem`. */
   const pendingGreeting = ref<{ name: string; prefix: string | null } | null>(null);
 
   /** The last arrival applied, for re-resolution when storage shifts under it. */
   let currentEntry: EntryRoute = { kind: "view" };
 
-  /**
-   * Who the welcome prompt greets. Derived rather than stored, so a snapshot
-   * arriving while the prompt is up keeps the greeting on the event's own
-   * spelling and the already-answered line honest. `returning` is what turns
-   * "Welcome" into "Welcome back": the page has met this person — their key
-   * already answered, or this device remembered the name.
-   */
+  // Derived rather than stored, so a snapshot arriving mid-prompt keeps the
+  // greeting on the event's own spelling.
   const welcome = computed(() => {
     const greeting = pendingGreeting.value;
     if (greeting === null) return null;
@@ -436,7 +322,6 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     };
   });
 
-  /** The welcome prompt's Continue: the identity dialog's confirm, exactly. */
   function confirmWelcome() {
     const person = welcome.value;
     if (!person) return;
@@ -444,26 +329,13 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     confirmIdentity({ key: person.key, displayName: person.displayName });
   }
 
-  /**
-   * "Not <name>?": the greeting was wrong, so ask properly. The generic dialog
-   * opens blank per its own contract — the declined name is not this visitor's
-   * and must not be offered back to them as a prefill — and keeps its full
-   * mid-page semantics, "Just browsing" included. Declining costs nothing yet:
-   * the remembered name stays stored until the visitor confirms somebody else
-   * or browses.
-   */
+  // The dialog opens blank: the declined name is not this visitor's and must
+  // not be offered back as a prefill.
   function declineWelcome() {
     pendingGreeting.value = null;
     identityOpen.value = true;
   }
 
-  /**
-   * The two prompts' quiet exits. Dismissing (Escape, the backdrop, the X)
-   * answers nothing: no identity is adopted and the remembered name is not
-   * touched — the next landing simply asks again. "View only" is the same
-   * answer made explicitly; either way the page shows the group, and the view
-   * above navigates accordingly.
-   */
   function closeWelcome() {
     pendingGreeting.value = null;
   }
@@ -477,25 +349,16 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     identityOpen.value = false;
   }
 
-  /**
-   * Takes an arrival — the mount, or any later route change — and puts the
-   * page in the state that URL means (§ Guest UX): the group view asks
-   * nothing, an edit path for the person this page already is resumes their
-   * editing, and any other landing asks — by name where one is known, blank
-   * where none is. Idempotent, because the route watcher above fires for
-   * navigations this session itself asked for.
-   */
+  /** Puts the page in the state the arrival URL means (§ Guest UX). Idempotent. */
   function applyEntry(entry: EntryRoute) {
     currentEntry = entry;
     const stored = readStorage(STORAGE_KEYS.guestName)?.trim() ?? "";
-    // A name stored before dashes were illegal cannot be saved under, so it is
-    // not a name this page can be. Dropping it asks once, and the key the
-    // guest retypes lands on the very record the old spelling pointed at.
+    // A stored name that is no longer legal cannot be saved under; drop it and
+    // ask once — the retyped key lands on the record the old spelling pointed at.
     const storedUsable = stored !== "" && guestNameProblem(stored) === null;
     if (stored && !storedUsable) clearStorage(STORAGE_KEYS.guestName);
 
-    // The person this page already is needs no confirming twice: reaching
-    // their own edit URL — a tab switch, a back button — just resumes.
+    // Reaching your own edit URL — a tab switch, a back button — just resumes.
     if (
       entry.kind === "edit" &&
       identity.value !== null &&
@@ -512,7 +375,6 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
       storedUsable ? stored : null,
       existingPeople.value,
     );
-    // Whatever this arrival asks, it is not the edit session the page was in.
     if (editing.value) stopEditing();
     switch (decision.action) {
       case "view":
@@ -544,16 +406,10 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
 
   // --- clearing your own answer ---------------------------------------------
 
-  /** Nothing to clear means no button: the confirm would have no work to do. */
   const hasMarks = computed(() => availability.size > 0 || ifNeeded.size > 0);
 
-  /**
-   * Wipes the guest's own answer. The empty state goes out through the normal
-   * autosave path — the server turns an empty PUT into a delete (zero-record
-   * invariant, ARCHITECTURE.md § API), so the guest leaves the respondents list
-   * instead of staying on it with nothing marked. Flushed rather than debounced
-   * so the indicator confirms the wipe straight away.
-   */
+  // The empty state goes out through the normal autosave path; the server
+  // turns an empty PUT into a delete (zero-record invariant, ARCHITECTURE.md § API).
   async function clearMine() {
     clearOpen.value = false;
     if (!identity.value) return;
@@ -564,27 +420,17 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     queueSave();
     engine.flush();
     await engine.settled();
-    // Drop the stale copy of the response the page is still holding, so coming
-    // back through the switch-person button cannot reload what was just
-    // deleted. Only once the save actually landed — after a failure the retry
-    // still needs the old view, and the error has to stay on screen to be
-    // retried from.
+    // Only once the save landed: a failed save still needs the old view and
+    // the on-screen error to retry from.
     if (syncStatus.value !== "saved") return;
     options.onRefresh();
-    // "Saved" would be the wrong thing to leave behind: what the server holds
-    // is now nothing at all, which is exactly the state a name with no answer
-    // is in. The grid is empty, the name is off the respondents list, and the
-    // indicator says so rather than claiming an answer is stored.
+    // The server now holds nothing, which is the state a name with no answer is in.
     engine.reset("empty");
   }
 
   // --- removing a response --------------------------------------------------
 
-  /**
-   * Anyone holding the link may remove a response — the endpoint is public and
-   * the URL is the trust boundary (ARCHITECTURE.md § API/§ Security). The panel
-   * confirms first; this only runs the delete and reports what came back.
-   */
+  // Public endpoint; the URL is the trust boundary (ARCHITECTURE.md § API/§ Security).
   const deletingKey = ref<string | null>(null);
   const deleteError = ref<string | null>(null);
 
@@ -594,8 +440,7 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     deleteError.value = null;
     try {
       await api.del(userPath(options.event.value.id, key));
-      // Their own answer is held locally as well; drop it so the override
-      // cannot put the row straight back.
+      // Drop the local copy too, so the override cannot put the row straight back.
       if (guestKey.value === key) {
         availability.clear();
         ifNeeded.clear();
@@ -613,22 +458,17 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
 
   function startEditing() {
     if (identity.value) {
-      // Coming back after a takeover: the grid has been showing the document,
-      // so re-seed from it before letting anyone paint on it again.
+      // After a takeover the grid showed the document; re-seed before painting.
       if (surrendered.value) {
         surrendered.value = false;
         loadResponseFor(identity.value.key);
       }
       editing.value = true;
       options.resetFocus();
-      // The session may have been refused, or taken away, since this identity
-      // was adopted. Asking again here is what makes "My availability" the
-      // place a takeover is offered from.
+      // Ask again: the session may have been refused or taken away since.
       options.onClaim();
       return;
     }
-    // Nobody yet. A remembered name gets the one-tap welcome — the same
-    // confirmation a landing gives it — and anyone else is asked properly.
     const stored = readStorage(STORAGE_KEYS.guestName)?.trim() ?? "";
     if (stored && guestNameProblem(stored) === null) {
       pendingGreeting.value = { name: stored, prefix: null };
@@ -638,26 +478,8 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
   }
 
   /**
-   * Leaving the edit tab ends the editing session, not just the view.
-   *
-   * A page reading the group's chart is not editing anybody, and holding the
-   * write session anyway kept its presence dots pulsing and its key locked
-   * against every other device — which then had to be "taken over" from an
-   * editor that no longer existed. So the session goes with the tab, in order:
-   * the flush first, and the release only once it settles, because a mark made
-   * a moment before the switch must reach the server before the socket that
-   * would carry it is given up. A save that settles into the error state stays
-   * parked for `retry()` exactly as before — the release does not lose it, it
-   * only means the retry goes over the REST fallback.
-   *
-   * Checked again at the far end because the switch can be reversed within the
-   * debounce: re-entering the edit tab has already asked for the session back
-   * (`startEditing` → `onClaim`), and releasing it then would take away what
-   * was just claimed.
-   *
-   * `leaveEditing` below deliberately does not release: it is the path for a
-   * session that was refused or taken away, where there is nothing left to
-   * give back.
+   * Leaving the edit tab releases the write session: flush first, release only
+   * once settled, and only if the switch was not reversed within the debounce.
    */
   function stopEditing() {
     editing.value = false;
@@ -667,12 +489,7 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     });
   }
 
-  /**
-   * Somebody else took this key's write session. Step back to the group view:
-   * the page is no longer the one editing as this person, and leaving the grid
-   * live would invite marks that have nowhere to go. The identity itself is
-   * kept, so "My availability" can ask for the session back.
-   */
+  /** Session taken away: back to the group view; identity kept so it can be reclaimed. */
   function leaveEditing() {
     engine.flush();
     editing.value = false;
@@ -684,16 +501,8 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     identityOpen.value = true;
   }
 
-  /**
-   * The identity for a typed name, snapped to the spelling already on the
-   * event.
-   *
-   * Two people who type the same name differently are one person — that is what
-   * the key decides — and the group should keep seeing the spelling it already
-   * knows rather than having it rewritten by whoever answered last. A stored
-   * spelling that is itself no longer legal (a legacy name with a dash in it) is
-   * the exception: it cannot be written back, so the new one replaces it.
-   */
+  // Snaps a typed name to the spelling already on the event; an illegal stored
+  // spelling (legacy dash) is replaced instead.
   function adopt(displayName: string): RealtimeSession {
     const key = userKey(displayName);
     return {
@@ -705,10 +514,8 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     };
   }
 
-  // No identity boot here: the arrival is a property of the URL, so the view
-  // that owns the route calls `applyEntry` on mount and on every route change
-  // (§ Guest UX). Nobody is entered silently on a landing any more — a
-  // remembered name gets the one-tap welcome instead.
+  // No identity boot here: the view that owns the route calls `applyEntry` on
+  // mount and on every route change (§ Guest UX).
 
   return {
     availability,

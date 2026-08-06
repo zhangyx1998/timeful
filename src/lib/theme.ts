@@ -1,19 +1,9 @@
 /**
- * Theme state (ARCHITECTURE.md § Theming).
- *
- * Three-valued preference, VitePress-style:
- *   "light" | "dark"  — explicit override, written to <html data-theme> and to
- *                       localStorage["timeful.theme"]
- *   null              — follow the OS (`prefers-color-scheme`); the attribute
- *                       is removed and the CSS `color-scheme: light dark` on
- *                       :root does the rest
- *
- * The attribute is first applied by the inline script in index.html so there is
- * no flash of the wrong theme; `initTheme()` only re-syncs the reactive state
- * with whatever that script already decided.
- *
- * Module-level state on purpose: the theme is a single global, and every
- * component that calls `useTheme()` shares it.
+ * Theme state (ARCHITECTURE.md § Theming). Three-valued preference:
+ * "light" | "dark" writes `<html data-theme>` and localStorage; null follows
+ * the OS. The inline script in index.html applies the attribute before first
+ * paint; `initTheme()` only re-syncs with what it decided. Module-level state
+ * on purpose: one global, shared by every `useTheme()` caller.
  */
 import { computed, ref } from "vue";
 import type { ComputedRef, Ref } from "vue";
@@ -52,10 +42,7 @@ function applyToDocument(value: ThemePreference): void {
   else root.setAttribute("data-theme", value);
 }
 
-/**
- * Client-side bootstrap. Safe to call more than once, and a no-op on the
- * server. Call before mounting so the first render already knows the theme.
- */
+/** Idempotent, no-op on the server. Call before mounting. */
 export function initTheme(): void {
   if (initialized || typeof window === "undefined") return;
   initialized = true;
@@ -75,8 +62,7 @@ export function initTheme(): void {
   }
 
   preference.value = readStoredPreference();
-  // The inline script should have done this already; re-applying costs nothing
-  // and covers the case where it was stripped or failed.
+  // The inline script should have done this; re-applying covers it failing.
   applyToDocument(preference.value);
 }
 
@@ -84,7 +70,7 @@ export function initTheme(): void {
 export function setTheme(value: ThemePreference): void {
   preference.value = value;
   // Attribute first: anything reacting to `theme` — the heatmap re-reading its
-  // CSS custom properties — must observe the new document state, not the old.
+  // CSS custom properties — must observe the new document state.
   applyToDocument(value);
   writeStoredPreference(value);
 }

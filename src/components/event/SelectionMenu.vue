@@ -1,21 +1,6 @@
 <script setup lang="ts">
-/**
- * The floating options strip: what the rectangle being drawn means.
- *
- * Carried beside the pointer for the length of a drag as a preview that takes
- * no pointer at all, and left where the drag ended as a working control. The
- * gesture, the countdown and the undo history all live in the chart that owns
- * the selection; this owns only what a strip is — the buttons, and where the
- * box those buttons sit in may go.
- *
- * It places itself. The strip is sized by its own labels, set in whatever the
- * platform calls its UI font, so the width cannot be a constant — the same
- * three words are wider under iOS than here. It is measured on mount and again
- * whenever it becomes a different strip (a creation menu and an erase menu
- * carry different controls, and a coarse pointer sizes both), and every
- * measurement lands before the browser paints, so the placement the constants
- * used to guess at is simply read.
- */
+// The floating options strip: what the rectangle being drawn means. Self-placing:
+// sized by its own labels in the platform UI font, so it is measured, not guessed.
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { placeOverlay, type OverlayField } from "../../lib/grid";
 import IconCheck from "../../assets/icons/check.svg";
@@ -25,18 +10,13 @@ import IconUndo from "../../assets/icons/undo.svg";
 import type { AvailabilityType } from "../../lib/event";
 
 const props = defineProps<{
-  /** Which strip this is: a creation carries four controls, an erase two. */
   kind: "create" | "erase";
-  /** What the rectangle currently means, read off the answer itself. */
   type: AvailabilityType;
-  /** False while the drag runs — a preview cannot be clicked, or aimed at. */
+  /** False while the drag runs — a preview cannot be clicked. */
   live: boolean;
-  /** The point the strip keeps beside, in the wrap's coordinates, and whether
-   *  a finger is driving it: the strip clears above one, below a cursor. */
+  /** The strip clears above a finger, below a cursor. */
   anchor: { x: number; y: number; touch: boolean };
-  /** The box the strip is placed inside and clamped to. */
   field: OverlayField;
-  /** Whether the pointer is a finger: the strip is sized for one if it is. */
   coarse: boolean;
 }>();
 
@@ -46,20 +26,13 @@ const emit = defineEmits<{
   dismiss: [];
 }>();
 
-/** Clearance between the strip and the edges of the chart it is clamped into. */
 const MENU_GAP = 8;
-/**
- * How far the strip keeps off the pointer itself. A cursor points at a spot and
- * hides almost none of it, so the strip sits just below. A finger covers what
- * it touches and everything for a few millimetres around, so the strip goes
- * above it and further out.
- */
+// A cursor hides almost nothing, so the strip sits just below; a finger covers
+// the spot, so it goes above and further out.
 const MENU_CURSOR_CLEARANCE = 18;
 const MENU_TOUCH_CLEARANCE = 26;
 
-/** The root element, exposed: the chart tells a press on the strip from a
- *  press outside it by asking this element, and a component instance cannot
- *  answer `contains()`. */
+/** Exposed: the chart asks this element `contains()` to tell a press on the strip from one outside it. */
 const element = ref<HTMLElement | null>(null);
 const size = ref<{ width: number; height: number } | null>(null);
 
@@ -70,20 +43,12 @@ function measure() {
 
 onMounted(measure);
 
-// Re-measured whenever the strip becomes a different strip. The old size holds
-// until the new one is read — both the change and the correction land before a
-// paint, so neither is ever seen.
+// Re-measure when it becomes a different strip; change and correction both land before a paint.
 watch(
   () => `${props.kind}:${props.coarse}`,
   () => void nextTick(measure),
 );
 
-/**
- * Beside the pointer, never under it, and never outside the chart. Centred on
- * the pointer horizontally and clamped into the column area; vertically it
- * takes the side the pointing device leaves free, flipping to the other when
- * the first would put it off the top or the bottom of the scrollport.
- */
 const placement = computed(() => {
   const box = size.value;
   if (!box) return { left: props.anchor.x, top: props.anchor.y };
@@ -135,12 +100,6 @@ defineExpose({ element });
         If needed
       </button>
 
-      <!-- No label: it stands beside two that carry one, and a third word
-           would make the strip something to read rather than something to
-           choose from. The back-arrow is the one glyph that says "put it
-           back" without one — and it is the same word underneath as the
-           erase strip's, because it is now the same action off the same
-           history. -->
       <button
         type="button"
         class="meaning__option meaning__option--undo meaning__option--icon"
@@ -153,9 +112,6 @@ defineExpose({ element });
       </button>
     </template>
 
-    <!-- An erase has nothing to choose between, so it has room to say in a
-         word what the creation strip leaves to the glyph. One word for both,
-         since pressing either asks the page for the same thing. -->
     <button
       v-else
       type="button"
@@ -168,8 +124,7 @@ defineExpose({ element });
       Undo
     </button>
 
-    <!-- Dismissal keeps the marks, so it says so: a check, not a cross
-         (ARCHITECTURE.md § Client model). -->
+    <!-- Dismissal keeps the marks: a check, not a cross (ARCHITECTURE.md § Client model). -->
     <button
       type="button"
       class="meaning__option meaning__option--dismiss meaning__option--icon"
@@ -184,23 +139,13 @@ defineExpose({ element });
 </template>
 
 <style scoped>
-/* Pinned beside the pointer and clamped to the chart's own box, so it cannot
-   hang off a narrow screen. Only the buttons take the pointer: the strip itself
-   is a hole, and a drag that starts under it paints as usual. */
+/* The strip itself is a hole (pointer-events: none): a drag starting under it paints as usual. */
 .meaning {
   position: absolute;
   z-index: 15;
   display: flex;
   align-items: stretch;
-  /* Exactly as wide as what is in it, and never a pixel less.
-     Absolutely positioned, it would otherwise be shrink-to-fit — sized against
-     whatever is left of the containing block to the right of `left` — and how
-     an engine resolves the minimum width of a flex row is exactly the thing
-     engines disagree about. WebKit came out narrower here, and with the
-     `overflow: hidden` this used to carry, the disagreement was invisible: the
-     first label was cut off mid-word and the last two controls were not drawn
-     at all. Content that does not fit now overflows, which is a thing you can
-     see and fix rather than a thing that looks like a rendering bug. */
+  /* max-content, not shrink-to-fit: engines disagree on a positioned flex row's minimum width (WebKit clipped controls). */
   width: -webkit-max-content;
   width: max-content;
   transform: translateX(-50%);
@@ -230,9 +175,7 @@ defineExpose({ element });
   transition: color var(--transition-fast), background var(--transition-fast);
 }
 
-/* While the drag runs the whole strip is a label, not a control. Nothing in it
-   may take the pointer that is drawing the rectangle — the one thing it must
-   never do is intercept the gesture it exists to describe. */
+/* A preview must never intercept the gesture it describes. */
 .meaning--preview .meaning__option {
   pointer-events: none;
   cursor: default;
@@ -242,9 +185,7 @@ defineExpose({ element });
   border-left: 1px solid var(--color-border);
 }
 
-/* The corners the container used to clip for them. Inset by the border, so the
-   tinted "chosen" fill follows the strip's own curve instead of squaring it
-   off. */
+/* Inset by the border so the chosen fill follows the strip's own curve. */
 .meaning__option:first-child {
   border-radius: calc(var(--radius-md) - 1px) 0 0 calc(var(--radius-md) - 1px);
 }
@@ -253,8 +194,6 @@ defineExpose({ element });
   border-radius: 0 calc(var(--radius-md) - 1px) calc(var(--radius-md) - 1px) 0;
 }
 
-/* Sized by its glyph rather than by absent text: the undo in a creation strip,
-   and the dismissal in both. */
 .meaning__option--icon {
   justify-content: center;
   padding: 0.3rem 0.55rem;
@@ -265,25 +204,17 @@ defineExpose({ element });
   height: 0.95rem;
 }
 
-/* Labelled, like the two it follows in the erase strip. */
 .meaning__option--revert {
   padding: 0.3rem 0.7rem;
 }
 
-/* The undo moves the marks back, so it warns the way anything that takes
-   something away does. The dismissal beside it changes nothing and keeps the
-   neutral hover of the generic rule below. Specific enough to beat it. */
+/* Specific enough to beat the generic hover below. */
 .meaning__option--undo:hover:not(.meaning__option--on) {
   color: var(--color-danger);
   background: var(--color-danger-soft);
 }
 
-/* The size that applies. The same five glyphs also carry `width`/`height`
-   attributes at their usage sites, which this beats everywhere it lands — they
-   are there as a floor, because an inline SVG with only a `viewBox` has no
-   intrinsic size to fall back on, and an engine that missed this rule would
-   give each one a default box wide enough to shove the rest of the strip out
-   of the chart. */
+/* Beats the width/height attributes at usage sites — those are a floor, since a viewBox-only inline SVG has no intrinsic size. */
 .meaning__option svg {
   width: 0.85rem;
   height: 0.85rem;
@@ -301,11 +232,7 @@ defineExpose({ element });
   background: var(--color-accent-soft);
 }
 
-/* The chosen one is tinted with the colour the cells themselves just took, so
-   the menu and the rectangle say the same thing in the same ink. Cut with the
-   surface rather than used neat: the slot colours are made to be read as a
-   field, not to be read *through*, and at full strength the label on the green
-   one falls to 1.6:1 against the dark theme's text. */
+/* Cut with the surface: neat slot colours drop the label to 1.6:1 contrast in the dark theme. */
 .meaning__option--on {
   font-weight: 600;
   color: var(--color-text);
@@ -316,7 +243,6 @@ defineExpose({ element });
   background: color-mix(in srgb, var(--color-slot-if-needed) 45%, var(--color-surface));
 }
 
-/* Sized for a finger. */
 @media (pointer: coarse) {
   .meaning__option {
     min-height: var(--tap-min);
@@ -329,8 +255,7 @@ defineExpose({ element });
     height: 0.95rem;
   }
 
-  /* Carrying no label, these would otherwise be the controls in the strip
-     narrower than a finger. Padded out to the 44px floor on both axes. */
+  /* Icon-only controls padded out to the 44px tap floor. */
   .meaning__option--icon {
     padding-inline: 0.95rem;
   }

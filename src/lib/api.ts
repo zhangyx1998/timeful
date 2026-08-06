@@ -1,29 +1,12 @@
 /**
- * The typed JSON client — the only one in the app. Used by the admin panel and
- * by the public event page alike.
- *
- * Requests always send cookies (the session lives in an httpOnly cookie) and
- * always resolve to parsed JSON; anything non-2xx throws an `ApiError`
- * carrying the HTTP status and the server's `{ error }` message.
- *
- * **Paths are written out in full.** There are two namespaces now — `/api/*`
- * for what is global (status, auth, sessions, slug leases, the event list) and
- * `/<slug>/…` for what belongs to one event — so a client that quietly
- * prefixed `/api` would be guessing between them. The event-scoped paths have
- * builders below rather than being spelled at each call site.
- *
- * The response types below describe the wire format of `server/routes/*`; the
- * server imports them back from here so the two halves cannot drift.
+ * The app's one typed JSON client. Requests always send cookies; non-2xx
+ * throws `ApiError`. Paths are written out in full — `/api/*` is global,
+ * `/<slug>/…` is event-scoped — and the server imports the response types
+ * back from here so the wire format cannot drift.
  */
 import type { EventType, LastEdit } from "./event";
 
-/**
- * The admin-only elaboration an error response may carry beside its public
- * `error` message: the underlying cause, and — for an errno — its code and the
- * path involved. **A guest never receives this field**: the server includes it
- * only when the request carried a valid admin session, so a body holding one
- * is by construction the owner reading about their own server.
- */
+/** Admin-only elaboration beside the public `error`; a guest never receives it. */
 export interface ErrorDetail {
   message: string;
   /** An errno-style code — `EACCES`, `ENOSPC` — when the cause carried one. */
@@ -32,7 +15,6 @@ export interface ErrorDetail {
   path?: string;
 }
 
-/** The `detail` of an error body, when the shape holds a usable one. */
 export function errorDetailOf(body: unknown): ErrorDetail | null {
   if (typeof body !== "object" || body === null) return null;
   const detail = (body as { detail?: unknown }).detail;
@@ -46,7 +28,6 @@ export function errorDetailOf(body: unknown): ErrorDetail | null {
   };
 }
 
-/** One line for a detail, for the muted print under a generic message. */
 export function formatErrorDetail(detail: ErrorDetail): string {
   const parts = [detail.message];
   if (detail.code && !detail.message.includes(detail.code))
@@ -77,16 +58,12 @@ export interface RequestOptions {
   body?: unknown;
   signal?: AbortSignal;
   /**
-   * Ask the browser to let this request outlive its page. For the autosave
-   * flush on `pagehide`/`visibilitychange`: a save dispatched as the tab closes
-   * would otherwise be cancelled with the document, and the mark it carried
-   * would never reach the server. Best-effort — bodies over the browser's
-   * 64 KB keepalive quota are sent as a plain fetch instead (see `request`).
+   * Let the request outlive its page (the autosave flush on pagehide).
+   * Best-effort: bodies over the keepalive quota go as a plain fetch.
    */
   keepalive?: boolean;
 }
 
-/** Options accepted by the per-verb helpers, which supply the method. */
 export type CallOptions = Omit<RequestOptions, "method" | "body">;
 
 export async function request<T>(
@@ -94,9 +71,7 @@ export async function request<T>(
   { method = "GET", body, signal, keepalive }: RequestOptions = {},
 ): Promise<T> {
   const serialized = body === undefined ? undefined : JSON.stringify(body);
-  // `keepalive` caps the body at 64 KB. An answer that big is a page that was
-  // going to lose the race anyway; a plain fetch is strictly better than a
-  // throw.
+  // `keepalive` caps the body at 64 KB; a plain fetch is strictly better than a throw.
   const survives = keepalive === true && (serialized?.length ?? 0) <= 60_000;
   const res = await fetch(path, {
     method,
@@ -143,14 +118,9 @@ export const api = {
     request<T>(path, { ...options, method: "DELETE" }),
 };
 
-// ---------------------------------------------------------------------------
-// event-scoped paths
-// ---------------------------------------------------------------------------
-//
-// An event's endpoints hang off the event's own URL, because the event's URL is
-// the capability that grants access to them (ARCHITECTURE.md § API). Each takes
-// the uuid or the slug; the uuid is the safer choice from a page that might be
-// open across a rename.
+// Event-scoped paths hang off the event's own URL, because that URL is the
+// capability granting access (ARCHITECTURE.md § API). Each takes uuid or slug;
+// the uuid survives a rename.
 
 /** `GET /<idOrSlug>/data` — the whole event document, public. */
 export function eventDataPath(idOrSlug: string): string {
@@ -162,13 +132,7 @@ export function eventSettingsPath(idOrSlug: string): string {
   return `/${encodeURIComponent(idOrSlug)}/settings`;
 }
 
-/**
- * `GET /<idOrSlug>/details` — where each answer was last written from.
- *
- * The one event-scoped route that is **not** public: it serves the only field
- * the capability URL does not entitle you to, so it is behind the session
- * cookie and answers `401` without one.
- */
+/** `GET /<idOrSlug>/details` — the one event-scoped route behind the session cookie. */
 export function eventDetailsPath(idOrSlug: string): string {
   return `/${encodeURIComponent(idOrSlug)}/details`;
 }
@@ -183,22 +147,12 @@ export function eventPushPath(idOrSlug: string): string {
   return `/${encodeURIComponent(idOrSlug)}/push`;
 }
 
-/**
- * `GET /<idOrSlug>/logs` — one event's server-log stream, admin only.
- *
- * A WebSocket upgrade, not a fetchable route: the admin session cookie is
- * verified before the handshake completes, and an upgrade without one is
- * destroyed. A plain `GET` of this path is a 404 like the other socket paths.
- */
+/** `GET /<idOrSlug>/logs` — admin-only WebSocket upgrade; a plain GET is a 404. */
 export function eventLogsPath(idOrSlug: string): string {
   return `/${encodeURIComponent(idOrSlug)}/logs`;
 }
 
-/**
- * Extracts a human-readable message plus HTTP status from a caught error.
- * `detail` is the formatted admin-only elaboration when the response carried
- * one, and `""` otherwise — a guest's errors always come out with it empty.
- */
+/** Message plus status from a caught error; `detail` is always `""` for guests. */
 export function apiError(
   err: unknown,
   fallback: string,
@@ -214,10 +168,6 @@ export function apiError(
   return { message: fallback, status: 0, detail: "" };
 }
 
-// ---------------------------------------------------------------------------
-// response shapes
-// ---------------------------------------------------------------------------
-
 /** `GET /api/status` */
 export interface StatusResponse {
   needsSetup: boolean;
@@ -225,24 +175,13 @@ export interface StatusResponse {
   email?: string;
 }
 
-/**
- * Is this response an admin session? Only an explicit `authed: true` counts —
- * a missing field, a truthy stand-in like `"yes"` or `1`, or a body that is not
- * an object at all all read as "no".
- */
+/** Only an explicit `authed: true` counts; anything else reads as "no". */
 export function isAuthedStatus(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
   return (value as { authed?: unknown }).authed === true;
 }
 
-/**
- * Whether the visitor is the signed-in owner, for deciding what to render.
- *
- * **Fails closed.** A 401, a network failure, a proxy's error page, anything —
- * it all resolves to false, never a throw and never a maybe. Admin-only
- * affordances on the public event page hang off this, so the wrong answer has
- * to be the harmless one. The server enforces the real boundary regardless.
- */
+/** Fails closed: any failure resolves false. The server enforces the real boundary. */
 export async function fetchIsAdmin(options?: CallOptions): Promise<boolean> {
   try {
     return isAuthedStatus(await api.get<unknown>("/api/status", options));
@@ -270,10 +209,8 @@ export interface EventSummary {
 
 /**
  * Payload accepted by `POST /api/events` and `PATCH /<slug>/settings`.
- *
- * `slug` is optional on create and omitting it is meaningful: the server then
- * mints a fresh capability slug. Never fill it in with something derived from
- * the name — that would make the URL guessable (ARCHITECTURE.md § Security).
+ * `slug` omitted on create means the server mints one; never derive it from
+ * the name (ARCHITECTURE.md § Security).
  */
 export interface EventPayload {
   name: string;
@@ -294,11 +231,7 @@ export interface SlugLease {
   expiresAt: string;
 }
 
-/**
- * Reserves a random capability slug so the create form can show the final URL
- * before the event exists. Creating an event with that exact slug consumes the
- * lease; anything else should release it.
- */
+/** Creating an event with the leased slug consumes the lease; anything else should release it. */
 export function createSlugLease(options?: CallOptions): Promise<SlugLease> {
   return api.post<SlugLease>("/api/slug-leases", undefined, options);
 }
@@ -322,12 +255,8 @@ export interface EventDetails {
 }
 
 /**
- * `GET /api/update-check` — admin only.
- *
- * The one response in the app that is answered from off the machine. It is
- * never requested on its own: the panel asks only when the owner presses the
- * button, so a Timeful with no route to the internet behaves exactly as it did
- * before this existed (see ARCHITECTURE.md § The update check).
+ * `GET /api/update-check` — admin only; requested only on an explicit button
+ * press (ARCHITECTURE.md § The update check).
  */
 export interface UpdateCheck {
   /** The running version. `0.0.0-dev` when running from a source checkout. */
@@ -338,23 +267,15 @@ export interface UpdateCheck {
   updateAvailable: boolean;
   /** Why `latest` is null. Present only then, and safe to display verbatim. */
   problem?: string;
-  /**
-   * The server's working directory — the webroot the upgrade is run from. It
-   * is the operator's own path, shown to the authenticated owner only, and it
-   * is the one path in this response: no event ever appears here.
-   */
+  /** The operator's own webroot, shown to the owner only; the one path here. */
   webroot: string;
   /** True when `current` is the source-checkout fallback rather than a release. */
   development: boolean;
 }
 
 /**
- * Who a push subscription is for, which decides what it is told about.
- *
- * The **owner** is notified when responses change; a **respondent** is
- * notified when the event itself changes (details edited, event deleted).
- * Subscribing as the owner requires the admin session; a respondent
- * subscription carries the user key it claims.
+ * Owner: notified when responses change; requires the admin session.
+ * Respondent: notified when the event changes; carries the user key it claims.
  */
 export type PushRole = "owner" | "respondent";
 
@@ -366,11 +287,7 @@ export interface PushSubscriptionKeys {
   auth: string;
 }
 
-/**
- * `GET /api/push/public-key` — the server's VAPID public key, minted on first
- * ask and stable from then on. Public: it is, literally, a public key, and a
- * respondent subscribing from an event page has no session to present.
- */
+/** `GET /api/push/public-key` — public: a respondent has no session to present. */
 export interface PushPublicKey {
   /** base64url, suitable for `applicationServerKey` as it stands. */
   key: string;

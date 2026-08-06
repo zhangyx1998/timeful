@@ -1,43 +1,9 @@
 /**
- * Taking back what you just did, and putting it back again.
- *
- * The chart has always had one way back: the arrow on the floating options,
- * which restored the rectangle a drag had just committed and nothing else. It
- * worked off `SlotSnapshot` — the record of what a set of slots held before
- * something happened to them — and that record is already everything an undo
- * stack needs. So this is not a second mechanism beside it. It is the same
- * record, kept rather than thrown away, and the arrow on the strip is now one
- * of its two front doors: the keyboard is the other.
- *
- * An entry is a pair of records over one set of slots: what they held before an
- * action and what they hold after it. Undo replays the first through
- * `revertOperations`, redo replays the second, and because both come out as the
- * chart's own `paint` and `flip` emits, an undo is applied by exactly the code
- * that applies a drag — including the autosave that follows it. Nothing here
- * talks to the server, and nothing here knows there is one.
- *
- * ### One gesture, one entry
- *
- * A gesture may commit many times. A handle dragged across six columns paints
- * on every step; a rectangle just drawn can be relabelled twice from the strip
- * before the hand leaves it. None of that is six or three things to undo — it is
- * one selection, and the way back from it is the state the gesture interrupted.
- * So commits carry the id of the gesture that made them, and a commit whose id
- * matches the one still open *amends* the entry on top of the stack instead of
- * pushing another. The chart's own record grows the same way and for the same
- * reason (`selectionStep` in `grid.ts`), which is what makes the amended entry
- * correct rather than merely convenient.
- *
- * An undo or a redo closes the open gesture. Whatever the chart does next is a
- * new one, and cannot reach back into an entry the cursor has already moved off.
- *
- * ### It lasts exactly as long as the edit session
- *
- * The stack is created empty when a name starts editing and emptied when that
- * stops being true — stepping back to the group view, going back to browsing,
- * switching to another person, or closing the page. Undo is about the marks you
- * are making now; offering to un-make somebody else's, or to re-apply yours over
- * theirs, would be a way to lose an answer rather than to recover one.
+ * Undo/redo for the chart. An entry is a before/after `SlotSnapshot` pair over
+ * one set of slots, replayed through `revertOperations` along the chart's own
+ * paint/flip path — autosave included. Commits sharing a gesture id amend the
+ * top entry (mirroring `selectionStep` in grid.ts); the stack lives exactly as
+ * long as the edit session.
  */
 import {
   computed,
@@ -54,9 +20,7 @@ import { revertOperations, snapshotSlotList, type RevertOp, type SlotSnapshot } 
 export interface HistoryAction {
   /** The gesture that produced it; commits sharing an id are one action. */
   id: number;
-  /** What those slots held before it. */
   before: SlotSnapshot;
-  /** What they hold now. */
   after: SlotSnapshot;
 }
 
@@ -66,11 +30,6 @@ export interface HistoryCommit {
   before: SlotSnapshot;
 }
 
-/**
- * How far back it goes. Deep enough that nobody editing an afternoon reaches
- * the end of it, shallow enough that a page open all day cannot grow without
- * bound.
- */
 export const HISTORY_DEPTH = 100;
 
 export interface HistoryStack {
@@ -101,8 +60,7 @@ export function createHistoryStack(depth: number = HISTORY_DEPTH): HistoryStack 
       entries.value = amended;
       return;
     }
-    // A new action after an undo is a new branch: what was undone is not coming
-    // back, because there is now something else in the place it would return to.
+    // A new action after an undo drops the redo tail.
     const kept = entries.value.slice(Math.max(0, cursor.value - depth + 1), cursor.value);
     entries.value = [...kept, action];
     cursor.value = entries.value.length;
@@ -143,10 +101,6 @@ export function createHistoryStack(depth: number = HISTORY_DEPTH): HistoryStack 
   };
 }
 
-// ---------------------------------------------------------------------------
-// the keyboard
-// ---------------------------------------------------------------------------
-
 export type HistoryCommand = "undo" | "redo";
 
 /** The parts of a keyboard event the shortcut is decided from. */
@@ -158,14 +112,8 @@ export interface ShortcutEvent {
   altKey: boolean;
 }
 
-/**
- * Which of the two a keystroke is, if either.
- *
- * One modifier per platform rather than "whichever is held": on a Mac, ctrl+Z
- * is not undo in any application, and accepting it would mean accepting
- * cmd+ctrl+Z as well. Alt is never part of it, so a combination that means
- * something else somewhere is left alone.
- */
+// One modifier per platform, not "whichever is held": on a Mac ctrl+Z is not
+// undo anywhere, and alt combinations mean something else and are left alone.
 export function historyShortcut(event: ShortcutEvent, mac: boolean): HistoryCommand | null {
   if (event.altKey) return null;
   const modifier = mac
@@ -183,14 +131,8 @@ export function isMacPlatform(): boolean {
   return /mac|iphone|ipad|ipod/i.test(platform);
 }
 
-/**
- * Whether the keystroke belongs to something else on the page.
- *
- * A field is the obvious case — cmd+Z in the name box has to undo the typing —
- * and a dialog is the less obvious one: the identity prompt and the event form
- * are modal over the chart, so a chart the visitor cannot even see must not be
- * quietly rearranged behind one.
- */
+// Fields keep their own undo; dialogs are modal over a chart the visitor
+// cannot see, which must not be rearranged behind one.
 export function shortcutBlocked(target: unknown): boolean {
   if (!target || typeof target !== "object") return false;
   const element = target as {
@@ -205,16 +147,8 @@ export function shortcutBlocked(target: unknown): boolean {
   return element.closest('[role="dialog"], [contenteditable="true"]') != null;
 }
 
-// ---------------------------------------------------------------------------
-// the page's own copy of one
-// ---------------------------------------------------------------------------
-
 export interface UndoHistoryOptions {
-  /**
-   * Who is editing, as something that changes when that answer does: the user
-   * key while the edit view is open, null otherwise. Any change empties the
-   * stack, so leaving the view, browsing and switching person are one rule.
-   */
+  /** The user key while the edit view is open, null otherwise; any change empties the stack. */
   session: Ref<string | null> | ComputedRef<string | null>;
   /** Applies reverting operations along the chart's own emit path. */
   apply(operations: RevertOp[]): void;
@@ -243,9 +177,8 @@ export function useUndoHistory(options: UndoHistoryOptions): UndoHistory {
   let sequence = 0;
 
   function record(commit: HistoryCommit): void {
-    // The chart reports what the slots *were*; what they are is read here,
-    // after the parent has applied the change, because that is the only place
-    // both halves of the pair are true at the same time.
+    // `after` is read here, once the parent has applied the change — the only
+    // moment both halves of the pair are true.
     const slots = snapshotSlotList(commit.before);
     stack.record({ id: commit.id, before: commit.before, after: options.read(slots) });
   }
@@ -269,8 +202,8 @@ export function useUndoHistory(options: UndoHistoryOptions): UndoHistory {
     if (!command) return;
     if (command === "undo") run(stack.undo());
     else run(stack.redo());
-    // Claimed either way. A cmd+Z with nothing left to take back must not fall
-    // through to the browser's own idea of undo on the page behind the chart.
+    // Claimed either way: a cmd+Z with nothing left must not fall through to
+    // the browser's own undo.
     event.preventDefault();
   }
 

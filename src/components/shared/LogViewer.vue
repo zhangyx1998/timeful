@@ -1,27 +1,13 @@
 <script setup lang="ts">
-/**
- * The admin's window onto a server log buffer — one component, two sources:
- * the global stream (`/api/logs`, the panel's Logs tab) and one event's
- * (`/<uuid>/logs`, the Details dialog's "Server logs" tab).
- *
- * The transport is a **disposable** WebSocket: opened when this mounts, closed
- * when it unmounts, no reconnect loop — it is a viewing session, not sync. The
- * server replays the buffer in one frame and then streams live entries;
- * admin-only is the server's doing (the session cookie is verified before the
- * upgrade completes), this component just holds the receiving end.
- *
- * Newest entries land at the bottom, and the view sticks there — until the
- * admin scrolls up to read, which pauses the following; a "Jump to latest"
- * chip brings it back. That rule is what makes a live log readable at all.
- */
+// Admin's window onto a server log buffer. Disposable WebSocket: open on mount, closed on
+// unmount, no reconnect; the server verifies the session cookie before the upgrade completes.
+// The view sticks to the tail until the admin scrolls up.
 import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import type { LogEntry, LogStreamMessage } from "../../lib/logs";
 
 const props = withDefaults(
   defineProps<{
-    /** The stream's path — `/api/logs`, or `eventLogsPath(uuid)`. */
     path: string;
-    /** What an empty buffer says. */
     emptyText?: string;
   }>(),
   { emptyText: "Nothing logged yet" },
@@ -36,8 +22,7 @@ const scroller = ref<HTMLElement | null>(null);
 let socket: WebSocket | null = null;
 
 function connect(): void {
-  // Never during SSR, like every socket in this app — though this component
-  // only ever mounts from a click, the guard costs one line.
+  // Never during SSR, like every socket in this app.
   if (typeof window === "undefined") return;
   const scheme = window.location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${scheme}://${window.location.host}${props.path}`);
@@ -60,14 +45,12 @@ function connect(): void {
   });
   ws.addEventListener("close", () => {
     if (socket !== ws) return;
-    // A refused upgrade never fired `open`; a served stream ended. No
-    // reconnect either way — closing the panel and reopening it is the retry.
+    // A refused upgrade never fired `open`. No reconnect: reopening the panel is the retry.
     if (state.value === "connecting") state.value = "failed";
     else if (state.value === "open") state.value = "closed";
   });
 }
 
-/** Keeps the view pinned to the newest line, unless the admin scrolled away. */
 async function followTail(): Promise<void> {
   if (!stuck.value) return;
   await nextTick();
@@ -104,7 +87,6 @@ function formatAt(iso: string): string {
   return timeFormat ? timeFormat.format(date) : date.toLocaleString();
 }
 
-/** The structured fields, printed after the sentence in one quiet run. */
 function extras(entry: LogEntry): string {
   const parts: string[] = [];
   if (entry.code && !entry.message.includes(entry.code)) parts.push(`[${entry.code}]`);
@@ -154,7 +136,6 @@ onBeforeUnmount(() => {
       </p>
     </div>
 
-    <!-- Reading pauses the following; this is the way back to now. -->
     <button v-if="!stuck" type="button" class="jump" @click="jumpToLatest">
       Jump to latest
     </button>
@@ -196,8 +177,6 @@ onBeforeUnmount(() => {
   color: var(--color-text-muted);
 }
 
-/* The level word carries the tint; the message keeps reading weight so a
-   column of errors is still a column of sentences, not a red wall. */
 .level {
   flex: none;
   width: 2.9em;
@@ -242,9 +221,6 @@ onBeforeUnmount(() => {
   font-style: italic;
 }
 
-/* The way back to the tail, floated over the bottom of the pane. Glass would
-   be overkill for a line of text; the surface colour and a border keep the
-   log readable through its own corner. */
 .jump {
   position: absolute;
   bottom: 0.6rem;
@@ -266,8 +242,6 @@ onBeforeUnmount(() => {
   background: var(--color-subtle);
 }
 
-/* Tap target on a phone; the pane is already narrow at 360px, and the chip
-   keeps to its own width so no line of the log is permanently covered. */
 @media (pointer: coarse) {
   .jump {
     min-height: var(--tap-min);

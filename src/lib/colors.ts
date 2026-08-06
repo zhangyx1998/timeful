@@ -1,14 +1,9 @@
 /**
- * Reading design tokens back out of the DOM.
- *
- * The heatmap tints a cell by compositing the "available" green at a computed
- * alpha, so it needs the actual channels of `--color-slot-available` — which
- * differ per theme. Two things make a naive `getPropertyValue()` useless here:
- * the token is declared with `light-dark()`, and an *unregistered* custom
- * property keeps its declaration verbatim in the computed style. So the value
- * is resolved the way the browser resolves it for painting: assign it to a
- * throwaway element's `color` and read the computed `color` back, which is
- * always a resolved rgb()/rgba().
+ * Reading design tokens back out of the DOM. A naive `getPropertyValue()` is
+ * useless here: the tokens are declared with `light-dark()`, and an
+ * unregistered custom property keeps its declaration verbatim in the computed
+ * style. So the value is resolved the way the browser paints it — assigned to
+ * a throwaway element's `color` and read back as resolved rgb()/rgba().
  */
 import { computed } from "vue";
 import type { ComputedRef } from "vue";
@@ -20,8 +15,7 @@ export interface Rgb {
   b: number;
 }
 
-/** Used on the server and if a token ever fails to resolve. Matches the light
- *  value of `--color-slot-available` in styles/tokens.css. */
+/** Server-side/unresolved fallback; matches the light `--color-slot-available`. */
 export const FALLBACK_SLOT_AVAILABLE: Rgb = { r: 0, g: 153, b: 76 };
 
 function clampChannel(value: number): number {
@@ -29,11 +23,7 @@ function clampChannel(value: number): number {
   return Math.min(255, Math.max(0, Math.round(value)));
 }
 
-/**
- * Parses the color notations a computed style can hand back — `rgb(0, 153, 76)`,
- * `rgb(0 153 76 / 50%)` — plus plain hex, so the function is also usable on
- * literals. Alpha is discarded: callers supply their own.
- */
+/** Parses computed-style rgb()/rgba() notations plus plain hex; alpha is discarded. */
 export function parseCssColor(value: string): Rgb | null {
   const input = value.trim();
   if (input === "") return null;
@@ -94,10 +84,8 @@ export function rgbToHex({ r, g, b }: Rgb): string {
 }
 
 /**
- * The heatmap base for the theme currently on screen. Recomputes whenever the
- * theme flips, because `useTheme().theme` is a dependency — and `setTheme()`
- * writes `data-theme` before updating that ref, so the probe always measures
- * the new theme.
+ * The heatmap base for the theme on screen. `setTheme()` writes `data-theme`
+ * before moving the ref, so the probe always measures the new theme.
  */
 export function useSlotBaseColor(): ComputedRef<Rgb> {
   const { theme } = useTheme();

@@ -1,26 +1,6 @@
 <script setup lang="ts">
-/**
- * Who is free across the region that was just drawn, composed over the chart
- * beside the cells it is about.
- *
- * On a desktop the answer to "who is free at this cell?" is already on screen,
- * in the column beside the chart. On a phone that column is behind a drawer,
- * and a drawer is the wrong place for the answer to the question a tap on a
- * cell *is*: by the time it is open the cell is under it. So the same reading —
- * the time, the fraction, and each person's own mark in the glyph the list uses
- * for it — floats here instead.
- *
- * It answers for a region rather than for a cell, and so it is on the desktop
- * too. The column beside the chart reads one slot and cannot be asked about a
- * span of them; a region can, and the answer is a different one —
- * `regionDigest` gives each person the worst thing they said anywhere inside
- * it, so "4 of 9 free" over an afternoon means four people can make the *whole*
- * afternoon. A one-cell region is the old reading exactly, which is what keeps
- * the phone's tap doing what it always did.
- *
- * The chart owns the region — which cells, what they are called, where their
- * box sits; this owns the reading of them and the card it is printed on.
- */
+// Who is free across the drawn region, floated over the chart. `regionDigest` gives each
+// person the worst thing they said anywhere inside it; a one-cell region is the plain slot reading.
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import {
   placeOverlay,
@@ -35,18 +15,11 @@ import IconHourglass from "../../assets/icons/hourglass.svg";
 import IconClose from "../../assets/icons/close-sm.svg";
 
 const props = defineProps<{
-  /** The region's slots — what the digest is a digest of. */
   slotIds: number[];
   responseIndex: ResponseIndex;
-  /** What the region is called: the cells' own span, in the chart's words. */
   label: string;
-  /**
-   * The region's centre, in the wrap's coordinates, with the region's own
-   * half-height as the clearance — so the card lands clear of the whole
-   * rectangle on whichever side has room, not merely clear of a point.
-   */
+  /** Region centre; clearance is the region's half-height, so the card lands clear of the whole rectangle. */
   anchor: { x: number; y: number; clearance: number };
-  /** The box the card is placed inside and clamped to. */
   field: OverlayField;
 }>();
 
@@ -54,28 +27,14 @@ const emit = defineEmits<{
   dismiss: [];
 }>();
 
-/**
- * How many people the card will name. Eight chips run two or three to a line,
- * so the card stays under about a third of the chart's height on the narrowest
- * phone. Past that it names the people who can make it and counts the rest
- * (`regionDigest`); the drawer holds the full list either way.
- */
+/** Eight chips keep the card under about a third of the chart on the narrowest phone. */
 const SUMMARY_CAP = 8;
 /** Clearance from the chart's own edges. */
 const SUMMARY_GAP = 8;
 
-/** The root element, exposed: the chart tells a press on the card from a press
- *  outside it by asking this element, and a component instance cannot answer
- *  `contains()`. */
+/** Exposed: the chart asks this element `contains()` to tell a press on the card from one outside it. */
 const element = ref<HTMLElement | null>(null);
-/**
- * The card's measured box. It is sized by its own content — a name may be
- * long, a time label may wrap — so the placement cannot be worked out from
- * constants the way it could for a box of buttons. It is rendered once
- * unplaced and invisible, measured, and only then shown, which costs one frame
- * nobody can see and removes a pair of numbers that would have had to track
- * the CSS by hand.
- */
+// Content-sized, so it is rendered once unplaced and invisible, measured, then shown.
 const size = ref<{ width: number; height: number } | null>(null);
 
 function measure() {
@@ -85,10 +44,8 @@ function measure() {
 
 onMounted(measure);
 
-// The content changes as the rectangle grows or is replaced — a name comes or
-// goes with every cell a handle crosses — and the card has to be re-placed
-// against the new box. It keeps the size it has until the new one is read, so
-// it does not blink out under the finger that is dragging it.
+// Re-measure on content change; the old size is kept until the new one is read,
+// so the card does not blink out under a drag.
 watch(
   () => props.slotIds,
   () => void nextTick(measure),
@@ -96,14 +53,11 @@ watch(
 
 const digest = computed(() => regionDigest(props.slotIds, props.responseIndex, { cap: SUMMARY_CAP }));
 
-/** More than one cell, so the fraction is about all of them at once. */
 const whole = computed(() => props.slotIds.length > 1);
 
-// Same three readings the respondents list gives the fraction (`toneFor`).
 const tone = computed(() => toneFor(digest.value.free, digest.value.total));
 
-/** Above by preference: a finger covers what it has just touched, and below a
- *  region near the foot of the chart is where the least room is. */
+// Above by preference: a finger covers what it has just touched.
 const placement = computed(() => {
   const box = size.value;
   if (!box) return { left: props.anchor.x, top: props.anchor.y };
@@ -131,10 +85,6 @@ defineExpose({ element });
     :style="{ left: `${placement.left}px`, top: `${placement.top}px` }"
   >
     <div class="digest__head">
-      <!-- One line, whatever the label says: the card floats over the chart
-           and a second line of heading would push the names it exists to
-           show off the bottom of it. Cut short, the whole of it is still on
-           the element for anything that can ask. -->
       <span class="digest__when" :title="label">{{ label }}</span>
       <button type="button" class="digest__close" aria-label="Dismiss" @click="emit('dismiss')">
         <IconClose width="14" height="14" aria-hidden="true" />
@@ -144,15 +94,10 @@ defineExpose({ element });
     <p v-if="digest.total === 0" class="digest__none">No answers yet.</p>
 
     <template v-else>
-      <!-- The fraction says the same thing the aggregate does: over more
-           than one cell, "free" means free for every one of them, so the
-           word that makes that plain rides along with it. -->
       <p class="digest__count" :class="`digest__count--${tone}`">
         {{ digest.free }} of {{ digest.total }} free{{ whole ? " throughout" : "" }}
       </p>
 
-      <!-- One chip per person, in the same three glyphs the respondents
-           list uses, so the two readings of a slot are the same reading. -->
       <ul class="digest__people">
         <li
           v-for="person in digest.people"
@@ -161,9 +106,7 @@ defineExpose({ element });
           :class="`who--${person.stance}`"
           :title="person.label"
         >
-          <!-- The glyph is the whole of what the chip says about them, so
-               it carries the word rather than sitting out of the tree the
-               way decoration does. -->
+          <!-- The glyph carries the stance for the accessibility tree; it is not decoration. -->
           <span class="who__mark" role="img" :aria-label="STANCE_LABELS[person.stance]">
             <IconCheck v-if="person.stance === 'available'" />
             <IconHourglass v-else-if="person.stance === 'if_needed'" />
@@ -171,9 +114,6 @@ defineExpose({ element });
           </span>
           <span class="who__name">{{ person.label }}</span>
         </li>
-        <!-- Everyone the card chose not to name. Only worth saying beside
-             names it did name: with nobody free to list, the fraction above
-             is already the whole answer. -->
         <li v-if="digest.hidden > 0 && digest.people.length > 0" class="who who--more">
           +{{ digest.hidden }} more
         </li>
@@ -183,15 +123,7 @@ defineExpose({ element });
 </template>
 
 <style scoped>
-/* The respondents column, folded into something a thumb's width of chart can
-   hold and laid over the cell it is about. Placed the way the options strip is —
-   centred on the tap, clamped into the columns, above the finger — and held to a
-   width that leaves the chart either side of it visible, so it reads as an
-   annotation on the grid rather than as a screen of its own.
-
-   Unplaced until measured: it is sized by its content, so the first frame is
-   laid out where the tap was and not shown, and the frame after that is in the
-   right place. */
+/* Unplaced until measured: the first frame is laid out where the tap was and hidden. */
 .digest {
   position: absolute;
   z-index: 18;
@@ -216,11 +148,7 @@ defineExpose({ element });
   gap: 0.25rem;
 }
 
-/* One line. Nothing that floats over the chart is allowed to grow by wrapping:
-   the card is placed against a measured box, and a heading that took a second
-   line would move the names down instead of the card up. `min-width: 0` is what
-   lets it shrink far enough to be cut at all, flex items refusing to go below
-   their content otherwise. */
+/* One line: the card is placed against a measured box, so the heading must not grow by wrapping. */
 .digest__when {
   flex: 1 1 auto;
   min-width: 0;
@@ -233,8 +161,6 @@ defineExpose({ element });
   color: var(--color-text);
 }
 
-/* The card's own dismissal, in the corner a dismissal always sits in. It gives
-   the pin back as well: one tap raised both, one takes both down. */
 .digest__close {
   --focus-ring-inset: calc(var(--focus-ring-offset) * -1);
 
@@ -281,8 +207,6 @@ defineExpose({ element });
   color: var(--color-text-muted);
 }
 
-/* Chips rather than rows: two or three to a line at a phone's width, so a card
-   naming eight people is four lines tall instead of eight. */
 .digest__people {
   display: flex;
   flex-wrap: wrap;
@@ -292,9 +216,6 @@ defineExpose({ element });
   list-style: none;
 }
 
-/* A chip is one line: the glyph, and as much of the name as fits. It may shrink
-   to make room — `min-width: 0` again — and the name inside it is what gives
-   way, so a long one is cut rather than folded onto a line of its own. */
 .who {
   display: inline-flex;
   align-items: center;
@@ -327,7 +248,6 @@ defineExpose({ element });
   text-overflow: ellipsis;
 }
 
-/* The grid's own three colours at ink weight, the same three the list uses. */
 .who--available .who__mark {
   color: var(--color-accent-text);
 }
@@ -340,8 +260,6 @@ defineExpose({ element });
   color: var(--color-danger);
 }
 
-/* Struck through and muted, the way the list says it, so a glance over the
-   chips separates the two answers by weight as well as by glyph. */
 .who--unavailable .who__name {
   color: var(--color-text-muted);
   text-decoration: line-through;
@@ -353,8 +271,6 @@ defineExpose({ element });
   font-size: 0.6875rem;
 }
 
-/* The card's dismissal is the only control on it, and a finger has to be able
-   to hit it without hitting the chart behind. */
 @media (pointer: coarse) {
   .digest__close {
     width: 2.1rem;

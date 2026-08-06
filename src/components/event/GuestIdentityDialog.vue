@@ -1,23 +1,7 @@
 <script setup lang="ts">
-/**
- * Up-front identity step (ARCHITECTURE.md § Guest UX). A response is filed
- * under the [key](../../lib/user-key.ts) of the name, so continuing under a
- * name that normalizes to one that already answered loads and then overwrites
- * that answer — which the dialog says plainly, whatever the spelling.
- *
- * Matching is on keys and nothing else. "ada  LOVELACE" finds "Ada Lovelace",
- * and continuing adopts the spelling the event already carries rather than
- * rewriting it, so the group keeps seeing the name it knows.
- *
- * The rules the server would enforce are enforced here, from the same module,
- * as the guest types — including the one new one, that a name may not contain a
- * dash. Finding out by being refused would be the same answer a few seconds
- * later and in a worse place for it.
- *
- * "Just browsing" is not the same as dismissing the dialog: it says "do not
- * take me as anyone", which has to drop whatever identity the page was holding,
- * so it gets its own event. Closing (Escape, the backdrop, the X) only closes.
- */
+// Up-front identity step (ARCHITECTURE.md § Guest UX). Matching is on user keys:
+// continuing under a name that normalizes to an existing one edits that answer, adopting
+// the event's spelling. "Just browsing" drops the held identity; closing only closes.
 import { computed, ref, watch } from "vue";
 import Button from "../ui/Button.vue";
 import Dialog from "../ui/Dialog.vue";
@@ -29,15 +13,12 @@ import {
   userKey,
 } from "../../lib/user-key";
 
-/** One person already on the event: the key to match, the name to show. */
 export interface KnownPerson {
   key: string;
   displayName: string;
 }
 
-// `dismissible` needs an explicit default: Vue casts an absent Boolean prop to
-// `false`, not `undefined`, so without this the dialog silently loses its close
-// button and its "Just browsing" escape hatch.
+// Explicit default: Vue casts an absent Boolean prop to false, which would silently drop the close button.
 const props = withDefaults(
   defineProps<{
     open: boolean;
@@ -53,13 +34,7 @@ const emit = defineEmits<{
   browse: [];
 }>();
 
-/**
- * Always blank on open. The dialog asks who you are, and a name typed in for
- * you is an answer you did not give — it invites a distracted return visitor to
- * confirm somebody else's row, and it makes the suggestion chips look like a
- * correction rather than the choice they are. Whatever is remembered about this
- * device is used to skip the dialog entirely, not to fill it in.
- */
+// Always blank on open: what is remembered about this device skips the dialog, never fills it in.
 const name = ref("");
 const touched = ref(false);
 
@@ -75,19 +50,9 @@ watch(
 
 const trimmed = computed(() => name.value.trim());
 
-/** The key what has been typed would file under. Empty for an empty field. */
 const typedKey = computed(() => userKey(name.value));
 
-/**
- * What is wrong with the name as it stands, from the server's own rules.
- *
- * Answered **as they type**, with one exception: "a name is required" waits
- * until the field has been touched, because telling somebody their empty field
- * is empty before they have typed in it is noise rather than help. Anything
- * they actually typed is worth answering immediately — finding out about the
- * dash rule by being refused would be the same answer several seconds later and
- * in a worse place for it.
- */
+// "A name is required" waits for touch; anything actually typed is answered immediately.
 const problem = computed(() => {
   const found = guestNameProblem(name.value);
   if (!found) return null;
@@ -95,17 +60,14 @@ const problem = computed(() => {
   return found;
 });
 
-/** Whether the name could be confirmed at all, touched or not. */
 const usable = computed(() => guestNameProblem(name.value) === null);
 
-/** The person already on the event whose key is the one being typed. */
 const matched = computed(() => {
   const needle = typedKey.value;
   if (!needle) return null;
   return props.existingPeople.find((person) => person.key === needle) ?? null;
 });
 
-/** The name confirming would adopt: the event's spelling where there is one. */
 const adopted = computed(() =>
   adoptDisplayName(name.value, matched.value?.displayName),
 );
@@ -128,8 +90,7 @@ function confirm() {
 function pick(person: KnownPerson) {
   name.value = person.displayName;
   touched.value = true;
-  // A legacy spelling cannot be confirmed as typed; the chip fills the field
-  // and says why rather than refusing a click it just invited.
+  // A legacy spelling cannot be confirmed as typed; the chip fills the field and says why.
   if (!usable.value) return;
   emit("confirm", { key: person.key, displayName: adopted.value });
 }
@@ -156,9 +117,6 @@ function pick(person: KnownPerson) {
       />
 
       <p v-if="problem" class="hint hint--error">{{ problem }}.</p>
-      <!-- The one consequence worth spelling out: continuing under a name that
-           answered already edits that answer rather than adding a second. Said
-           in the event's own spelling, which is the one that will be kept. -->
       <p v-else-if="matched" class="hint hint--warn">
         <strong>{{ matched.displayName }}</strong> already answered — continuing
         edits their times.
@@ -184,18 +142,13 @@ function pick(person: KnownPerson) {
         <Button v-if="dismissible" variant="ghost" @click="emit('browse')">
           Just browsing
         </Button>
-        <!-- The name is the only part of this label that can be any length, so
-             it is the only part that gives way. A button is `nowrap` by design,
-             which without a cap here means the panel overflows sideways rather
-             than the label shortening. -->
         <Button
           variant="primary"
           type="submit"
           :disabled="!usable"
           :title="matched ? `Continue as ${adopted}` : undefined"
         >
-          <!-- One element, so the button's flex gap does not land between the
-               words on top of the space that is already there. -->
+          <!-- One element, so the button's flex gap does not land between the words. -->
           <span v-if="matched" class="continue">Continue as <span
             class="continue__name"
           >{{ adopted }}</span></span>
@@ -252,16 +205,12 @@ function pick(person: KnownPerson) {
   list-style: none;
 }
 
-/* The chip caps itself, but its list item has to be allowed to be narrower than
-   the name inside it before that cap can bite. */
+/* The list item must be allowed narrower than the name before the chip's cap can bite. */
 .chips li {
   min-width: 0;
   max-width: 100%;
 }
 
-/* A pill is a pill: one line of it. Left to wrap, a long name turns the chip
-   into a two-line lozenge and the row of them into a ragged block. The cap is
-   generous enough to show most of a real name and never wider than the row. */
 .chip {
   max-width: min(12rem, 100%);
   min-height: 2rem;
@@ -293,9 +242,7 @@ function pick(person: KnownPerson) {
   min-width: 0;
 }
 
-/* `bottom` rather than the baseline an overflow-hidden inline-block would
-   otherwise offer, which sits at its margin edge and drops the name below the
-   words beside it. */
+/* bottom: an overflow-hidden inline-block's baseline sits at its margin edge, dropping the name. */
 .continue__name {
   display: inline-block;
   max-width: 11rem;
@@ -305,7 +252,6 @@ function pick(person: KnownPerson) {
   vertical-align: bottom;
 }
 
-/* Two buttons still stack rather than crowd on the narrowest panel. */
 .actions {
   display: flex;
   flex-wrap: wrap;

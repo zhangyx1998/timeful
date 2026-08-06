@@ -1,35 +1,7 @@
 <script setup lang="ts">
-/**
- * Create / edit form for an event. Builds `dates[]` as UTC instants from the
- * admin's local timezone and `duration` as end - start in hours (end <= start
- * means the window runs past midnight).
- *
- * Slugs (ARCHITECTURE.md § Security)
- * ---------------------------------
- * A default slug is a capability URL: 16 random base62 characters that the
- * server mints. It must never be derived from the event name, or the URL
- * becomes guessable. So the create form leases one up front
- * (`POST /api/slug-leases`) purely to be able to show the final link before the
- * event exists; creating the event consumes that lease. Anything that makes the
- * lease unwanted — typing a custom path, regenerating, cancelling — releases it
- * (`DELETE /api/slug-leases/:slug`). A lease also lapses on its own after ~15
- * minutes, so nothing leaks if the tab is simply closed.
- *
- * Editing leases the same way, because the edit form offers the same shuffle:
- * an admin who wants to retire a guessable path needs a fresh capability slug
- * exactly as much as a new event does. A rename onto a live lease used to be
- * refused while a create claimed it; the server now claims it in both cases
- * (server/routes/events.ts), since the only lease a rename can meet is the one
- * this form took a moment ago for that rename.
- *
- * The path is validated as it is typed, against `lib/slug-rules` — the same
- * module the server validates with, so the inline message is word for word the
- * one the API would have returned, and an illegal path disables saving instead
- * of making the round trip to find out.
- *
- * The form draws no chrome of its own: it is always presented inside
- * `EventFormDialog`, which supplies the panel and the title.
- */
+// Builds `dates[]` as UTC instants; `duration` is end - start in hours (end <= start runs past midnight).
+// Slugs are capability URLs, never derived from the event name (ARCHITECTURE.md § Security):
+// the form leases one up front to preview the link and releases it when unwanted; leases lapse on their own.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   api,
@@ -92,24 +64,19 @@ const endTime = ref(
 );
 const timeIncrement = ref<number>(props.event?.timeIncrement ?? 15);
 const slug = ref(props.event?.slug ?? "");
-// Absent on an event written before live updates existed, and that reads as on
-// — `realtimeAllowed` is the one place that rule is written down.
+// Absent on pre-realtime events reads as on (`realtimeAllowed`).
 const realtime = ref(props.event ? realtimeAllowed(props.event) : true);
 
 const saving = ref(false);
 const error = ref("");
 const slugError = ref("");
 
-// --- slug lease -----------------------------------------------------------
-
-/** The slug currently reserved for this form, or null when nothing is held. */
 const leasedSlug = ref<string | null>(null);
 const leasing = ref(false);
 const leaseNotice = ref("");
 /** Set once the event is created: the server consumed the lease for us. */
 let leaseConsumed = false;
 
-/** True while the field still holds the untouched leased capability slug. */
 const usingLease = computed(
   () => leasedSlug.value !== null && slug.value === leasedSlug.value,
 );
@@ -125,7 +92,6 @@ async function releaseLease(): Promise<void> {
   }
 }
 
-/** Reserves a slug and puts it in the field. */
 async function takeLease(): Promise<void> {
   if (leasing.value) return;
   leasing.value = true;
@@ -143,26 +109,21 @@ async function takeLease(): Promise<void> {
   }
 }
 
-/** Swaps the reserved slug for a fresh one. */
 async function regenerate(): Promise<void> {
   leaseNotice.value = "";
   await releaseLease();
   await takeLease();
 }
 
-// Only a new event opens with a reservation already made: an existing one
-// already has a path, and is only given a new one if the shuffle is pressed.
 onMounted(() => {
   if (!editing.value) void takeLease();
 });
 
-// Cancelling, or navigating away from the form, gives the reservation back.
 onBeforeUnmount(() => {
   void releaseLease();
 });
 
-// Typing a custom path means the reservation is no longer wanted, and makes
-// whatever the server last said about the old value stale.
+// Typing a custom path releases the reservation and stales the old server verdict.
 function onSlugInput(): void {
   slugError.value = "";
   if (leasedSlug.value !== null && slug.value !== leasedSlug.value) {
@@ -171,25 +132,16 @@ function onSlugInput(): void {
   }
 }
 
-// --- derived --------------------------------------------------------------
-
 const duration = computed(() => durationFromTimes(startTime.value, endTime.value));
 const crossesMidnight = computed(() => endTime.value <= startTime.value);
 
 const origin = typeof window === "undefined" ? "" : window.location.origin;
-/** What the field's value is appended to, shown inside the field itself. */
 const originPrefix = `${origin}/`;
 const urlPreview = computed(() => `${origin}/${slug.value}`);
 
-// --- the path's own rules -------------------------------------------------
-
 const trimmedSlug = computed(() => slug.value.trim());
 
-/**
- * The shared rules, applied as the admin types. An empty field is not a
- * problem: creating sends no slug at all and the server mints a capability one,
- * and editing sends none either, which leaves the existing path alone.
- */
+// An empty field sends no slug: the server mints one (create) or keeps the path (edit).
 const slugRuleProblem = computed(() =>
   trimmedSlug.value ? slugProblem(trimmedSlug.value) : null,
 );
@@ -206,9 +158,7 @@ function toggleWeekday(index: number): void {
   dayIndexes.value = [...next].sort((a, b) => a - b);
 }
 
-// Only whitespace is stripped as the field is typed. Slugs are case-sensitive
-// — lowercasing here would mangle a leased capability slug (mixed-case base62)
-// into a different, weaker path than the one that was reserved.
+// Trim only. Slugs are case-sensitive: lowercasing would mangle a leased capability slug into a weaker path.
 watch(slug, (value) => {
   const trimmed = value.trim();
   if (trimmed !== value) slug.value = trimmed;
@@ -236,8 +186,6 @@ function buildPayload(): EventPayload {
     timeIncrement: Number(timeIncrement.value),
     startOnMonday: type.value === "dow" ? startOnMonday.value : false,
     realtime: realtime.value,
-    // An empty field is sent as no slug at all, and the server mints a
-    // capability slug. It is never filled in from the name.
     ...(custom ? { slug: custom } : {}),
   };
 }
@@ -250,8 +198,7 @@ async function submit(): Promise<void> {
     error.value = "Event name is required";
     return;
   }
-  // The button is already disabled for this; the guard is here so a submit
-  // from the keyboard cannot get past it either.
+  // A keyboard submit must not get past the disabled button.
   if (slugRuleProblem.value) return;
   if (type.value === "dow" ? !dayIndexes.value.length : !dayKeys.value.length) {
     error.value = "Pick at least one day";
@@ -263,16 +210,14 @@ async function submit(): Promise<void> {
     const saved = props.event
       ? await api.patch<EventDoc>(eventSettingsPath(props.event.id), buildPayload())
       : await api.post<EventDoc>("/api/events", buildPayload());
-    // The write consumed the reservation server-side — a create always does,
-    // and a rename onto the leased path does too — so do not hand it back.
+    // The write consumed the reservation server-side, so do not hand it back.
     if (!props.event || saved.slug === leasedSlug.value) leaseConsumed = true;
     emit("saved", saved);
   } catch (err) {
     const { message, status } = apiError(err, "Could not save the event");
     const aboutSlug = status === 409 || /slug/i.test(message);
     if (aboutSlug && usingLease.value) {
-      // The reservation went stale (expired, or claimed elsewhere). Take a new
-      // one so the admin can just press save again.
+      // Stale reservation: take a new one so save can just be pressed again.
       leasedSlug.value = null;
       await takeLease();
       leaseNotice.value = "That link was no longer free — here is a fresh one.";
@@ -305,9 +250,6 @@ async function submit(): Promise<void> {
 
     <div v-if="type === 'specific_dates'" class="field">
       <MonthCalendar v-model="dayKeys" />
-      <!-- The calendar shows which days are picked; the count is the part it
-           cannot show at a glance once the choice spans months. The days
-           themselves are one hover away rather than another line of the form. -->
       <p
         v-if="selectedDaysSummary.length"
         class="hint"
@@ -361,11 +303,6 @@ async function submit(): Promise<void> {
     </p>
 
     <div class="field slug">
-      <!-- The origin sits inside the field, ahead of the caret, because the
-           value is the tail of a URL rather than a word: what you type
-           continues what is already written there. The shuffle sits inside it
-           too, at the other end, so it stays on the value's own row however
-           many lines the validation message underneath runs to. -->
       <TextInput
         id="event-slug"
         v-model="slug"
@@ -381,10 +318,6 @@ async function submit(): Promise<void> {
           <span class="slug__origin" dir="rtl"><bdi>{{ originPrefix }}</bdi></span>
         </template>
 
-        <!-- Reserving another random link is one glyph; what it does is in the
-             tooltip, where it costs nothing to read and nothing to skip. It is
-             offered when editing too: retiring a path that turned out to be
-             guessable is exactly when you want a new one. -->
         <template #suffix>
           <span class="slug__regenerate">
             <Spinner v-if="leasing" :size="18" label="Reserving a link" />
@@ -400,16 +333,11 @@ async function submit(): Promise<void> {
         </template>
       </TextInput>
 
-      <!-- The field truncates the origin when it has to; this is where the
-           whole address is always legible, and what you would read out. -->
       <p class="hint hint--url">
         {{ slug ? urlPreview : `${origin}/… — a random link is created on save` }}
       </p>
 
       <p v-if="leaseNotice" class="hint hint--warn">{{ leaseNotice }}</p>
-      <!-- A caution, not a lecture, and only in reaction to the choice being
-           made: it appears when the reserved capability slug is given up for a
-           typed path. The reasoning behind it is a hover, not a paragraph. -->
       <p
         v-else-if="!editing && !usingLease"
         class="hint hint--warn"
@@ -419,11 +347,6 @@ async function submit(): Promise<void> {
       </p>
     </div>
 
-    <!-- Whether a page left open on this event keeps up on its own. Nothing
-         depends on it: with it off the event behaves exactly as it always did,
-         and a respondent sees other people's answers the next time the page
-         loads. It sits last because it is the only setting here that changes
-         nothing about what the event *is*. -->
     <div class="field">
       <label
         class="checkbox"
@@ -436,8 +359,6 @@ async function submit(): Promise<void> {
 
     <ErrorNote :message="error" />
 
-    <!-- Same order as every other dialog in the app: the way out on the left,
-         the thing you came to do at the right edge. -->
     <div class="actions">
       <Button variant="ghost" @click="emit('cancel')">Cancel</Button>
       <Button variant="primary" type="submit" :loading="saving" :disabled="!canSubmit">
@@ -467,7 +388,6 @@ async function submit(): Promise<void> {
   color: var(--color-text);
 }
 
-/* One column on phones, three once there is room for them side by side. */
 .row {
   display: grid;
   gap: 1rem;
@@ -546,18 +466,11 @@ async function submit(): Promise<void> {
   width: 100%;
 }
 
-/* The button sits on the input line, not the label line, and drops below the
-   field when there is no room beside it. */
-/* The fields in this form are laid out flex-start, so a field that should take
-   the whole row has to say so. This one should: it holds a URL. */
 .slug__input {
   width: 100%;
 }
 
-/* The origin gives way before the path does — it is fixed text, and the field's
-   own value is the part being edited — but only once there is actually
-   something to give way over. No cap of its own: the row decides, by handing
-   the input its 12ch first and the origin whatever is left. */
+/* The origin gives way before the path: the row hands the input its 12ch first. */
 .slug__origin {
   display: block;
   overflow: hidden;

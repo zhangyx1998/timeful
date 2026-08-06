@@ -1,17 +1,7 @@
 <script setup lang="ts">
-/**
- * VitePress-style appearance switch: a pill with a sliding knob that carries a
- * sun in light mode and a moon in dark. Clicking flips the theme that is
- * currently on screen and persists that choice (ARCHITECTURE.md § Theming).
- *
- * The knob's position and icon come from CSS, keyed off the same signals as the
- * palette (`prefers-color-scheme` plus `html[data-theme]`), so a server-rendered
- * event page shows the right state before any JavaScript runs — and there is
- * nothing theme-dependent in the markup to mismatch on hydration. Only the ARIA
- * state needs the reactive theme, so it waits for mount.
- *
- * The visible pill is small; the button around it is a full-size tap target.
- */
+// Appearance switch (ARCHITECTURE.md § Theming). Knob state comes from CSS keyed off the
+// same signals as the palette, so SSR is right pre-JS and nothing mismatches on hydration;
+// only the ARIA state needs the reactive theme, so it waits for mount.
 import { computed, onMounted, ref } from "vue";
 import IconSun from "../../assets/icons/sun.svg";
 import IconMoon from "../../assets/icons/moon.svg";
@@ -110,17 +100,9 @@ const label = computed(() =>
   transform: rotate(-90deg) scale(0.6);
 }
 
-/* Dark state. Declared twice on purpose — once for "the system says dark and
-   the user has not overridden it", once for the explicit override — because a
-   media query cannot be folded into a selector list.
-
-   The `html` ancestor is written bare, NOT wrapped in `:global()`. Scoped CSS
-   only stamps the scope attribute onto the last compound selector, so
-   `html[data-theme="dark"] .knob` already compiles to
-   `html[data-theme="dark"] .knob[data-v-x]` — exactly what is wanted. Wrapping
-   the ancestor in `:global()` makes the compiler drop everything after it and
-   emit `html[data-theme="dark"] { … }`, which styles the root element and
-   leaves the knob untouched. */
+/* Declared twice: a media query cannot be folded into a selector list. The `html` ancestor
+   is bare, NOT `:global()` — scoped CSS stamps only the last compound, and `:global()` would
+   make the compiler drop everything after it. */
 @media (prefers-color-scheme: dark) {
   html:not([data-theme="light"]) .knob {
     color: var(--color-accent);

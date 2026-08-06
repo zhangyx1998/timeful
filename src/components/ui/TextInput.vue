@@ -1,15 +1,6 @@
 <script setup lang="ts">
-/**
- * Labelled text field. Any extra attribute (type, autocomplete, required,
- * maxlength, placeholder, …) falls through to the <input>, so callers keep
- * using plain HTML attributes.
- *
- * The border lives on a wrapper rather than on the `<input>` so that a `prefix`
- * slot can sit *inside* the box: fixed text the field's value continues, like
- * the origin an event's path is appended to. Without it the prefix would have
- * to be a separate bordered box, which reads as a second field rather than as
- * one value with a fixed head.
- */
+// Labelled text field; extra attributes fall through to the <input>.
+// The border lives on a wrapper so a `prefix` slot can sit inside the box.
 import { computed, useAttrs, useId } from "vue";
 
 const model = defineModel<string>({ required: true });
@@ -19,7 +10,6 @@ const props = withDefaults(
     label?: string;
     /** Explicit id; otherwise one is generated (stable across SSR/CSR). */
     id?: string;
-    /** Shown under the field, and marks it invalid. */
     error?: string;
     invalid?: boolean;
   }>(),
@@ -28,9 +18,7 @@ const props = withDefaults(
 
 defineOptions({ inheritAttrs: false });
 
-// Attributes go to the <input>, except `class` and `style`: those belong to the
-// wrapper, which is what a caller means by `<TextInput class="…">` (and what
-// lets a caller size the field inside a flex row).
+// class/style stay on the wrapper — what a caller means by `<TextInput class="…">`.
 const attrs = useAttrs();
 const inputAttrs = computed(() => {
   const { class: _class, style: _style, ...rest } = attrs;
@@ -50,8 +38,6 @@ const messageId = computed(() => `${inputId.value}-message`);
       class="text-field__control"
       :class="{ 'text-field__control--invalid': isInvalid }"
     >
-      <!-- Inert: clicking the fixed head puts the caret in the field, which is
-           the only thing here you can actually type into. -->
       <span v-if="$slots.prefix" class="text-field__prefix" aria-hidden="true">
         <slot name="prefix" />
       </span>
@@ -63,9 +49,6 @@ const messageId = computed(() => `${inputId.value}-message`);
         :aria-describedby="error ? messageId : undefined"
         v-bind="inputAttrs"
       />
-      <!-- A control that acts on the value, kept on the value's own row rather
-           than beside the whole field — where a validation message underneath
-           would push it out of line with the input it belongs to. -->
       <span v-if="$slots.suffix" class="text-field__suffix">
         <slot name="suffix" />
       </span>
@@ -91,8 +74,6 @@ const messageId = computed(() => `${inputId.value}-message`);
   color: var(--color-text);
 }
 
-/* The box. What used to be the input's own border, moved out one level so the
-   prefix can share it. */
 .text-field__control {
   display: flex;
   align-items: stretch;
@@ -108,8 +89,7 @@ const messageId = computed(() => `${inputId.value}-message`);
   box-shadow: var(--focus-shadow);
 }
 
-/* Wrong beats focused: with the field validated as it is typed, the caret is
-   normally still in it when it is being told what is wrong. */
+/* Wrong beats focused: the caret is normally still in the field being told what is wrong. */
 .text-field__control--invalid,
 .text-field__control--invalid:focus-within {
   border-color: var(--color-danger);
@@ -123,10 +103,7 @@ const messageId = computed(() => `${inputId.value}-message`);
   opacity: var(--disabled-opacity);
 }
 
-/* Truncates from the *left* when there is not enough room: the end of an origin
-   is the part that identifies it, and the scheme is the part you can afford to
-   lose. `dir="rtl"` is what moves the ellipsis to the front; the `bdi` keeps
-   the text itself reading left to right inside it. */
+/* Left-truncation: `dir="rtl"` moves the ellipsis to the front; the `bdi` keeps the text reading LTR. */
 .text-field__prefix {
   display: flex;
   flex: 0 1 auto;
@@ -141,12 +118,7 @@ const messageId = computed(() => `${inputId.value}-message`);
   user-select: none;
 }
 
-/* Basis and floor rather than `width: 100%`. Asking for the whole control made
-   the input's share unshrinkable in practice: every pixel a prefix wanted came
-   out of the prefix, so an origin was being ellipsised next to a field with
-   most of a row to spare. Now the input asks for a usable minimum, takes
-   everything left over, and only stops giving ground at 12 characters — which
-   is the point at which a prefix truncating is the lesser loss. */
+/* Basis + floor, not width:100%: the input takes the leftovers and stops giving ground at 12ch. */
 .text-field__input {
   flex: 1 1 12ch;
   min-width: 12ch;
@@ -161,7 +133,6 @@ const messageId = computed(() => `${inputId.value}-message`);
   outline: none;
 }
 
-/* The value continues the prefix, so nothing separates them. */
 .text-field__prefix + .text-field__input {
   padding-left: 0.1rem;
 }
@@ -176,8 +147,7 @@ const messageId = computed(() => `${inputId.value}-message`);
 @media (pointer: coarse) {
   .text-field__input {
     min-height: var(--tap-min);
-    /* iOS Safari auto-zooms any focused text control under 16px; staying at
-       1rem keeps the page still without forbidding the user to zoom. */
+    /* iOS Safari auto-zooms any focused text control under 16px. */
     font-size: 1rem;
   }
 }

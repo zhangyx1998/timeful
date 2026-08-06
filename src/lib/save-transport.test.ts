@@ -1,11 +1,6 @@
 /**
- * Which pipe a save goes down, and what happens when one of them fails.
- *
- * The second half of this file runs the transport underneath the real sync
- * engine, because the thing actually worth protecting is not either piece but
- * the join: the engine's coalescing, baselines and era counter have to behave
- * identically whichever transport kept the promise, and a socket that dies
- * between an edit and its flush has to end with the edit on the server anyway.
+ * Which pipe a save goes down and what happens when one fails; the second half
+ * runs the transport under the real sync engine, protecting the join.
  */
 import { describe, expect, it, vi } from "vitest";
 import { RealtimeSaveError, type SavePayload } from "./realtime";

@@ -1,15 +1,7 @@
 /**
- * The wire shapes of the admin log streams.
- *
- * The server keeps short in-memory ring buffers of what it has been doing —
- * one global, one per event — and streams them to the signed-in owner over a
- * disposable WebSocket (`/api/logs` for the server, `/<slug>/logs` for one
- * event). These are the frames that socket carries and the entries inside
- * them, defined here so the viewer and the server cannot drift; `server/log.ts`
- * and `server/types.ts` import them type-only.
- *
- * Nothing here is persisted and nothing here is public: the buffers live in
- * process memory, are capped, and are served only behind the admin session.
+ * Wire shapes of the admin log streams (`/api/logs`, `/<slug>/logs`); the
+ * server imports them type-only so the two halves cannot drift. The buffers
+ * are in-memory, capped, and served only behind the admin session.
  */
 
 export type LogLevel = "error" | "warn" | "info";

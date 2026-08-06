@@ -1,15 +1,6 @@
 /**
- * Which of the two event pages this is, and how much of the chart fits.
- *
- * One measurement decides both, which is why they are one composable: below
- * `COMPACT_MAX_WIDTH` the page is an app — viewport-locked, controls in drawers
- * — and above it a document, and the column count is derived from the same
- * width either way (`perViewFor`).
- *
- * A `resize` listener rather than a media query, because the second half of the
- * answer is a number rather than a boolean and there is no query for "how many
- * columns". Registered on mount and removed on unmount, so a component using
- * this leaves nothing behind.
+ * Phone-vs-desktop layout and the chart's column count, off one measurement.
+ * A `resize` listener, not a media query: there is no query for "how many columns".
  */
 import { onBeforeUnmount, onMounted, ref, type Ref } from "vue";
 import { COMPACT_MAX_WIDTH, DESKTOP_PER_VIEW, perViewFor } from "./grid";

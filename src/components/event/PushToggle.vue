@@ -1,26 +1,7 @@
 <script setup lang="ts">
-/**
- * The opt-in bell: one browser asking to be told about one event, in one
- * role. The owner's copy lives with the admin tools ("about responses"); a
- * named respondent's lives with their identity ("about the event").
- *
- * Three rules, all about consent:
- *
- * - it renders **nothing** where push cannot work — an insecure context, a
- *   browser without the API. A control that only ever explains why it is
- *   disabled is chrome, not a control — unless the explanation is an
- *   instruction the person reading it can act on, which is the one exception:
- *   iOS before install-to-home-screen shows the bell disabled with the tap
- *   that would bring it to life (`pushBlock`);
- * - the permission prompt fires only from a press on this bell, never on
- *   load (`lib/push.ts` is written so that is the only call site);
- * - a **denied** permission is shown quietly as a disabled bell with one line
- *   of explanation, because the browser will not ask again and pretending
- *   the toggle still works would be a lie.
- *
- * Two shapes for its two homes: `tool` is a row in the admin tools' column,
- * `setting` is a label-and-checkbox row like the settings drawer's own.
- */
+// The opt-in bell. Renders nothing where push cannot work, except iOS pre-install,
+// shown disabled with the actionable instruction (`pushBlock`). The permission prompt
+// fires only from a press on the bell; a denied permission disables it quietly.
 import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
 import Spinner from "../ui/Spinner.vue";
 import IconBell from "../../assets/icons/bell.svg";
@@ -40,7 +21,6 @@ const props = withDefaults(
   defineProps<{
     eventId: string;
     role: "owner" | "respondent";
-    /** The adopted identity; respondent bells only. */
     userKey?: string | null;
     label: string;
     variant?: "tool" | "setting";
@@ -54,8 +34,7 @@ const binding = computed<PushBinding>(() => ({
   ...(props.userKey === null ? {} : { userKey: props.userKey }),
 }));
 
-// Refs, not constants: a disabled bell is a standing on-screen claim, so
-// what it claims has to be re-readable after setup.
+// Refs, not constants: a disabled bell's claim must be re-readable after setup.
 const supported = ref(pushSupported());
 const block = ref(pushBlock());
 const enabled = ref(supported.value && pushEnabled(binding.value));
@@ -66,12 +45,7 @@ const failed = ref(false);
 /** Ties the install instruction to the bell it explains. */
 const blockNoteId = useId();
 
-/**
- * Re-reads what the bell claims. Strictly passive — it must never call
- * `enablePush` or `resyncPush`: the prompt only ever fires from a press on
- * the bell, and `onMounted`'s resync stays the only place a re-registration
- * belongs.
- */
+// Strictly passive: must never call enablePush/resyncPush — the prompt fires only from a press.
 function readState(): void {
   if (busy.value) return; // a toggle in flight owns these refs
   supported.value = pushSupported();
@@ -87,17 +61,13 @@ function onVisibility(): void {
 let permission: PermissionStatus | null = null;
 
 onMounted(() => {
-  // Heal a subscription the server pruned or the push service rotated. Never
-  // prompts: it only runs where permission is already granted.
+  // Heals a pruned/rotated subscription; never prompts — only runs where permission is granted.
   if (enabled.value) void resyncPush(binding.value);
 
-  // A disabled bell is a standing on-screen claim, and the visitor changes
-  // its facts elsewhere — installing to the home screen, flipping the site's
-  // permission — so coming back into view re-reads them.
+  // The facts change elsewhere (home-screen install, site permission), so re-read on return.
   document.addEventListener("visibilitychange", onVisibility);
 
-  // The authoritative signal, where the browser offers it. It throws or is
-  // absent in older Safari, so it can never be the only path.
+  // Throws or is absent in older Safari, so it can never be the only path.
   try {
     void navigator.permissions
       ?.query({ name: "notifications" })
@@ -116,8 +86,7 @@ onBeforeUnmount(() => {
   if (permission) permission.onchange = null;
 });
 
-// Answering as somebody else re-files the respondent subscription under the
-// new key — same browser, same endpoint, so the server upserts in place.
+// A new identity re-files the subscription under the new key; the server upserts in place.
 watch(
   () => props.userKey,
   () => {
@@ -167,15 +136,10 @@ async function toggle(): Promise<void> {
       </span>
     </button>
 
-    <!-- Not a shrug but an instruction: this is the one tap that brings the
-         bell to life on iOS, and the only reason a disabled bell renders at
-         all (`pushBlock`). -->
     <p v-if="block" :id="blockNoteId" class="note">
       Add to Home Screen to get notifications.
     </p>
 
-    <!-- The browser will not ask again; only its own site settings can. Said
-         once, quietly, under the bell it explains. -->
     <p v-else-if="denied" class="note">
       Notifications are blocked for this site in your browser settings.
     </p>
@@ -220,8 +184,6 @@ async function toggle(): Promise<void> {
   opacity: var(--disabled-opacity);
 }
 
-/* The state is the glyph's colour as much as its shape: an accent bell is
-   ringing, a muted struck-through one is not. */
 .bell--on {
   color: var(--color-text);
 }
@@ -262,9 +224,6 @@ async function toggle(): Promise<void> {
   color: var(--color-danger);
 }
 
-/* --- the settings-drawer shape --------------------------------------------
-   A full row, label leading and state trailing, at the drawer's own tap
-   floor: it sits among rows built exactly like this. */
 .push--setting .bell {
   gap: 0.6rem;
   min-height: var(--tap-min);
@@ -302,8 +261,6 @@ async function toggle(): Promise<void> {
   padding: 0;
 }
 
-/* In the tools column the rows meet the tap floor on coarse pointers, the way
-   the link row beside them does. */
 @media (pointer: coarse) {
   .push--tool .bell {
     min-height: var(--tap-min);

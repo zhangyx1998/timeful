@@ -1,16 +1,7 @@
 /**
- * The browser half of the realtime channel.
- *
- * What matters about a connector nobody can see is that it never becomes
- * visible: it must not spin, must not reconnect forever after the thing it was
- * watching is gone, must not run at all where there is no browser, and must
- * survive anything arriving on the wire without taking the page down with it.
- * All of that is timing and dispatch, so it is tested against a fake socket and
- * fake timers rather than a server.
- *
- * The write session adds two more things to hold: a save must settle exactly
- * once however the socket behaves afterwards, and being refused or replaced
- * must land the page on the browse socket rather than in a fight over the key.
+ * The realtime connector, against a fake socket and fake timers: it must stay
+ * invisible, survive anything off the wire, settle each save exactly once,
+ * and land on the browse socket when refused or replaced.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {

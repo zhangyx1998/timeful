@@ -1,42 +1,15 @@
 <script setup lang="ts">
-/**
- * A control whose whole content is an icon: a 44px hit area (ARCHITECTURE.md
- * § UX bar) wrapped around a small glyph, matching the theme toggle that sits
- * next to it in the header.
- *
- * Renders an `<a>` when given an `href` and a `<button>` otherwise, so a
- * navigation stays a real link — middle-click, open in a new tab, and the
- * status bar all keep working. `label` is required: there is no visible text
- * to name the control, so it supplies the accessible name and, unless a site
- * opts out with `tooltip: false`, the hover tooltip.
- *
- * Two knobs are custom properties rather than props, because they are read by
- * this component's own rules and a caller's scoped declaration of a custom
- * property cannot lose a specificity tie the way a competing `svg` rule can:
- * `--icon-button-glyph` sizes the slotted glyph (default 1.125rem), and
- * `--icon-button-hover-color` / `--icon-button-hover-bg` recolour the hover
- * state — the identity card's bin turns danger-red this way.
- */
+// Icon-only control with a 44px hit area (ARCHITECTURE.md § UX bar). Renders an <a> when
+// given an href so navigation stays a real link. Glyph size and hover colours are custom
+// properties, not props: a caller's scoped custom property cannot lose a specificity tie.
 withDefaults(
   defineProps<{
     label: string;
-    /** Renders a link to this target instead of a button. */
     href?: string;
     type?: "button" | "submit" | "reset";
-    /**
-     * `md` is the full 44px box. The rest are for a control that sits *inside*
-     * another, where a full box would set the height of the thing containing
-     * it: `sm` (2.25rem) beside a form field, `xs` (2rem, tighter corners) in a
-     * dialog or calendar header, `xxs` (1.75rem) trailing a card's own row.
-     * Under a coarse pointer every size grows back to the tap floor, since
-     * that is the size a finger needs whatever the button is nested in.
-     */
+    /** Sub-md sizes are for nesting; every size grows back to the tap floor under a coarse pointer. */
     size?: "md" | "sm" | "xs" | "xxs";
-    /**
-     * Whether `label` is also the native tooltip. Opt out where the control
-     * already reads as its own name — a dialog's close cross needs no bubble
-     * saying "Close" — while keeping the `aria-label`.
-     */
+    /** Opt out where the control reads as its own name; the aria-label stays. */
     tooltip?: boolean;
   }>(),
   { href: "", type: "button", size: "md", tooltip: true },
@@ -81,10 +54,7 @@ withDefaults(
   background: var(--icon-button-hover-bg, var(--color-subtle));
 }
 
-/* Held, not taken away: a disabled instance keeps its place and its glyph —
-   the dialog's close stays put while `locked` so the header does not reflow —
-   but it dims like every other gated control, and the cursor says it is not
-   answering right now. */
+/* Keeps its place and glyph while disabled: the dialog's close must not reflow the header. */
 .icon-button:disabled {
   opacity: var(--disabled-opacity);
   cursor: not-allowed;
@@ -95,8 +65,6 @@ withDefaults(
   height: 2.25rem;
 }
 
-/* The header step: small enough not to stretch the row of a dialog or
-   calendar heading, cornered to match the chrome it sits in. */
 .icon-button--xs {
   width: 2rem;
   height: 2rem;
@@ -117,9 +85,7 @@ withDefaults(
   }
 }
 
-/* The glyph is passed in by the parent, so it carries the parent's scope:
-   `:slotted` is what reaches it from here. Sized through the custom property
-   so a caller never has to out-order this rule with an `svg` selector. */
+/* Sized via the custom property so a caller never has to out-order this rule with an svg selector. */
 .icon-button :slotted(svg) {
   width: var(--icon-button-glyph, 1.125rem);
   height: var(--icon-button-glyph, 1.125rem);

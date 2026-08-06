@@ -1,12 +1,7 @@
 /**
- * Copying text to the clipboard, for the two places that hand out event URLs:
- * the admin's event list and the event page's copy-link button.
- *
- * `navigator.clipboard` only exists in a secure context, and a self-hosted
- * Timeful is often reached over plain http on a LAN, so the legacy
- * `execCommand("copy")` path is a real fallback rather than dead weight.
- * Returns whether the text made it — callers use that to decide whether to
- * claim success.
+ * Clipboard copy. `navigator.clipboard` needs a secure context and self-hosted
+ * Timeful is often plain http on a LAN, so the `execCommand` path is a real
+ * fallback. Returns whether the text made it.
  */
 export async function copyText(text: string): Promise<boolean> {
   try {

@@ -1,25 +1,15 @@
-/* Design tokens — the single source of truth for the UI palette and shape.
-   Consumed from <style scoped> blocks via var(--*). Do not hardcode colors in
-   components (ARCHITECTURE.md § Styling).
+/* Design tokens — the single source of truth for the UI palette and shape;
+   never hardcode a color in a component (ARCHITECTURE.md § Styling).
 
-   Theming (ARCHITECTURE.md § Theming)
-   -----------------------------------
-   Every color token is declared once as `light-dark(<light>, <dark>)`. Which
-   half applies is decided by the element's used color-scheme:
+   Theming (ARCHITECTURE.md § Theming): every color token is declared once as
+   `light-dark()`; the element's used color-scheme picks the half — :root is
+   `light dark` (follow the OS), `data-theme` forces one. `data-theme` is
+   written by the before-first-paint script in index.html, then by
+   src/lib/theme.ts.
 
-     :root                      -> `light dark`, i.e. follow prefers-color-scheme
-     :root[data-theme="light"]  -> forced light
-     :root[data-theme="dark"]   -> forced dark
-
-   `data-theme` is written by the before-first-paint script in index.html from
-   localStorage["timeful.theme"], and thereafter by src/lib/theme.ts. Absent
-   attribute = follow the system. Setting `color-scheme` also themes native
-   widgets (scrollbars, checkboxes, date pickers) for free.
-
-   Runtime readers (the heatmap) must not parse these declarations textually —
-   `light-dark()` survives into the computed value of an unregistered custom
-   property. Resolve them through an element's computed `color` instead; see
-   src/lib/colors.ts. */
+   Runtime readers must not parse these declarations textually — `light-dark()`
+   survives into the computed value of an unregistered custom property. Resolve
+   through an element's computed `color`; see src/lib/colors.ts. */
 
 :root {
   color-scheme: light dark;
@@ -28,10 +18,8 @@
   /* bg: the page. surface: cards/inputs/headers. raised: menus & dialogs.
      subtle: hover fills and inert chips. */
   --color-bg: light-dark(#fafafa, #1b1b1f);
-  /* Both values are restated as the `theme-color` meta pair in index.html —
-     the browser tints its own chrome with that, and the bars this colour
-     paints are what sit against it. Change one, change the other; the standalone
-     404 page carries the `--color-bg` pair for the same reason. */
+  /* Restated as the `theme-color` meta pair in index.html; the standalone 404
+     page carries the `--color-bg` pair. Change one, change the other. */
   --color-surface: light-dark(#ffffff, #202127);
   --color-raised: light-dark(#ffffff, #26262c);
   --color-subtle: light-dark(#f4f4f5, #2a2b31);
@@ -44,8 +32,7 @@
   --color-text-muted: light-dark(#71717a, #9a9aa5);
 
   /* --- accent ------------------------------------------------------------ */
-  /* The same green either side; lifted in dark so it stays a green and not a
-     smudge. `accent-contrast` is what sits on top of a filled accent surface. */
+  /* `accent-contrast` is what sits on top of a filled accent surface. */
   --color-accent: light-dark(#00994c, #35d07f);
   --color-accent-hover: light-dark(#007a3d, #56dd97);
   --color-accent-contrast: light-dark(#ffffff, #0c1a13);
@@ -62,23 +49,16 @@
 
   /* --- availability grid -------------------------------------------------- */
   /* `slot-available` doubles as the heatmap base: every filled cell is this
-     color at a computed alpha, so it has to stay legible against `slot-empty`
-     in both themes. */
+     color at a computed alpha, so it must stay legible against `slot-empty`. */
   --color-slot-empty: light-dark(#f4f4f5, #26272d);
   --color-slot-available: light-dark(#00994c, #35d07f);
   --color-slot-if-needed: light-dark(#ffe8b8, #8a6a24);
   --color-slot-disabled: light-dark(#fafafa, #1b1b1f);
-  /* The if-needed fill at text weight: same hue (41°) either side, but taken
-     dark enough in light mode and light enough in dark mode to carry a glyph or
-     a caption — the fill itself is a wash and disappears at that size. Use this
-     wherever if-needed is stated in ink rather than painted as an area. */
+  /* The if-needed fill at ink weight, for wherever if-needed is stated in text. */
   --color-if-needed-text: light-dark(#996900, #f0bc4c);
-  /* The ring drawn round the rectangle a drag is spanning, and kept there while
-     the options that apply to it are still on screen. Blue says a selection is
-     being made, red that one is being taken away — and neither may be confused
-     with the fills it is drawn over, which is why the blue is a hue the grid
-     uses nowhere else and the red is the danger colour at ink weight rather
-     than the wash `--color-danger-soft` paints the cells themselves with. */
+  /* Selection ring: blue = creating, red = deleting. The blue is a hue the
+     grid uses nowhere else, the red is danger at ink weight, so neither can be
+     confused with the fills it is drawn over. */
   --color-selection-create: light-dark(#1d4ed8, #6ba5ff);
   --color-selection-delete: var(--color-danger);
 
@@ -100,23 +80,13 @@
   --shadow-md: 0 4px 12px var(--shadow-color-md);
 
   /* --- glass -------------------------------------------------------------- */
-  /* A chip floating over the chart, saying what the chart is currently doing.
-     It has to stay readable over a heatmap at full saturation and still let
-     that heatmap be seen through it, because what it describes is directly
-     underneath — an opaque chip in the middle of the columns is a hole in the
-     thing being read.
-
-     So: a tinted, blurred pane. The tint carries most of the contrast, the blur
-     kills the texture that would otherwise fight the text, and the saturate
-     keeps the greens underneath looking like the greens they are rather than
-     going grey behind the frost. `--color-glass-solid` is the same surface with
-     the transparency taken out, for a browser with no `backdrop-filter` and for
-     anyone who has asked for less of it. */
+  /* A tinted, blurred pane readable over the heatmap while letting it show
+     through. `--color-glass-solid` is the same surface without transparency,
+     for browsers without `backdrop-filter` and for reduced-transparency. */
   --color-glass: light-dark(rgb(255 255 255 / 0.72), rgb(30 31 36 / 0.72));
   --color-glass-solid: light-dark(#ffffff, #26272d);
   --color-glass-border: light-dark(rgb(24 24 27 / 0.14), rgb(255 255 255 / 0.16));
-  /* The hairline along the top inside edge: what makes a pane of glass read as
-     having a thickness rather than as a rectangle of paint. */
+  /* The top inside hairline that makes the pane read as having thickness. */
   --color-glass-highlight: light-dark(rgb(255 255 255 / 0.9), rgb(255 255 255 / 0.14));
   --blur-glass: blur(16px) saturate(180%);
   --shadow-glass: 0 6px 20px var(--shadow-color-md), 0 1px 2px var(--shadow-color-sm);
@@ -126,39 +96,25 @@
   --focus-ring-color: var(--color-accent);
   --focus-ring: var(--focus-ring-width) solid var(--focus-ring-color);
   --focus-ring-offset: 2px;
-  /* Text fields keep their border and take a soft halo instead of an outline,
-     so the field does not visually jump on focus. */
+  /* Text fields keep their border and take a soft halo, so they do not jump on focus. */
   --focus-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 28%, transparent);
-  /* The same halo for a field that is focused *and* wrong: what is being said
-     about the value has to survive the caret being in it. */
+  /* The same halo for a field that is focused *and* wrong. */
   --focus-shadow-danger: 0 0 0 3px color-mix(in srgb, var(--color-danger) 28%, transparent);
 
   /* --- display insets ----------------------------------------------------- */
-  /* What the display itself takes: the notch or status bar, the home indicator,
-     and — in landscape — whichever side the camera is on. Zero on a screen that
-     has none, and zero on any screen unless the document asked for the whole
-     display (`viewport-fit=cover` in index.html), so anything fixed to an edge
-     can refer to them unconditionally and cost nothing where they do not apply.
-     Named as tokens rather than written as env() at each site so the phone
-     layout can be checked at made-up inset values. */
+  /* Zero unless the document asked for the whole display (`viewport-fit=cover`
+     in index.html). Tokens rather than env() at each site, so the phone layout
+     can be checked at made-up inset values. */
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
 
-  /* What the on-screen keyboard takes, when there is one. The page is no longer
-     resized to make room for it (`interactive-widget=overlays-content` in
-     index.html), so anything that must stay visible above it says so here.
-
-     Two sources because no browser has both: `env(keyboard-inset-height)` is
-     Chromium's, populated by the VirtualKeyboard opt-in, and `--keyboard-inset`
-     is the visualViewport measurement src/lib/keyboard.ts publishes, which is
-     all iOS Safari gives. Zero in both places until a keyboard is actually up.
-
-     `max()` and never a sum — of these three and the home indicator alike. An
-     open keyboard covers the home indicator, so adding the two would push a
-     sheet a thumb's width above the keyboard; and where both keyboard signals
-     report, they are reporting the same keyboard. */
+  /* Two keyboard sources because no browser has both: `env(keyboard-inset-height)`
+     is Chromium's (after the VirtualKeyboard opt-in); `--keyboard-inset` is the
+     visualViewport measurement src/lib/keyboard.ts publishes (all iOS gives).
+     `max()`, never a sum: an open keyboard covers the home indicator, and where
+     both signals report they report the same keyboard. */
   --keyboard-inset: 0px;
   --overlay-bottom: max(
     env(keyboard-inset-height, 0px),
@@ -167,11 +123,10 @@
   );
 
   /* --- metrics ------------------------------------------------------------ */
-  /* `--tap-min` is the ≥44px touch target floor from ARCHITECTURE.md § UX bar;
-     primitives apply it under coarse pointers. */
+  /* The ≥44px touch target floor (ARCHITECTURE.md § UX bar); primitives apply
+     it under coarse pointers. */
   --tap-min: 44px;
-  /* How far a disabled control dims — one value, so every gated control in the
-     app reads as gated to the same degree. */
+  /* One value, so every gated control reads as gated to the same degree. */
   --disabled-opacity: 0.5;
   --header-height: 3.25rem;
   --page-max: 64rem;

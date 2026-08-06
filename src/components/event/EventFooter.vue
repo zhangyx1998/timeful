@@ -1,23 +1,6 @@
 <script setup lang="ts">
-/**
- * The foot of the event page: what this software is, and the quiet door out.
- *
- * One component, two mounts that are never on screen together — the last item
- * of the desktop sidebar, and the last content of the phone's settings drawer
- * (the sidebar renders only above 820px, the drawer only below it). Everything
- * in it is about the page rather than the event, which is why it sits after
- * everything the event is about.
- *
- * Top to bottom:
- *
- * 1. When live updates should be flowing and are not, it says so — see
- *    `realtimeDown`. Top-most because it is the only row that can matter.
- * 2. The name and version of the software, with the GitHub mark linking to
- *    where it lives. Muted: a colophon, not a promotion.
- * 3. The administrator sign-in, for the one visitor it concerns. It renders
- *    the same dialog it always has (`AdminLoginLink`) and disappears once
- *    signed in — the owner's tools live elsewhere.
- */
+// The foot of the event page: colophon plus the admin sign-in. Two mounts that are
+// never on screen together — the desktop sidebar and the phone's settings drawer.
 import AdminLoginLink from "./AdminLoginLink.vue";
 import OfflineNotice from "./OfflineNotice.vue";
 import IconGitHub from "../../assets/icons/github.svg";
@@ -26,13 +9,6 @@ import { VERSION } from "../../lib/version";
 
 withDefaults(
   defineProps<{
-    /**
-     * Live updates were expected and the connection has stayed down. Only the
-     * page can say so — it owns the socket and knows whether the event allows
-     * realtime at all — so this arrives as a prop rather than being derived
-     * here. False covers both "everything is fine" and "this event never had
-     * live updates", neither of which is worth a row.
-     */
     realtimeDown?: boolean;
   }>(),
   { realtimeDown: false },
@@ -69,8 +45,6 @@ withDefaults(
   align-items: center;
 }
 
-/* The one row here that talks about a problem — its look lives in
-   `OfflineNotice`; only the footer's own spacing under it belongs here. */
 .footer__offline {
   margin-bottom: 0.4rem;
 }
@@ -86,8 +60,6 @@ withDefaults(
   color: var(--color-text-muted);
 }
 
-/* An icon-sized link, padded out to something a finger can land on where
-   there is no pointer to be precise with. */
 .repo {
   display: inline-grid;
   place-items: center;

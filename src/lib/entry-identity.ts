@@ -1,24 +1,9 @@
 /**
- * Who an arriving visitor probably is, and how sure the page may be about it.
- *
- * The event page's URL is stateful (`event-routes.ts`): `/<slug>` is the
- * landing that asks, `/<slug>/view` shows the group and asks nothing, and
- * `/<slug>/edit/<key>` is one person's edit view. Two more signals arrive with
- * a visit: the landing's query — a personalized invite link, produced by the
- * invite dialog as an opaque token (`inviteLink`/`readEntryQuery` below), with
- * plain `?name=` accepted for hand-typed links — and the name this device
- * remembers in localStorage. This module decides what those add up to:
- *
- * - **welcome** — greet one named person and ask for a single tap of
- *   confirmation. Nobody is ever entered silently on a landing; the query
- *   outranks a different remembered name for who gets greeted, but only ever
- *   wins the first move — declining costs the remembered identity nothing.
- * - **ask** — nothing usable to greet with: the generic identity dialog.
- * - **view** — the group view was asked for by URL; no prompt at all.
- *
- * The decision is pure and tested without a DOM. Validation and normalization
- * come from `user-key.ts` — the same rules the identity dialog and the server
- * enforce — never a second copy.
+ * Who an arriving visitor probably is. Inputs: the stateful URL
+ * (`event-routes.ts`), the invite link's opaque query token (plain `?name=`
+ * accepted for hand-typed links), and the name this device remembers.
+ * Decisions: welcome (greet, one-tap confirm — nobody is entered silently),
+ * ask, or view. Pure; validation comes from `user-key.ts`, never a second copy.
  */
 import {
   adoptDisplayName,
@@ -35,14 +20,9 @@ export const ENTRY_PREFIX_PARAM = "prefix";
 export const MAX_GREETING_PREFIX_LENGTH = 20;
 
 /**
- * The greeting prefix is **decoration only**: it rides an invite link and
- * shapes the welcome prompt's headline — "Welcome, Prof. Ada Lovelace" — and
- * nothing else. It never enters the user key, the stored display name, the
- * respondents list or the window title; identity remains a function of the
- * name alone, so "Prof. Ada" and "Ada" are one person. Validated loosely for
- * the same reason: an unusable prefix (blank, over-long, carrying a dash) is
- * silently dropped, never an error — a decoration is not worth blocking a
- * link over.
+ * The prefix is decoration only: it never enters the key, the stored name,
+ * the respondents list or the title. Unusable ones are dropped silently —
+ * a decoration is not worth blocking a link over.
  */
 export function normalizeGreetingPrefix(raw: string | null | undefined): string | null {
   const prefix = raw?.trim() ?? "";
@@ -64,16 +44,12 @@ export type EntryRoute =
   | { kind: "edit"; key: string };
 
 export type EntryDecision =
-  /** Straight to the group view; nothing is asked. */
   | { action: "view" }
-  /** Nothing usable to greet with: open the generic identity dialog. */
   | { action: "ask" }
   /**
-   * Greet the named person and ask for one tap. The display name is the
-   * event's own spelling when the key matches somebody who already answered
-   * (`matched`), so the greeting shows the name the group knows. `prefix` is
-   * the link's greeting decoration, carried only when the link's own name is
-   * the one being greeted — it decorates that greeting and nothing after it.
+   * Greet the named person and ask for one tap. `displayName` is the event's
+   * own spelling when the key `matched`; `prefix` decorates only a greeting of
+   * the link's own name.
    */
   | {
       action: "welcome";
@@ -83,11 +59,7 @@ export type EntryDecision =
       prefix: string | null;
     };
 
-/**
- * What this arrival means. `storedName` is the raw remembered name, if any; a
- * remembered spelling that is itself no longer legal (a legacy one with a
- * dash) is no name at all here, exactly as the boot path treats it.
- */
+/** A stored spelling that is no longer legal counts as no name, as on boot. */
 export function resolveEntryIdentity(
   entry: EntryRoute,
   storedName: string | null,
@@ -100,10 +72,8 @@ export function resolveEntryIdentity(
     case "edit":
       return editDecision(entry.key, stored, people);
     case "root": {
-      // The link's name wins the greeting over the remembered one — an invite
-      // is addressed to somebody — but never more than the greeting. The
-      // prefix belongs to the link's name alone: a greeting that fell back to
-      // the remembered name is not the invitee's, so it is not decorated.
+      // The link's name wins the greeting over the remembered one, but only
+      // the greeting; the prefix belongs to the link's name alone.
       const fromQuery = usableName(entry.queryName);
       const candidate = fromQuery ?? stored;
       if (candidate === null) return { action: "ask" };
@@ -139,12 +109,9 @@ function welcomeFor(
 }
 
 /**
- * A landing on `/edit/<key>` names its person by key, so the greeting works
- * backwards from one: the respondent's stored spelling where the key is on the
- * event, else the remembered name when it files under this very key, else the
- * key itself read as a name (its dashes are the spaces `userKey` collapsed —
- * lowercased, but honestly so). A key that cannot be presented as a legal name
- * at all falls back to asking.
+ * `/edit/<key>` names its person by key, so the greeting works backwards: the
+ * event's stored spelling, else the remembered name filing under this key,
+ * else the key read as a name. An unpresentable key falls back to asking.
  */
 function editDecision(
   rawKey: string,
@@ -166,8 +133,6 @@ function editDecision(
   return { action: "ask" };
 }
 
-// --- the wire form ---------------------------------------------------------
-
 /** UTF-8 → URL-safe base64 (`-`/`_` alphabet, padding stripped). */
 function encodeBase64Url(text: string): string {
   const bytes = new TextEncoder().encode(text);
@@ -185,8 +150,7 @@ function decodeBase64Url(token: string): string | null {
   try {
     const binary = atob(padded);
     const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-    // `fatal`, so mangled bytes are a null rather than replacement characters
-    // greeted as somebody's name.
+    // `fatal`: mangled bytes are a null, not replacement characters greeted as a name.
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
     return null;
@@ -200,15 +164,10 @@ export interface EntryGreeting {
 }
 
 /**
- * Reads a landing's raw query string (with or without the leading `?`).
- *
- * The invite dialog produces the **token form**: the whole query is one bare
- * URL-safe base64 token — no `=`, no `&` — encoding the UTF-8 bytes of the
- * inner `name=…&prefix=…` pair, so the link stays visibly opaque and survives
- * chat apps that mangle nested percent-escapes. The plain `?name=…` form is
- * still accepted for hand-typed links and old ones. Anything that decodes to
- * nothing usable — a mangled token, invalid UTF-8, junk parameters — reads as
- * no query at all, never as an error.
+ * Reads a landing's raw query string. The invite dialog's token form is one
+ * bare base64url token encoding the inner `name=…&prefix=…` pair — visibly
+ * opaque, and it survives chat apps that mangle nested percent-escapes. Plain
+ * `?name=` is accepted; anything unusable reads as no query, never an error.
  */
 export function readEntryQuery(search: string): EntryGreeting {
   const raw = search.startsWith("?") ? search.slice(1) : search;
@@ -229,12 +188,9 @@ export function readEntryQuery(search: string): EntryGreeting {
 }
 
 /**
- * The link the invite dialog hands out: the canonical root URL personalized
- * for one invitee — `/<slug>?<token>` in the token form above — or, for a
- * blank or unusable name, the canonical URL untouched. An unusable prefix is
- * dropped silently rather than blocking the link: it is decoration. It
- * produces exactly what `readEntryQuery` + `resolveEntryIdentity` consume at
- * the root landing, and the round-trip is pinned by tests.
+ * The invite dialog's link: `/<slug>?<token>`, or the canonical URL untouched
+ * for a blank or unusable name. The round-trip with `readEntryQuery` is
+ * pinned by tests.
  */
 export function inviteLink(base: string, name: string, prefix = ""): string {
   const trimmed = name.trim();

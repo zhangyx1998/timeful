@@ -1,14 +1,7 @@
 /**
- * The live-updates switch, as the admin form presents it.
- *
- * The flag is tri-state on the way in — true, false, or absent on any event
- * written before the feature existed — and absent has to read as on. Getting
- * that wrong would quietly turn live updates off for every existing event the
- * owner ever opened the edit dialog on and saved, which is the kind of bug
- * nobody reports because nothing visibly breaks.
- *
- * Rendered through the SSR renderer, which compiles the real SFC and needs no
- * DOM, the way the other component tests here do.
+ * The live-updates flag is tri-state on the way in and absent must read as on —
+ * wrong, it silently disables live updates for every pre-feature event the owner
+ * edits and saves. Rendered via the SSR renderer: real SFC, no DOM.
  */
 import { describe, expect, it } from "vitest";
 import { renderToString } from "vue/server-renderer";

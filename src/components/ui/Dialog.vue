@@ -1,20 +1,6 @@
 <script setup lang="ts">
-/**
- * Modal dialog: backdrop, Escape to close, focus moved to the panel, kept
- * inside it while it is open and handed back when it closes, and the page
- * behind it locked so a touch scroll cannot run away underneath.
- *
- * Sized for phones first — the panel never exceeds the visual viewport
- * (`100dvh`, which excludes mobile browser chrome) and its body scrolls on its
- * own (ARCHITECTURE.md § UX bar).
- *
- * The `sheet` variant is the same dialog anchored to the bottom edge instead of
- * the middle: a drawer. It exists because the phone layout has no room to keep
- * secondary controls on screen, and everything a drawer needs — the backdrop,
- * Escape, the scroll lock, the focus move — is what this component already is.
- * A second component would have been the same behaviour with a different
- * `align-items`.
- */
+// Modal dialog: focus trap, scroll lock, viewport-capped body scroll (ARCHITECTURE.md § UX bar).
+// `sheet` is the same dialog anchored to the bottom edge: a drawer.
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 import IconButton from "./IconButton.vue";
 import IconClose from "../../assets/icons/close-sm.svg";
@@ -24,34 +10,12 @@ const props = withDefaults(
     open: boolean;
     title: string;
     dismissible?: boolean;
-    /**
-     * `sm` is a confirm or a short prompt; `lg` is a form with fields side by
-     * side. Both stay within the viewport and scroll their own body.
-     */
     size?: "sm" | "lg";
-    /** `sheet` rises from the bottom edge, full width. */
     variant?: "modal" | "sheet";
-    /**
-     * Every way out, refused for a moment.
-     *
-     * Not the same as `dismissible: false`, which is about a dialog that has no
-     * way out *at all* and so renders no close button. This is a dialog that
-     * has one and is about to use it itself: the respondents drawer holds
-     * still for half a second after an eye is pressed, so the toggle is seen to
-     * move before the sheet goes down to reveal what it changed. A backdrop
-     * tap, an Escape or the close button landing inside that window would
-     * race the dismissal that is already coming, so all three do nothing —
-     * and the button stays where it is, disabled rather than removed, because
-     * a header that reflowed mid-transition would be its own glitch.
-     */
+    /** Refuse every dismissal for a moment (one is already on its way); unlike
+     *  `dismissible: false` the close button stays rendered, just disabled. */
     locked?: boolean;
-    /**
-     * Whether the page behind is veiled. A dialog is normally the only thing
-     * being attended to, and the dim says so. A drawer that has just changed
-     * what the page above it *shows* is the exception: veiling the thing it was
-     * asked to look at would undo the asking. Everything else about it is
-     * unchanged — the backdrop is still there and still dismisses.
-     */
+    /** Undimmed backdrop for a drawer that just changed what the page shows. */
     dim?: boolean;
   }>(),
   { dismissible: true, size: "sm", variant: "modal", dim: true, locked: false },
@@ -60,47 +24,25 @@ const props = withDefaults(
 const emit = defineEmits<{ close: [] }>();
 
 defineSlots<{
-  /** The dialog's contents. */
   default?: () => unknown;
-  /** A glyph beside the title. See the note in the template. */
   icon?: () => unknown;
 }>();
 
 const panel = ref<HTMLElement | null>(null);
 
-/**
- * The page's scroll lock, held by however many dialogs are open at once.
- *
- * Module scope rather than per-instance because there is one page and the last
- * dialog to close is the one that gives it back: counting means an instance
- * that opens while another is still closing cannot record "hidden" as the state
- * to restore and leave the page locked for good.
- *
- * Both elements are locked. `body { overflow: hidden }` on its own does not
- * stop a touch platform from dragging the document behind the dim — the root
- * element is what owns the viewport's scroll.
- */
+// Module-scope refcount: dialogs stack, and only the last to close unlocks.
+// The root element is locked too — body{overflow:hidden} alone does not stop touch scroll.
 let locks = 0;
 let previousOverflow: { root: string; body: string; pad: string } | null = null;
 
-/**
- * Whatever had focus when a dialog opened, so closing can hand it back. A
- * teleported panel destroyed by `v-if` otherwise drops focus on `<body>`,
- * losing the reader's place — and `history.ts` treats focus inside a
- * `[role="dialog"]` as blocking the chart's shortcuts, so the restore is also
- * what re-arms cmd+Z after a confirm.
- *
- * Module scope like the lock above: dialogs stack (a confirm over a drawer),
- * and the one closing restores to whatever was focused when it opened — for a
- * stacked confirm, a control inside the drawer under it.
- */
+// Module scope: a stacked dialog restores focus to whatever was focused when it
+// opened. The restore also re-arms `history.ts`'s chart shortcuts after a confirm.
 let opener: HTMLElement | null = null;
 
 function lockPage() {
   if (locks++ > 0) return;
   const root = document.documentElement;
-  // The hidden scrollbar's width stays as body padding, or centred content
-  // jumps (ARCHITECTURE.md § Client model).
+  // Keep the hidden scrollbar's width as body padding or centred content jumps (ARCHITECTURE.md § Client model).
   const gutter = window.innerWidth - root.clientWidth;
   previousOverflow = {
     root: root.style.overflow,
@@ -131,43 +73,26 @@ function onKeydown(event: KeyboardEvent) {
   else if (event.key === "Tab") containTab(event);
 }
 
-/**
- * What Tab can land on inside the panel: the practical subset the app's
- * dialogs actually contain. Anything with no client rects is skipped — a
- * `v-show`-hidden control is not tabbable however it matches.
- */
 const TABBABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-/**
- * Keeps Tab inside the panel while it is open.
- *
- * `aria-modal="true"` is a promise to assistive tech that the rest of the page
- * is inert, and nothing else was keeping it: without this, Tab walks straight
- * off the panel onto the page behind the dim. Keydown only, so it never fights
- * the `[autofocus]` move the open watcher makes.
- */
+// Keeps Tab inside the panel: aria-modal promises inertness nothing else enforces.
 function containTab(event: KeyboardEvent) {
   const root = panel.value;
   const active = document.activeElement;
-  // A dialog stacked on top of this one (a confirm over a drawer) holds the
-  // focus and runs its own trap; wrapping from underneath would yank focus out
-  // of the topmost panel.
+  // A dialog stacked on top runs its own trap; wrapping from underneath would yank focus out of it.
   if (!root || !(active instanceof HTMLElement) || !root.contains(active)) return;
   const tabbables = Array.from(root.querySelectorAll<HTMLElement>(TABBABLE)).filter(
     (el) => el.getClientRects().length > 0,
   );
   if (tabbables.length === 0) {
-    // Nothing to land on; the panel itself keeps focus.
     event.preventDefault();
     return;
   }
   const first = tabbables[0];
   const last = tabbables[tabbables.length - 1];
   if (!tabbables.includes(active)) {
-    // ConfirmDialog marks no [autofocus], so focus starts on the panel itself
-    // (`tabindex="-1"`): from there Tab enters at one end, Shift+Tab at the
-    // other, rather than falling out of the dialog altogether.
+    // With no [autofocus] focus starts on the panel itself: enter at one end rather than falling out.
     event.preventDefault();
     (event.shiftKey ? last : first).focus();
     return;
@@ -181,17 +106,8 @@ function containTab(event: KeyboardEvent) {
   }
 }
 
-/**
- * Keeps the field you just tapped where you can see it.
- *
- * The panel is capped so that its body scrolls rather than sliding under the
- * keyboard, which means the field being typed into can be below the fold of a
- * box that has just shrunk. `block: "nearest"` is the whole of the ask: scroll
- * the least that makes it visible, and do nothing at all when it already is.
- *
- * A frame late, because the cap only bites once `--keyboard-inset` lands — and
- * the platforms that raise a keyboard do it after the focus, not before.
- */
+// Keep the tapped field visible once the keyboard cap bites; a frame late
+// because `--keyboard-inset` lands after focus on platforms that raise a keyboard.
 function onFocusIn(event: FocusEvent) {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
@@ -208,12 +124,8 @@ watch(
         document.activeElement instanceof HTMLElement ? document.activeElement : null;
       document.addEventListener("keydown", onKeydown);
       lockPage();
-      // Focus an [autofocus] element if the content marks one (dynamically
-      // inserted nodes don't get native autofocus), else the panel itself.
-      // `preventScroll`, because the default is to scroll every scrollable
-      // ancestor until the target is centred — and on the event page those
-      // ancestors are the chart's pane and the drawer's own body, which would
-      // jump under the finger the moment the dialog opened.
+      // Dynamically inserted nodes get no native autofocus. preventScroll: the
+      // default would scroll the chart pane and drawer body under the finger.
       void nextTick(() => {
         const preferred = panel.value?.querySelector<HTMLElement>("[autofocus]");
         (preferred ?? panel.value)?.focus({ preventScroll: true });
@@ -227,13 +139,7 @@ watch(
   { immediate: true },
 );
 
-/**
- * Hands focus back to whatever opened the dialog. `preventScroll` for the same
- * reason the open branch gives; `isConnected` declines to restore to a node
- * that was torn down while the dialog was up — the drawer-to-identity chain
- * closes one dialog and opens another in the same tick, and focusing a
- * disconnected button would silently drop focus on `<body>` anyway.
- */
+// isConnected: the drawer-to-identity chain can tear the opener down in the same tick.
 function restoreFocus() {
   const back = opener;
   opener = null;
@@ -243,9 +149,7 @@ function restoreFocus() {
 onBeforeUnmount(() => {
   if (typeof document === "undefined") return;
   document.removeEventListener("keydown", onKeydown);
-  // Only if this instance is holding one; the count is shared. A dialog torn
-  // down while still open restores focus too — `v-if` around the whole
-  // component is a way dialogs close.
+  // `v-if` around the whole component is a way dialogs close.
   if (props.open) {
     unlockPage();
     restoreFocus();
@@ -275,18 +179,11 @@ onBeforeUnmount(() => {
           <span v-if="variant === 'sheet'" class="panel__grip" aria-hidden="true" />
           <header class="panel__head">
             <div class="panel__lead">
-              <!-- A glyph before the title, for a dialog whose *kind* is worth
-                   saying twice: the owner's tools and the way into them both
-                   wear the half-solid shield, so a sheet that rose from an
-                   unlabelled navbar button still says whose it is. Absent for
-                   every other dialog, which needs no such badge. -->
               <span v-if="$slots.icon" class="panel__icon" aria-hidden="true">
                 <slot name="icon" />
               </span>
               <h2 class="panel__title">{{ title }}</h2>
             </div>
-            <!-- No tooltip: a close cross reads as its own name, and a bubble
-                 saying "Close" over it would be chrome on chrome. -->
             <IconButton
               v-if="dismissible"
               class="panel__close"
@@ -316,18 +213,13 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  /* The dim covers the whole display; the panel it holds stays clear of
-     whatever the display takes out of it — and, at the bottom, of the keyboard
-     too. `--overlay-bottom` is the larger of the home indicator and whatever
-     the keyboard is covering (tokens.css); because the panel is centred in what
-     is left, growing this is what lifts a prompt off an open keyboard. */
+  /* --overlay-bottom = max(home indicator, keyboard) (tokens.css): centring in what is left lifts prompts off the keyboard. */
   padding: calc(1rem + var(--safe-top)) calc(1rem + var(--safe-right))
     calc(1rem + var(--overlay-bottom)) calc(1rem + var(--safe-left));
   background: var(--color-backdrop);
   transition: background var(--transition-med);
 }
 
-/* Still a backdrop — it takes the tap that dismisses — but not a veil. */
 .backdrop--clear {
   background: transparent;
 }
@@ -337,8 +229,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   width: 100%;
   max-width: 26rem;
-  /* Capped by the same inset, so a form taller than the room left above the
-     keyboard scrolls inside its own body rather than sliding under it. */
+  /* Capped so a form taller than the room above the keyboard scrolls in its own body. */
   max-height: calc(100dvh - 2rem - var(--safe-top) - var(--overlay-bottom));
   background: var(--color-raised);
   border: 1px solid var(--color-border);
@@ -346,41 +237,27 @@ onBeforeUnmount(() => {
   box-shadow: var(--shadow-md);
 }
 
-/* Wide enough for the event form's three time selects to sit on one line at
-   the width their own media query expects. */
+/* Wide enough for the event form's three time selects on one line. */
 .panel--lg {
   max-width: 42rem;
 }
-
-/* --- the drawer ---------------------------------------------------------- */
 
 .backdrop--sheet {
   align-items: flex-end;
   padding: 0;
 }
 
-/* Full width, hinged on the bottom edge: rounded where it meets the page and
-   square where it meets the screen, so it reads as having come up from there
-   rather than as a card that happens to be low. */
 .panel--sheet {
   max-width: none;
-  /* It rises from the bottom edge, so it is the top of the display it has to
-     stop short of — and in landscape, the cutout beside it. */
   max-height: calc(88dvh - var(--safe-top));
   padding-right: var(--safe-right);
-  /* The keyboard's height as the sheet's own bottom padding, rather than a gap
-     under it: the surface still reaches the bottom edge — a sheet floating a
-     keyboard's height above the screen would read as a card, not a drawer —
-     while everything in it sits above the keys. The cap above then bites on the
-     body, which scrolls. */
+  /* Keyboard height as bottom padding, not a gap: the surface reaches the bottom edge while contents sit above the keys. */
   padding-bottom: var(--overlay-bottom);
   padding-left: var(--safe-left);
   border-width: 1px 0 0;
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
 }
 
-/* The bar every drawer has. Purely a signal that this thing came from the
-   bottom edge — the close button is what actually dismisses it. */
 .panel__grip {
   flex: none;
   width: 2.25rem;
@@ -403,8 +280,6 @@ onBeforeUnmount(() => {
   padding: 1rem 1.25rem 0.5rem;
 }
 
-/* Icon and title read as one heading, so they travel together and give up room
-   together when the close button takes its own. */
 .panel__lead {
   display: flex;
   flex: 1 1 auto;
@@ -413,9 +288,6 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-/* Sized off the title beside it rather than off the tap grid: it is a badge on
-   a heading, not a control. Muted, like every other place the same mark
-   appears — what identifies it is the half-solid shape, not a colour. */
 .panel__icon {
   display: grid;
   flex: none;
@@ -428,10 +300,7 @@ onBeforeUnmount(() => {
   height: 1.05rem;
 }
 
-/* Titles are prose and wrap like prose — "Switch to Ada?" reading over two
-   lines is fine. What is not fine is a title carrying a name with no space in
-   it, which without `anywhere` cannot break at all and runs out under the close
-   button. `min-width: 0` lets it be narrower than that unbreakable run. */
+/* `anywhere` + `min-width: 0`: an unbreakable name must not run under the close button. */
 .panel__title {
   min-width: 0;
   margin: 0;
@@ -441,9 +310,6 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
 }
 
-/* Everything else about the close — the box, the hover, the disabled hold,
-   the tap-floor growth — is IconButton's. Kept here: its bite into the
-   header's padding, and the glyph size. */
 .panel__close {
   --icon-button-glyph: 16px;
 
@@ -477,16 +343,12 @@ onBeforeUnmount(() => {
   transform: translateY(0.75rem);
 }
 
-/* A drawer travels its own height rather than a nudge: where it comes from is
-   the whole of what it says. */
 .dialog-enter-from .panel--sheet,
 .dialog-leave-to .panel--sheet {
   transform: translateY(100%);
 }
 
-/* The global reduced-motion rule zeroes the durations; the *start offset* is
-   not a transition property, so it is neutralised here or the panel would
-   still paint one frame displaced before snapping into place. */
+/* Global reduced-motion zeroes durations, but the start offset is not a transition property. */
 @media (prefers-reduced-motion: reduce) {
   .dialog-enter-from .panel,
   .dialog-leave-to .panel {

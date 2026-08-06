@@ -1,26 +1,13 @@
 <script setup lang="ts">
-/**
- * The full-page shell shared by the sign-in and first-run setup screens: the
- * app bar with a theme toggle, and one centred panel holding a title, an
- * optional subtitle, and whatever form the caller slots in.
- *
- * Extracted because the two screens had drifted apart only by accident-prone
- * copies of the same five rules. The two deliberate differences survive as
- * custom properties a caller sets on the component root:
- *
- * - `--auth-screen-top`: the top-padding clamp (default: the sign-in value).
- * - `--auth-subtitle-gap`: space between the title and the subtitle.
- */
+// Full-page shell shared by sign-in and first-run setup. The two deliberate
+// differences are custom properties: `--auth-screen-top`, `--auth-subtitle-gap`.
 import AppHeader from "../ui/AppHeader.vue";
 import ThemeToggle from "../ui/ThemeToggle.vue";
 
 withDefaults(
   defineProps<{
-    /** The panel heading. */
     title: string;
-    /** Rendered under the title when non-empty. */
     subtitle?: string;
-    /** Passed through to `AppHeader`'s brand tag ("setup" on first run). */
     tag?: string;
   }>(),
   { subtitle: "", tag: "" },

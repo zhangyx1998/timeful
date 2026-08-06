@@ -1,35 +1,16 @@
 /**
- * Autosave engine for guest responses.
- *
- * There is no Save button: every grid mutation calls `schedule()` with the
- * complete new state, which is debounced and then PUT to
- * `/api/events/:id/responses/:name`.
- *
- * Two properties matter and are covered by tests:
- *
- * - **Coalescing.** Requests are serialised — at most one is ever in flight.
- *   Edits made while a request is running are collapsed into a single follow-up
- *   carrying the latest state, so the server can never be overtaken by a stale
- *   payload arriving late.
- * - **Retry.** A failure parks the latest state and surfaces it; `retry()`
- *   resends whatever the newest state is by then, not the payload that failed.
- * - **Resting state.** Before the first edit there is still something true to
- *   say — whether the server holds an answer for this name or nothing at all —
- *   so the engine rests at a caller-declared baseline rather than at a single
- *   blank "idle". See `SyncBaseline`.
+ * Autosave engine for guest responses; no Save button. Coalescing: at most
+ * one request in flight, edits made meanwhile collapse into one follow-up
+ * carrying the latest state. Retry resends the newest state, not the payload
+ * that failed. The resting state is a caller-declared baseline (`SyncBaseline`).
  */
 import { ref, type Ref } from "vue";
 import { ApiError, formatErrorDetail } from "./api";
 
 /**
- * The two resting states: nothing is queued, nothing is in flight, and nothing
- * has been sent yet. They differ in what the server is already holding, which
- * the engine cannot know and the caller must say — `reset()` is how.
- *
- * - `empty` — there is nothing to save and nothing saved. A name nobody has
- *   answered under yet.
- * - `current` — what is on screen is what the server has. An existing
- *   respondent's answer, just loaded.
+ * The two resting states differ in what the server already holds, which only
+ * the caller knows: `empty` — nothing saved under this name; `current` — what
+ * is on screen is what the server has.
  */
 export type SyncBaseline = "empty" | "current";
 
@@ -52,11 +33,7 @@ export interface SyncEngineOptions {
 export interface SyncEngine {
   status: Ref<SyncStatus>;
   error: Ref<string | null>;
-  /**
-   * The admin-only elaboration under the error, already formatted for print.
-   * Null for everyone else — a guest's failures never carry one, because the
-   * server only adds the field for a request holding the admin session.
-   */
+  /** Formatted admin-only elaboration; null for guests always. */
   errorDetail: Ref<string | null>;
   /** True while edits are waiting to be sent or a request is in flight. */
   pending: Ref<boolean>;
@@ -67,10 +44,8 @@ export interface SyncEngine {
   /** Clears the error and resends the latest state. */
   retry: () => void;
   /**
-   * Declares a new starting point: the grid was re-seeded from the server, so
-   * whatever was queued belongs to a state nobody is looking at any more.
-   * Drops it, forgets a request already on the wire (its result no longer says
-   * anything about what is on screen) and rests at the given baseline.
+   * Declares a new starting point: drops the queue, forgets a request already
+   * on the wire, and rests at the given baseline.
    */
   reset: (baseline: SyncBaseline) => void;
   /** Resolves once nothing is queued or in flight. */
@@ -86,7 +61,6 @@ function errorMessage(error: unknown): string {
   return "Could not save your availability";
 }
 
-/** The formatted admin-only detail a failed save carried, or null. */
 function errorDetailText(error: unknown): string | null {
   if (error instanceof ApiError && error.detail)
     return formatErrorDetail(error.detail);
@@ -96,7 +70,6 @@ function errorDetailText(error: unknown): string | null {
 export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
   const debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
 
-  /** Where the engine comes to rest with nothing to do. `reset()` moves it. */
   let baseline: SyncBaseline = options.baseline ?? "empty";
 
   const status = ref<SyncStatus>(baseline);
@@ -123,11 +96,8 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
     }
   }
 
-  /**
-   * "Settled" means nothing further will happen on its own: no request in
-   * flight, no timer armed. After a failure that is still true — the state
-   * stays dirty and waits for `retry()`.
-   */
+  // "Settled" means nothing further happens on its own; after a failure the
+  // state stays dirty and waits for retry().
   function notifySettled() {
     if (inFlight || timer !== null) return;
     pending.value = dirty;
@@ -146,8 +116,8 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
     const payload = latest;
     const sentIn = era;
     inFlight = payload;
-    // Anything scheduled from here on marks the state dirty again, which queues
-    // exactly one follow-up request no matter how many edits arrive.
+    // Anything scheduled from here marks the state dirty again, queueing
+    // exactly one follow-up however many edits arrive.
     dirty = false;
     status.value = "syncing";
     pending.value = true;
@@ -161,8 +131,7 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
           error.value = null;
           errorDetail.value = null;
           if (dirty) {
-            // Newer state arrived mid-flight: send it straight away so the
-            // server always converges on the latest edit.
+            // Newer state arrived mid-flight: send it straight away.
             run();
           } else {
             status.value = "saved";
@@ -214,8 +183,8 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
 
   function reset(next: SyncBaseline) {
     if (disposed) return;
-    // Anything already dispatched keeps going — the server should still receive
-    // the last edit made under the old state — but it no longer reports back.
+    // A dispatched request keeps going — the server should still receive the
+    // last edit under the old state — but it no longer reports back.
     era += 1;
     clearTimer();
     latest = null;

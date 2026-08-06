@@ -1,11 +1,6 @@
 /**
- * The keyboard inset, as arithmetic.
- *
- * No browser can be asked to raise a keyboard from a test, which is exactly why
- * the measurement is a pure function taking the three numbers `visualViewport`
- * reports rather than reading them itself. What is asserted here is the reading
- * of those numbers on each platform that produces them, written down as the
- * cases they actually occur in.
+ * The keyboard-inset arithmetic, as the cases each platform actually produces;
+ * pure because no test can raise a real keyboard.
  */
 import { describe, expect, it } from "vitest";
 import { KEYBOARD_MIN_INSET, keyboardInset, keyboardInsetValue } from "./keyboard";

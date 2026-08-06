@@ -1,17 +1,6 @@
 <script setup lang="ts">
-/**
- * The sign-in form itself: two fields, the persist checkbox, and one error.
- *
- * Separated from the page around it because there are now two places to sign
- * in from. `/` is one — the admin app's whole first screen. The other is a
- * dialog on an event page, where an owner who is already looking at the thing
- * they want to edit should not have to leave it, sign in somewhere else, and
- * come back. Both need the same fields, the same messages and the same
- * request; only the frame around them differs, so only the frame is duplicated.
- *
- * It reports the email it signed in as rather than a boolean: the panel prints
- * it, and the server's own answer is more authoritative than what was typed.
- */
+// The sign-in form shared by `/` and the event page's dialog. Reports the email it
+// signed in as: the server's answer beats what was typed.
 import { ref } from "vue";
 import { api, apiError } from "../../lib/api";
 import Button from "../ui/Button.vue";
@@ -21,13 +10,8 @@ import type { AuthResponse } from "../../lib/api";
 
 const props = withDefaults(
   defineProps<{
-    /**
-     * Distinguishes the two forms' field ids. Two of these may be in the DOM
-     * at once in principle, and a duplicated id would point every label at the
-     * first one.
-     */
+    /** Two forms may be in the DOM at once; a duplicated id would point every label at the first. */
     idPrefix?: string;
-    /** Focus the email field on mount — a dialog opens straight into it. */
     autofocus?: boolean;
   }>(),
   { idPrefix: "login", autofocus: false },

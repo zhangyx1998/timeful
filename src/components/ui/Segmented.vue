@@ -1,9 +1,5 @@
 <script lang="ts">
-/**
- * A row of mutually exclusive options in one bordered pill — the shape used for
- * the view switch, the paint mode, the clock format and the event type, which
- * were all hand-rolled separately before.
- */
+/** A row of mutually exclusive options in one bordered pill. */
 export interface SegmentedOption<T> {
   value: T;
   label: string;
@@ -16,23 +12,16 @@ const model = defineModel<T>({ required: true });
 withDefaults(
   defineProps<{
     options: readonly SegmentedOption<T>[];
-    /** Group label for assistive tech. */
     label: string;
-    /** `solid` fills the selected option with the accent; `soft` tints it. */
     variant?: "solid" | "soft";
     size?: "sm" | "md";
-    /**
-     * Sizes every option to the widest label instead of to its own. Use it
-     * where the labels differ in length and the control is centred: without it
-     * the pill is a different width per selection, so it shifts as you switch.
-     */
+    /** Sizes every option to the widest label so the pill keeps one width across selections. */
     equal?: boolean;
   }>(),
   { variant: "soft", size: "md", equal: false },
 );
 
 defineSlots<{
-  /** Renders one option's contents; defaults to its label. */
   option?: (props: { option: SegmentedOption<T> }) => unknown;
 }>();
 </script>
@@ -71,9 +60,7 @@ defineSlots<{
   border-radius: var(--radius-md);
 }
 
-/* Equal columns without measuring anything: in a shrink-to-fit grid every 1fr
-   track resolves to the widest item's max-content, so both options end up as
-   wide as the longer label and the control keeps one width. */
+/* In a shrink-to-fit grid every 1fr track resolves to the widest item's max-content. */
 .segmented--equal {
   display: inline-grid;
   grid-auto-flow: column;
@@ -81,10 +68,7 @@ defineSlots<{
   max-width: 100%;
 }
 
-/* An option's label is a label, not a sentence: "Days of week" breaking across
-   two lines inside its own segment makes the control grow a row and stops the
-   two options reading as a pair. Callers that need a long label to shorten wrap
-   it in their own truncating span (see the scheduler's view switch). */
+/* nowrap: callers that need a long label to shorten wrap it in their own truncating span. */
 .segmented__option {
   --focus-ring-inset: calc(var(--focus-ring-offset) * -1);
 

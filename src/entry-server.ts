@@ -7,10 +7,7 @@ export type SsrContext = {
   event?: EventDoc | null;
 };
 
-/**
- * Render an event page to HTML.
- * `url` is the request path, e.g. '/my-party'.
- */
+/** Renders an event page to HTML; `url` is the request path. */
 export async function render(
   url: string,
   ssrContext: SsrContext = {},

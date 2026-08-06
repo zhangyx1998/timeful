@@ -1,15 +1,7 @@
 /**
- * The respondents list, as markup.
- *
- * Two things about it are behaviour rather than decoration and both are easy to
- * break from a distance: which rows the list has, and what the fraction at the
- * top counts. Presence adds rows for people who have answered nothing, so the
- * two now pull in opposite directions — a row that exists and must not be
- * counted — and that is exactly what is asserted here.
- *
- * Rendered through the SSR renderer, like the sync indicator: it compiles the
- * real SFC, needs no DOM, and a template that stopped emitting a row would show
- * up here rather than as a gap in a panel nobody was looking at.
+ * Asserts which rows the list has and what the fraction counts — presence adds
+ * rows that exist but must not be counted. Rendered via the SSR renderer: real
+ * SFC, no DOM needed.
  */
 import { describe, expect, it } from "vitest";
 import { renderToString } from "vue/server-renderer";
@@ -18,13 +10,7 @@ import RespondentsPanel from "./RespondentsPanel.vue";
 import { userKey } from "../../lib/user-key";
 import type { PresenceEntry } from "../../lib/realtime";
 
-/**
- * The panel takes user keys throughout — respondents, presence, the visitor's
- * own identity, the soloed row — and a `labels` map saying how each is spelled.
- * The tests are written in the names, because the names are what is read on
- * screen; the keys they file under are derived here, exactly as the page
- * derives them.
- */
+/** Tests are written in names; the keys are derived here exactly as the page derives them. */
 interface Options {
   /** The phone's drawer: no card, no heading, no fraction. */
   embedded?: boolean;

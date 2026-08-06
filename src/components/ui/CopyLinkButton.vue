@@ -1,17 +1,6 @@
 <script setup lang="ts">
-/**
- * Copies a link. On the event page it sits beside the event's name, because
- * handing the link to someone else is the thing a host does most there and the
- * URL is the only way in (ARCHITECTURE.md § Security); the admin list uses the
- * same control per row.
- *
- * Feedback is the icon turning into a tick plus a brief tooltip; the tooltip
- * is also the live region, so the confirmation is announced rather than only
- * drawn. Nothing is claimed unless the copy actually succeeded — and a failure
- * says so the same way, because on the plain-http LAN deployments this app is
- * built for (see src/lib/clipboard.ts) the copy genuinely can fail, and a
- * button that swallows that leaves the host pasting nothing.
- */
+// Copies a link; the tooltip is also the live region, so the verdict is announced.
+// Failure is reported: on plain-http LAN deployments the copy genuinely can fail (src/lib/clipboard.ts).
 import IconButton from "./IconButton.vue";
 import IconCheckWide from "../../assets/icons/check-wide.svg";
 import IconLink from "../../assets/icons/link.svg";
@@ -19,9 +8,7 @@ import { useCopyFeedback } from "../../lib/copy-feedback";
 
 const props = withDefaults(
   defineProps<{
-    /** What to copy. Defaults to the page's own address. */
     url?: string;
-    /** Accessible name and tooltip for the idle state. */
     label?: string;
   }>(),
   { url: "", label: "Copy event link" },
@@ -65,8 +52,6 @@ function copy(): Promise<void> {
   color: var(--color-danger);
 }
 
-/* Same bubble as the grid's slot tooltip: dark chip, small text, out of the
-   way of the pointer. */
 .tip {
   position: absolute;
   top: calc(100% - 0.4rem);

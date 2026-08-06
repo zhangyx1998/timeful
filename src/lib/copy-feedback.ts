@@ -1,13 +1,6 @@
 /**
- * The states around a copy: what was just claimed, and for how long.
- *
- * `clipboard.ts` answers whether the text made it; this holds the answer up
- * for a moment so a control can say so — and says failure as plainly as
- * success, because on the plain-http LAN deployments this app is built for
- * the copy genuinely can fail, and a control that swallows that leaves the
- * host pasting nothing. Extracted from `CopyLinkButton` so the invite dialog
- * shows the identical "Copied"/"Couldn't copy" semantics rather than a
- * re-implementation of them.
+ * Holds a copy verdict up for a moment. Failure is said as plainly as
+ * success: on plain-http LAN deployments the copy genuinely can fail.
  */
 import { onBeforeUnmount, ref, type Ref } from "vue";
 import { copyText } from "./clipboard";

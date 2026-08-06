@@ -1,21 +1,11 @@
 <script setup lang="ts">
-/**
- * The bar at the top of every page — admin, sign-in, setup and event pages —
- * so the two halves of the app read as one product (ARCHITECTURE.md § UX bar).
- * Actions (theme toggle, sign out) go in the default slot, right aligned.
- *
- * The leading element is the product brand by default, and the `lead` slot
- * replaces it where something more useful belongs: the event page puts the
- * event's name there, because a guest who arrived from a link needs to know
- * which event they are looking at, not what the software is called. On '/'
- * there is no such context, so the brand stays.
- */
+// The bar on every page (ARCHITECTURE.md § UX bar). The `lead` slot replaces the
+// brand where something more useful belongs; actions go in the default slot.
 withDefaults(defineProps<{ tag?: string }>(), { tag: "" });
 
 defineSlots<{
-  /** Leading content; falls back to the brand when it renders nothing. */
+  /** Falls back to the brand when it renders nothing. */
   lead?: () => unknown;
-  /** Right-aligned actions. */
   default?: () => unknown;
 }>();
 </script>
@@ -40,8 +30,7 @@ defineSlots<{
 </template>
 
 <style scoped>
-/* The bar's fill runs under the status bar or the notch; its contents start
-   below them. */
+/* The fill runs under the status bar or notch; contents start below them. */
 .app-header {
   position: sticky;
   top: 0;
@@ -64,8 +53,6 @@ defineSlots<{
     calc(var(--page-pad) + var(--safe-left));
 }
 
-/* Shrinks and clips before the actions do: a long event name gives up room,
-   the theme toggle never does. */
 .app-header__lead {
   display: flex;
   flex: 0 1 auto;
@@ -102,12 +89,7 @@ defineSlots<{
   color: var(--color-text-muted);
 }
 
-/* Allowed to shrink, which is not the same as being made to. The controls that
-   live here are all either `flex: none` or a button whose label cannot wrap, so
-   they hold their size on their own floor; what actually gives is the slotted
-   text — the event page's date range, the admin's email address — which asks to
-   be clipped and can only be granted it by a parent that is itself allowed to
-   be narrower than its contents. */
+/* min-width: 0 so slotted text can be clipped; the controls hold their own floor. */
 .app-header__actions {
   display: flex;
   flex: 0 1 auto;
@@ -116,10 +98,7 @@ defineSlots<{
   min-width: 0;
 }
 
-/* A phone held sideways has about 360px of height to spend and the fixed
-   layout's chrome takes most of it, so the bar gives back everything that is
-   not a tap target: it keeps the 44px floor its buttons stand on and loses the
-   air around them. */
+/* Landscape phone: keep the 44px floor, lose the air around it. */
 @media (max-height: 480px) and (max-width: 820px) {
   .app-header__inner {
     min-height: 0;

@@ -1,14 +1,4 @@
 <script setup lang="ts">
-/**
- * The owner's events.
- *
- * Each row's actions are icons — copy, edit, delete — because the row already
- * says what it is about and three verbs per row said it three more times. Each
- * carries its accessible name in `label`, which IconButton also renders as the
- * hover tooltip. Deleting takes everyone's answers with it, so it asks in a
- * dialog that names the event rather than swapping buttons into the row, which
- * made the list jump under the pointer.
- */
 import { ref } from "vue";
 import { api, apiError, eventSettingsPath } from "../../lib/api";
 import { formatDateTime } from "../../lib/dates";
@@ -36,7 +26,6 @@ const emit = defineEmits<{
   (e: "changed"): void;
 }>();
 
-/** The event the delete dialog is asking about. At most one. */
 const confirming = ref<EventSummary | null>(null);
 const deleting = ref(false);
 const error = ref("");
@@ -141,8 +130,7 @@ async function remove(): Promise<void> {
 </template>
 
 <style scoped>
-/* The card is flush, so the banner keeps its own distance from the edges.
-   ErrorNote declares no margin of its own, which is what makes this safe. */
+/* ErrorNote declares no margin of its own, which is what makes this safe. */
 .card-error {
   margin: 1rem;
 }
@@ -165,8 +153,6 @@ async function remove(): Promise<void> {
   list-style: none;
 }
 
-/* Rows drop their actions onto their own line once the name and the buttons
-   stop fitting side by side. */
 .item {
   display: flex;
   flex-wrap: wrap;
@@ -186,8 +172,6 @@ async function remove(): Promise<void> {
   min-width: 0;
 }
 
-/* A list is scanned down its left edge, and a name that wraps to three lines
-   costs every row below it. One line each, full name on the tooltip. */
 .item__name {
   overflow: hidden;
   font-size: 0.9375rem;
@@ -215,8 +199,6 @@ async function remove(): Promise<void> {
   color: var(--color-text-muted);
 }
 
-/* Glyph then number: the icon carries the noun the text used to spell out. */
-/* Whole stats move to the next line together; a date never breaks in half. */
 .stat {
   display: inline-flex;
   flex: none;
@@ -237,17 +219,13 @@ async function remove(): Promise<void> {
   gap: 0.15rem;
 }
 
-/* Destructive, so it reads as such under the pointer and stays red while its
-   confirm is open. */
 .delete:hover,
 .delete--armed {
   color: var(--color-danger);
   background: var(--color-danger-soft);
 }
 
-/* `display: block` rather than the flex it was: a flex box has no inline
-   content of its own for an ellipsis to land in. The line-height replaces what
-   `align-items` was doing for the 1.75rem tap height. */
+/* block, not flex: a flex box has no inline content for an ellipsis to land in. */
 .link {
   display: block;
   min-width: 0;
@@ -265,7 +243,6 @@ async function remove(): Promise<void> {
   text-decoration: underline;
 }
 
-/* The slug is how you open the event — give it a real tap target on touch. */
 @media (pointer: coarse) {
   .link {
     min-height: var(--tap-min);

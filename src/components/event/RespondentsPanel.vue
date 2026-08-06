@@ -1,69 +1,6 @@
 <script setup lang="ts">
-/**
- * Who answered, and who is free at the slot under the pointer.
- *
- * With no slot active the list is a roster: every name reads as available (the
- * legacy default) behind a person icon, filled for the visitor's own row and
- * outlined for everyone else, so they are findable at a glance in a list of
- * strangers.
- *
- * The fraction beside the heading — how many of them are free at the slot under
- * the pointer — is desktop-only, and for the same reason the hover highlight
- * is: on a phone this list is a sheet *over* the chart, so there is no slot
- * being pointed at and the number could only ever be stale or the whole roster.
- * The per-row glyphs are not the same thing and stay: a slot pinned by a tap
- * before the drawer was opened still has an answer for each person in it.
- *
- * Hovering or pinning a slot turns the roster into an answer for that slot:
- * each person icon becomes the mark that person made — a green check, an
- * amber hourglass for if-needed, a red cross for unavailable — in the same
- * three colours the grid and its legend use. The glyphs differ in shape as
- * well as hue, so the reading survives a monochrome screen. Releasing the slot
- * puts the person icons back.
- *
- * Removing a response is offered to everyone, not just the admin: the event's
- * URL is the trust boundary and the endpoint behind it is public
- * (ARCHITECTURE.md § API), so gating the button only hid a door that was
- * already unlocked — from the guest who most often needs it, the one who
- * answered twice under two spellings. Because it is destructive and one row
- * looks much like the next, it confirms in a dialog that names the respondent
- * rather than in the row, which would make the list jump as you aim.
- *
- * The dashed row at the bottom is the way to answer as somebody else: it opens
- * the same identity dialog with an empty field. Clicking a name that is already
- * there does the same thing for that person — after a confirm, because it means
- * editing somebody else's times and one row looks much like the next.
- *
- * "Show me this one person" is answered differently by the two layouts,
- * because their pointers are different. On the desktop the list sits beside
- * the chart and a mouse can rest on a row: hovering previews that person's
- * answer on the chart and leaving puts the group back, so there is nothing to
- * switch on and nothing to remember to switch off. A finger cannot hover, so
- * inside the phone's drawer every row instead carries an eye, which puts that
- * one person's answer on the chart alone until it is dismissed — persistent
- * state, said by a pill over the chart (`ModePills`); see `lib/isolation.ts`
- * for the two rules about the edit tab.
- *
- * The eyes themselves report the state rather than the gesture: an answer that
- * is on the chart wears the open eye, one that has been taken off it wears the
- * struck-through one, and with nobody isolated everybody is on the chart and
- * every eye is open (`isOnChart`). The label is where the gesture is said.
- *
- * Somebody who is here without having answered gets an eye too, and isolating
- * them shows an empty chart with an overlay saying so. That is a real answer to
- * a real question — "has Ada marked anything yet?" — and a row whose eye is
- * missing only reads as broken. Hovering their row on the desktop answers the
- * same question the same way.
- *
- * Whoever is on the page right now gets three quietly pulsing dots after their
- * name, the visitor included — they are online too, and a rule with no
- * exceptions is one nobody has to learn. Somebody who is here but has not
- * answered yet is a row all the same: it is the moment you most want to know
- * they arrived. Such a row has no answer to show, so it keeps the person icon
- * whatever slot is active, counts towards nothing, and offers no delete —
- * there is nothing stored to delete. Their first save turns it into an ordinary
- * row where it already sits, and closing their tab takes it away again.
- */
+// Removing a response is offered to everyone on purpose: the event URL is the trust boundary (ARCHITECTURE.md § API).
+// Stance glyphs differ in shape as well as hue, so the reading survives a monochrome screen.
 import { computed, ref, watch } from "vue";
 import ConfirmDialog from "../ui/ConfirmDialog.vue";
 import Spinner from "../ui/Spinner.vue";
@@ -81,27 +18,9 @@ import { isOnChart } from "../../lib/isolation";
 import type { PresenceEntry } from "../../lib/realtime";
 
 const props = defineProps<{
-  /**
-   * Inside a drawer the card chrome and the heading are the drawer's own, so
-   * both are dropped and only the list is left — and the `M/N available`
-   * fraction with them, because it answers a question about the slot under the
-   * pointer and there is no pointing at a chart the sheet is sitting on.
-   */
   embedded?: boolean;
-  /**
-   * Everyone with a stored answer, by user key. The counts are about these and
-   * only these: being on the page is not an answer.
-   *
-   * Keys throughout, and never the names themselves — matching a respondent
-   * against a presence entry and against the visitor's own identity is exactly
-   * what a key is for. `labels` says how each one is spelled on screen.
-   */
   keys: string[];
   labels: Map<string, string>;
-  /**
-   * Everyone the server says holds a write session on this event right now,
-   * whether or not they have answered. Empty when there is no live connection.
-   */
   present: PresenceEntry[];
   /** Keys available at the active slot. Null when no slot is active. */
   availableNames: Set<string> | null;
@@ -109,12 +28,9 @@ const props = defineProps<{
   slotLabel: string | null;
   pinned: boolean;
   highlight: string | null;
-  /** The visitor's own key, when they have one. */
   currentKey: string | null;
-  /** Key whose delete is in flight, if any. */
   deleting: string | null;
   deleteError: string | null;
-  /** Whose answer the chart is showing alone, if anyone's. By key. */
   solo?: string | null;
 }>();
 
@@ -123,38 +39,17 @@ const emit = defineEmits<{
   unpin: [];
   delete: [key: string];
   add: [];
-  /** Adopt this person's identity. The display name goes with the key: it is
-   *  what the identity dialog and the save both need. */
   switch: [person: { key: string; displayName: string }];
-  /**
-   * Show this one person's answer on the chart, or null for the group's.
-   *
-   * The name rides along with the key, as it does for `switch`: the pill over
-   * the chart has to print something, and the row that asked is the last place
-   * that is certain to know the spelling — an answer deleted while it is being
-   * looked at would otherwise leave the pill naming a bare key.
-   */
   solo: [person: { key: string; displayName: string } | null];
 }>();
 
-/** The respondent the delete dialog is asking about. At most one. */
 const confirming = ref<string | null>(null);
-/** The respondent the switch-identity dialog is asking about. */
 const switching = ref<string | null>(null);
 
-/** Who has a stored answer, as a set: asked once per row below. */
 const answered = computed(() => new Set(props.keys));
 const online = computed(() => new Set(props.present.map((person) => person.key)));
 
-/**
- * How each key is spelled: the stored response's own display name when there is
- * one, and otherwise whatever the presence entry claims.
- *
- * The record wins on purpose. A page can connect as `ada-lovelace` spelling
- * itself "ada LOVELACE" while the stored answer says "Ada Lovelace", and the
- * list must show one row with the name the group already recognises rather than
- * the shouting of whoever happens to be online.
- */
+// The stored spelling wins over whatever the presence entry claims.
 const labelFor = computed(() => {
   const map = new Map(props.labels);
   for (const person of props.present) {
@@ -167,11 +62,7 @@ function label(key: string): string {
   return labelFor.value.get(key) ?? key;
 }
 
-/**
- * Every key the list shows: the respondents, plus anyone who is here without
- * having answered, in one run ordered by the name each is shown under so a row
- * does not move when its owner finally saves something.
- */
+// Ordered by shown name so a row does not move when its owner finally saves.
 const listed = computed(() => {
   const extra = props.present
     .map((person) => person.key)
@@ -182,9 +73,7 @@ const listed = computed(() => {
   );
 });
 
-// A row that has gone — deleted, the event reloaded, or somebody who was only
-// here and has now closed the tab — must not leave a dialog open over a person
-// who is no longer in the list.
+// A vanished row must not leave a dialog open over it.
 watch(
   () => listed.value,
   (keys) => {
@@ -197,54 +86,20 @@ watch(
   },
 );
 
-/**
- * How many of the respondents are free at the active slot, out of how many
- * answered. Both halves are about stored answers: somebody who is on the page
- * without having answered is on neither side of the fraction, and cannot be —
- * they have marked nothing, so there is nothing of theirs to count.
- */
 const availableCount = computed(() =>
   props.availableNames ? props.availableNames.size : props.keys.length,
 );
 
-/**
- * How the count reads at a glance — the same three readings the region card
- * gives its fraction (`toneFor`), in the same three colours the rest of the
- * app uses for good/attention/bad.
- */
 const countTone = computed(() => toneFor(availableCount.value, props.keys.length));
 
-/**
- * What this person said about the active slot, or null when none is active.
- * Spelled in the lib's own vocabulary (`SlotStance`), so the row's glyph, the
- * region card's chip and the tooltip all say the answer in the same word.
- */
 function slotState(key: string): SlotStance | null {
   if (props.availableNames === null) return null;
   if (!props.availableNames.has(key)) return "unavailable";
   return props.ifNeededNames.has(key) ? "if_needed" : "available";
 }
 
-/**
- * One pass over the names for the whole list. The icon names the slot only
- * while there is a slot to name: off a slot it is decoration next to the name
- * it belongs to and stays out of the accessibility tree; on one it carries the
- * answer, which is nowhere else in the row.
- *
- * A row with no answer behind it never reaches that state. `slotState` reads a
- * missing name as unavailable, which is right for a respondent who left the
- * slot blank and a lie about somebody who has not answered at all — so they are
- * asked nothing and keep the person icon.
- */
-/**
- * The list, unchanged by whatever the chart is doing.
- *
- * It used to collapse to the isolated row, because the isolated view lived
- * only as long as this drawer did and a full-height sheet covers the chart it
- * had just changed. The view outlives the drawer now, so the answer is to close
- * the drawer and look — and a list that rearranged itself on the way would be
- * a second thing to understand for no gain.
- */
+// slotState reads a missing name as unavailable — right for a respondent, a lie
+// for somebody who has not answered — so non-respondents keep the person icon.
 const rows = computed(() =>
   listed.value.map((key) => {
     const answers = answered.value.has(key);
@@ -260,14 +115,12 @@ const rows = computed(() =>
       ifNeeded: state === "if_needed",
       isCurrent: key === props.currentKey,
       isSolo: key === props.solo,
-      // What the eye draws: whether this answer is on the chart right now, not
-      // what pressing it would do. See `isOnChart`.
+      // The eye draws state (on the chart right now), not the gesture. See `isOnChart`.
       onChart: isOnChart(props.solo, key),
     };
   }),
 );
 
-/** The name behind a key the dialogs are asking about. */
 const confirmingName = computed(() =>
   confirming.value === null ? "" : label(confirming.value),
 );
@@ -275,33 +128,13 @@ const switchingName = computed(() =>
   switching.value === null ? "" : label(switching.value),
 );
 
-/**
- * The hover highlight, which is a hover and nothing else — the keyboard's
- * version of it follows below.
- *
- * Two things kept it from being one. Inside a drawer there is nothing to
- * highlight *for*: the sheet is over the chart the highlight would change, so
- * pointing at a row there can only narrow something nobody can see — and on a
- * phone the row was reached by a finger, which lands and is never reported as
- * having left, so the chart used to be stuck on one person's answer with no way
- * back. That is what the eye exists for instead.
- *
- * The pointer type matters even on a desktop, because a tap is followed by a
- * compatibility `pointerenter` that says `mouse`: after a list has been
- * re-rendered under the finger, that phantom lands on whichever row has moved
- * into the gap and highlights somebody nobody pointed at.
- *
- * Leaving always clears, whatever the pointer: a highlight nobody set is still
- * one worth dropping.
- */
+// Mouse only: a tap's compatibility `pointerenter` reports `mouse` and would
+// highlight whichever row re-rendered under the finger.
 function onRowEnter(key: string, event: PointerEvent) {
   if (props.embedded || event.pointerType !== "mouse") return;
   emit("highlight", key);
 }
 
-/** Focus is the keyboard's hover, and has none of the phantom-pointerenter
- *  problem the comment above describes. Same rule as the pointer: inside a
- *  drawer there is nothing to highlight for. */
 function onRowFocus(key: string) {
   if (props.embedded) return;
   emit("highlight", key);
@@ -331,15 +164,7 @@ function confirmSwitch() {
 
 <template>
   <aside class="panel" :class="{ 'panel--embedded': embedded }">
-    <!-- In the drawer there is nothing above the list until a slot puts
-         something there, and then the divider is the divider for it. -->
     <header v-if="!embedded || slotLabel" class="head" :class="{ 'head--slim': embedded }">
-      <!-- The fraction answers "how many of them can make the slot I am
-           pointing at", and pointing at one is exactly what cannot be done
-           from inside the drawer: the sheet is over the chart. So it is
-           desktop-only — there it moves as the pointer crosses the grid, and
-           here it could only ever be a stale number or 3/3. What a slot *does*
-           reach in the drawer is the per-row glyphs, which stay. -->
       <h2 v-if="!embedded" class="heading">
         Respondents
         <span class="count" :class="`count--${countTone}`">
@@ -386,18 +211,14 @@ function confirmSwitch() {
           :aria-label="row.stateLabel ?? undefined"
           :aria-hidden="row.stateLabel ? undefined : 'true'"
         >
-          <!-- On a slot: what this person marked there. -->
           <IconCheck v-if="row.state === 'available'" />
           <IconHourglass v-else-if="row.state === 'if_needed'" />
           <IconClose v-else-if="row.state === 'unavailable'" stroke-width="2.2" />
-          <!-- Off a slot: filled for you, outlined for everyone else. -->
           <IconPersonFilled v-else-if="row.isCurrent" />
           <IconPerson v-else />
         </span>
 
-        <!-- Your own row is not a button: there is nothing to switch to. The
-             online state is said in words for a screen reader, where three
-             animated dots would be either silence or noise. -->
+        <!-- Online state is said in words for screen readers; the dots are decoration. -->
         <span v-if="row.isCurrent" class="text" :title="row.name">
           {{ row.name }}<span v-if="row.online" class="hidden"> (online)</span>
         </span>
@@ -411,27 +232,12 @@ function confirmSwitch() {
           {{ row.name }}<span v-if="row.online" class="hidden"> (online)</span>
         </button>
 
-        <!-- Here right now. Decoration for the words beside it, so it is not in
-             the accessibility tree at all. -->
         <span v-if="row.online" class="dots" aria-hidden="true">
           <span class="dot" />
           <span class="dot" />
           <span class="dot" />
         </span>
 
-        <!-- Puts this person's answer on the chart on its own. A heatmap is a
-             sum, and a sum cannot say who is behind it; this is the one
-             question the list is asked that the colours cannot answer. Only
-             inside the drawer, where there is no pointer to hover with — the
-             desktop answers it by resting the mouse on the row. Every drawer
-             row has one, including somebody who is only here — "have they
-             marked anything yet?" is answered by an empty chart that says so,
-             and a row missing its eye only reads as broken.
-
-             The glyph is the state and the label is the gesture (`isOnChart`):
-             an answer that is on the chart wears the open eye, one that has
-             been taken off it wears the struck-through one, and with nobody
-             isolated every row is on the chart and so every eye is open. -->
         <button
           v-if="embedded"
           type="button"
@@ -446,8 +252,6 @@ function confirmSwitch() {
           <IconEyeOff v-else aria-hidden="true" />
         </button>
 
-        <!-- Nothing is stored for somebody who is only here, so there is
-             nothing for a delete to do. -->
         <template v-if="row.answers">
           <span v-if="deleting === row.key" class="busy">
             <Spinner :size="15" :label="`Removing ${row.name}`" />
@@ -516,9 +320,6 @@ function confirmSwitch() {
 
 .panel--embedded {
   min-width: 0;
-  /* The sheet's own header is the heading now, so the only space left to keep
-     is the breath between it and the first row — the same the other drawers
-     open onto. */
   padding: 0.35rem 0 0;
   background: none;
   border: none;
@@ -526,9 +327,7 @@ function confirmSwitch() {
   box-shadow: none;
 }
 
-/* The slot line comes and goes with the slot. Its height is held open so the
-   list below does not jump as the pointer crosses the grid — the old copy that
-   filled the space said only what hovering a cell says by itself. */
+/* Height held open so the list does not jump as the pointer crosses the grid. */
 .head {
   min-height: 2.9rem;
   padding-bottom: 0.6rem;
@@ -536,9 +335,6 @@ function confirmSwitch() {
   border-bottom: 1px solid var(--color-border);
 }
 
-/* In the drawer there is no pointer crossing the grid, so nothing to hold a
-   height open against: the slot line is the whole of the head, and it is
-   either there or the head is not rendered at all. */
 .head--slim {
   min-height: 0;
 }
@@ -556,8 +352,6 @@ function confirmSwitch() {
   font-weight: 600;
 }
 
-/* "3/5 available" is one fact and breaks as one: the word must not come away
-   from the fraction it qualifies. */
 .count {
   font-size: 0.8125rem;
   font-weight: 500;
@@ -576,9 +370,7 @@ function confirmSwitch() {
   color: var(--color-danger);
 }
 
-/* Held to one line: the head's `min-height` above is what stops the list
-   jumping as the pointer crosses the grid, and a slot label that wraps to two
-   lines walks straight through it. */
+/* One line only: a wrapped slot label walks through the head's min-height. */
 .slot {
   display: flex;
   align-items: center;
@@ -596,8 +388,6 @@ function confirmSwitch() {
   text-overflow: ellipsis;
 }
 
-/* Releases the pinned slot. A cross on the label it undoes, the way a chip
-   drops its own value. */
 .unpin {
   display: inline-grid;
   flex: none;
@@ -630,10 +420,7 @@ function confirmSwitch() {
   color: var(--color-text-muted);
 }
 
-/* One row height for the whole list: the name rows, the add row and the square
-   delete button at the end of each row all read it, so they cannot drift apart.
-   Under a coarse pointer it grows to the 44px tap floor and takes the button
-   with it. */
+/* One shared row height; under a coarse pointer it grows to the 44px tap floor. */
 .names {
   --row-height: 2rem;
 
@@ -656,9 +443,7 @@ function confirmSwitch() {
   cursor: default;
 }
 
-/* Only where a pointer can actually hover. A tap is followed by a compatibility
-   mouse event, which would otherwise leave whichever row the finger last touched
-   lit as though the pointer were still resting on it. */
+/* (hover: hover) only: a tap's compatibility mouse event would leave the last row lit. */
 @media (hover: hover) {
   .name:hover {
     background: var(--color-subtle);
@@ -670,8 +455,6 @@ function confirmSwitch() {
   color: var(--color-text-muted);
 }
 
-/* A wash rather than the legend's own fill: the hourglass sits on top of it and
-   has to stay readable, and the row is a caption for the slot, not a swatch. */
 .name.if_needed {
   background: var(--color-warning-soft);
 }
@@ -698,9 +481,7 @@ function confirmSwitch() {
   color: var(--color-accent);
 }
 
-/* The three answers, in the grid's own three colours at ink weight. These win
-   over the current-visitor accent above: on a slot the icon reports the slot,
-   not whose row it is — the bold name still says that. */
+/* Stance colours win over the current-visitor accent: on a slot the icon reports the slot. */
 .avatar--available,
 .name.is-current .avatar--available {
   color: var(--color-accent-text);
@@ -720,12 +501,7 @@ function confirmSwitch() {
   font-weight: 600;
 }
 
-/* One line, and the first thing on the row to give way. Every row in this list
-   is one --row-height tall, and a name allowed to wrap breaks that for the whole
-   list: the delete button, the eye and the spinner are all sized off it. The
-   dots and the controls are siblings rather than part of this box, so they stay
-   put at their own end of the row when the name is cut — the dots land just
-   after the ellipsis, still reading as "this person, here right now". */
+/* One line: a wrapped name breaks the shared --row-height for the whole list. */
 .text {
   min-width: 0;
   overflow: hidden;
@@ -734,8 +510,6 @@ function confirmSwitch() {
   text-align: left;
 }
 
-/* A name you can answer as. Kept looking like text — it is one item in a list
-   of names, not a row of buttons — and says so on hover and focus. */
 .text--switch {
   padding: 0;
   font: inherit;
@@ -751,12 +525,11 @@ function confirmSwitch() {
   }
 }
 
-/* The ring itself is global; the radius rounds it to match the row's shape. */
 .text--switch:focus-visible {
   border-radius: var(--radius-sm);
 }
 
-/* What the dots say, for anyone who is not looking at them. */
+/* Visually hidden, spoken by screen readers. */
 .hidden {
   position: absolute;
   width: 1px;
@@ -766,11 +539,6 @@ function confirmSwitch() {
   white-space: nowrap;
 }
 
-/* --- here right now ------------------------------------------------------- */
-
-/* Three dots after the name, in the accent the page already uses for "you and
-   yours". They sit tight against the name rather than at the row's end, because
-   they are part of it: the row's right edge belongs to the delete button. */
 .dots {
   display: inline-flex;
   flex: none;
@@ -784,8 +552,6 @@ function confirmSwitch() {
   height: 0.25rem;
   background: currentColor;
   border-radius: var(--radius-pill);
-  /* The wave runs at a third of the way apart, so the three read as one
-     travelling pulse rather than as a flicker. */
   animation: presence-pulse 1.5s ease-in-out infinite;
 }
 
@@ -809,8 +575,6 @@ function confirmSwitch() {
   }
 }
 
-/* Whoever asked for less movement gets the fact without the animation: three
-   dots, evenly lit, saying exactly what the moving ones say. */
 @media (prefers-reduced-motion: reduce) {
   .dot {
     animation: none;
@@ -824,11 +588,6 @@ function confirmSwitch() {
   color: var(--color-if-needed-text);
 }
 
-/* --- removing a respondent ------------------------------------------------ */
-
-/* Whatever trails the name is pushed to the right edge of the row; when both a
-   tag and a control are present the first `auto` eats the slack and the rest
-   sit beside it. */
 .tag,
 .busy,
 .reveal,
@@ -836,17 +595,13 @@ function confirmSwitch() {
   margin-left: auto;
 }
 
-/* Only the first of them takes the slack. Two controls each claiming it would
-   leave the first stranded in the middle of the row instead of beside the
-   second, at the edge where the row's controls live. */
+/* Only the first trailing control takes the slack; the rest sit beside it. */
 .reveal ~ .busy,
 .reveal ~ .remove {
   margin-left: 0;
 }
 
-/* Full-height square hard against the row's right edge — no padding of its
-   own, so the glyph is as big as the row allows and there is nothing to miss.
-   The spinner takes the same box so the row does not resize mid-delete. */
+/* The spinner takes the same box so the row does not resize mid-delete. */
 .busy,
 .reveal,
 .remove {
@@ -863,13 +618,11 @@ function confirmSwitch() {
 }
 
 .remove {
-  /* The global focus ring, drawn inside the button: it sits flush against the
-     row's right edge, and an outside ring would be clipped there. */
+  /* Focus ring drawn inside: an outside ring would be clipped at the row's edge. */
   --focus-ring-inset: calc(var(--focus-ring-offset) * -1);
 
   cursor: pointer;
-  /* Hidden until the row is hovered or the button is tabbed to, so the list
-     stays a list. Kept in the layout so nothing shifts on hover. */
+  /* Hidden until hover/focus, but kept in the layout so nothing shifts. */
   opacity: 0;
   transition: opacity var(--transition-fast), color var(--transition-fast),
     background var(--transition-fast);
@@ -897,14 +650,8 @@ function confirmSwitch() {
   cursor: not-allowed;
 }
 
-/* --- one person's answer, alone -------------------------------------------- */
-
-/* Sits where the delete does when both are there, and takes the row's edge when
-   it is alone — collapsed to a single row the delete is gone, and this is the
-   only thing at that end. Always visible: there is no hover to reveal it on
-   where it is offered at all. */
 .reveal {
-  /* Inside for the same reason as .remove: the button reaches the row's edge. */
+  /* Focus ring inside, same as .remove: the button reaches the row's edge. */
   --focus-ring-inset: calc(var(--focus-ring-offset) * -1);
 
   cursor: pointer;
@@ -925,20 +672,12 @@ function confirmSwitch() {
   }
 }
 
-/* On, and the only thing on the row that says so besides the chart itself. The
-   accent rather than a neutral fill: it is the same "you asked for this" the
-   page uses everywhere, and it has to read at a glance from a row that is now
-   the whole list. */
 .reveal--on,
 .reveal--on:hover {
   color: var(--color-accent-contrast);
   background: var(--color-accent);
 }
 
-/* Off the chart, and saying so twice: the struck-through eye, and a glyph that
-   has stepped back the way the answer it stands for has. Still a full-strength
-   tap target — it is the way back to this person, and the commonest thing to
-   press next. */
 .reveal--hidden {
   opacity: 0.55;
 }
@@ -948,8 +687,6 @@ function confirmSwitch() {
     opacity: 1;
   }
 }
-
-/* --- add someone ---------------------------------------------------------- */
 
 .add {
   margin-top: 0.25rem;
@@ -981,7 +718,7 @@ function confirmSwitch() {
   }
 }
 
-/* Touch has no hover to reveal on, and no cursor to aim with. */
+/* Touch has no hover to reveal on. */
 @media (pointer: coarse) {
   .names {
     --row-height: var(--tap-min);

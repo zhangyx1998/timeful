@@ -1,11 +1,5 @@
 <script setup lang="ts">
-/**
- * The panel every admin section sits in: bordered surface, optional titled
- * header with a slot for its actions.
- *
- * `flush` drops the body padding for content that draws its own rows (lists,
- * tables) so they can run edge to edge.
- */
+// The panel every admin section sits in; `flush` drops body padding for edge-to-edge lists.
 withDefaults(defineProps<{ title?: string; flush?: boolean }>(), {
   title: "",
   flush: false,

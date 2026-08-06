@@ -1,21 +1,12 @@
 /**
- * Helpers behind the create/edit event form: time options and the conversion
- * between the form model (local wall-clock days + times) and the event
- * document's `dates[]` / `duration` pair.
- *
- * `dates` are UTC instants: one per selected day, at the event's start time in
- * the admin's local timezone. `duration` is the window length in hours
- * (end - start, +24 when the window crosses midnight).
- *
- * There is deliberately no `slugify` here: default slugs are capability URLs
- * minted by the server, never derived from the event name.
+ * Helpers behind the create/edit event form. `dates` are UTC instants — one
+ * per selected day at the event's start time in the admin's local timezone;
+ * `duration` is hours (end - start, +24 across midnight). Deliberately no
+ * `slugify`: default slugs are capability URLs minted by the server, never
+ * derived from the event name.
  */
 import type { EventDoc, EventType } from "./event";
 import { MS_PER_MINUTE, splitTimeNum } from "./dates";
-
-// ---------------------------------------------------------------------------
-// times
-// ---------------------------------------------------------------------------
 
 /** Formats an hour float (e.g. 13.5) as "1:30 PM". */
 export function timeLabel(value: number): string {
@@ -58,9 +49,7 @@ function currentOffsetMinutes(): number {
   return -new Date().getTimezoneOffset();
 }
 
-// ---------------------------------------------------------------------------
-// day keys ("YYYY-MM-DD", always local wall-clock)
-// ---------------------------------------------------------------------------
+// Day keys are "YYYY-MM-DD", always local wall-clock.
 
 export function dayKey(year: number, month: number, day: number): string {
   return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
@@ -81,10 +70,6 @@ export function formatDayKey(key: string): string {
     year: "numeric",
   });
 }
-
-// ---------------------------------------------------------------------------
-// form model -> dates[]
-// ---------------------------------------------------------------------------
 
 /** Local wall-clock day + hour float -> UTC ISO instant. */
 function localDateToIso(
@@ -108,10 +93,9 @@ export function specificDates(dayKeys: string[], startTime: number): string[] {
 }
 
 /**
- * Days-of-week dates, built on the legacy June-2018 reference week.
- * The reference week may sit in a different DST period than today, so the
- * instant is derived from the *current* UTC offset — matching legacy
- * NewEvent.vue, which subtracts `currentOffset - refOffset`.
+ * Days-of-week dates on the legacy June-2018 reference week, which may sit in
+ * a different DST period than today — so the instant is derived from the
+ * *current* UTC offset, matching legacy NewEvent.vue.
  */
 export function dowDates(
   dayIndexes: number[],
@@ -150,10 +134,6 @@ export function buildDates(input: DatesInput): string[] {
     : specificDates(input.dayKeys, input.startTime);
 }
 
-// ---------------------------------------------------------------------------
-// dates[] -> form model (editing)
-// ---------------------------------------------------------------------------
-
 /** Reads the start time (local hour float) back out of an event. */
 export function startTimeFromEvent(event: EventDoc | null): number {
   const first = event?.dates?.[0];
@@ -188,10 +168,6 @@ export function dayIndexesFromEvent(event: EventDoc | null): number[] {
     .filter((index, i, all) => all.indexOf(index) === i)
     .sort((a, b) => a - b);
 }
-
-// ---------------------------------------------------------------------------
-// misc formatting
-// ---------------------------------------------------------------------------
 
 export function eventTypeLabel(type: EventType | string): string {
   return type === "dow" ? "Days of week" : "Specific dates";

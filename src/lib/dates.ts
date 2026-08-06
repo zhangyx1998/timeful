@@ -1,22 +1,11 @@
 /**
- * Date / timezone helpers for the event page.
- *
- * Ported from the legacy `frontend/src/utils/date_utils.js`, keeping the
- * conventions the data model depends on:
- *
- * - A slot's identity is an absolute epoch-ms instant (`event.dates[i]` plus an
- *   hours offset). It never depends on the viewer's timezone; the timezone only
- *   decides which cell renders it and what label the row gets.
- * - `timezoneOffset` is expressed the way `Date.prototype.getTimezoneOffset`
- *   does: **minutes west of UTC** (America/Los_Angeles in winter is +480).
- * - Days-of-week events store their dates in the hardcoded reference week
- *   2018-06-17 … 2018-06-24 and are mapped onto the viewed week for display.
- *
- * Deliberate deviation from legacy: instant arithmetic here is pure epoch
- * math. The legacy helpers used `setHours`/`setMinutes`, which are
- * browser-local and DST-aware, so slot keys silently drifted by an hour across
- * the viewer's own DST boundary. Storage here is new, so there is no legacy
- * data to stay bug-compatible with.
+ * Date / timezone helpers for the event page. Conventions the data model
+ * depends on: a slot's identity is an absolute epoch-ms instant — the viewer's
+ * timezone only decides which cell renders it; `timezoneOffset` is minutes
+ * west of UTC (the `getTimezoneOffset` convention); days-of-week events store
+ * their dates in the reference week 2018-06-17 … 2018-06-24. Instant
+ * arithmetic is pure epoch math — `setHours`-style local math drifts an hour
+ * across the viewer's DST boundary.
  */
 import dayjs from "dayjs";
 import utcPlugin from "dayjs/plugin/utc";
@@ -40,9 +29,7 @@ export const MONTH_LABELS = [
   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ] as const;
 
-// ---------------------------------------------------------------------------
-// time numbers ("timeNum" = an hour float, e.g. 9.5 is 09:30)
-// ---------------------------------------------------------------------------
+// timeNum = an hour float, e.g. 9.5 is 09:30.
 
 export function splitTimeNum(timeNum: number): { hours: number; minutes: number } {
   const hours = Math.floor(timeNum);
@@ -83,14 +70,9 @@ export function utcTimeToLocalTime(timeNum: number, timezoneOffset: number): num
   return local;
 }
 
-// ---------------------------------------------------------------------------
-// instant arithmetic
-// ---------------------------------------------------------------------------
-
 /**
- * The local calendar day an instant falls on, as a day number since the epoch.
- * Multiplying it back by MS_PER_DAY yields that civil date at 00:00 UTC, which
- * is what the UTC getters should be read from when building labels.
+ * The local calendar day an instant falls on, as a day number since the epoch;
+ * multiplying back by MS_PER_DAY yields that civil date at 00:00 UTC.
  */
 export function localDayIndex(instant: DateLike, timezoneOffset: number): number {
   const ms = new Date(instant).getTime() - timezoneOffset * MS_PER_MINUTE;
@@ -102,14 +84,9 @@ export function civilDateFromDayIndex(dayIndex: number): Date {
   return new Date(dayIndex * MS_PER_DAY);
 }
 
-// ---------------------------------------------------------------------------
-// timezones
-// ---------------------------------------------------------------------------
-
 /**
- * The date the grid samples its timezone offset at. Weekly events follow the
- * week being viewed (so DST is applied as of that week); dated events pin to
- * their first date.
+ * The date the grid samples its timezone offset at: weekly events follow the
+ * viewed week (DST as of that week); dated events pin to their first date.
  */
 export function getTimezoneReferenceDateForEvent(
   event: Pick<EventDoc, "type" | "dates">,
@@ -206,16 +183,10 @@ export function prefers12Hour(): boolean {
   }
 }
 
-// ---------------------------------------------------------------------------
-// days of week
-// ---------------------------------------------------------------------------
-
 /**
  * Maps a date between the stored reference week and the week being viewed.
- *
- * `reverse: false` — a real date -> its slot in the 2018 reference week.
- * `reverse: true`  — a 2018 reference date -> the equivalent day of the viewed
- *                    week. This is the direction the grid uses for labels.
+ * `reverse: false` — real date -> its slot in the 2018 reference week;
+ * `reverse: true` — reference date -> the viewed week (the labels direction).
  */
 export function dateToDowDate(
   dows: readonly DateLike[],
@@ -225,8 +196,8 @@ export function dateToDowDate(
   startOnMonday = false,
   now: Date = new Date(),
 ): Date {
-  // Sort so the first entry is not a Saturday when a timezone shift rotated the
-  // stored days; otherwise the day offset lands on the wrong week.
+  // Sort so the first entry is not a Saturday when a timezone shift rotated
+  // the stored days; otherwise the day offset lands on the wrong week.
   const sorted = [...dows].sort((date1, date2) => {
     let day1 = new Date(date1).getUTCDay();
     let day2 = new Date(date2).getUTCDay();
@@ -258,10 +229,6 @@ export function dateToDowDate(
   return result;
 }
 
-// ---------------------------------------------------------------------------
-// formatting
-// ---------------------------------------------------------------------------
-
 /** "Wed, Aug 5" (dated events) or "Wed" (weekly events), read in UTC. */
 export function formatCivilDate(civilDate: Date, withDate: boolean): string {
   const weekday = WEEKDAY_LABELS[civilDate.getUTCDay()];
@@ -270,9 +237,8 @@ export function formatCivilDate(civilDate: Date, withDate: boolean): string {
 }
 
 /**
- * The page subtitle: a date range for dated events, a weekday list for weekly
- * ones. Rendered during SSR with `timezoneOffset = 0`, then recomputed with the
- * viewer's timezone once mounted.
+ * The page subtitle. Rendered during SSR with `timezoneOffset = 0`, then
+ * recomputed with the viewer's timezone once mounted.
  */
 export function formatEventDateRange(
   event: Pick<EventDoc, "type" | "dates" | "startOnMonday">,
@@ -303,10 +269,7 @@ export function formatEventDateRange(
   return `${format(first)} – ${format(last)}`;
 }
 
-/**
- * Tooltip / respondents-panel heading for one slot, e.g.
- * "Wed, Aug 5 · 2:15 – 2:30 pm" (dated) or "Wed · 14:15 – 14:30" (weekly).
- */
+/** Slot heading, e.g. "Wed, Aug 5 · 2:15 – 2:30 pm" or "Wed · 14:15 – 14:30". */
 export function formatSlotRange(
   slotMs: number,
   slotMinutes: number,

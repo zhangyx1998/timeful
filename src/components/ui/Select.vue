@@ -1,9 +1,5 @@
 <script lang="ts">
-/**
- * Native <select> wearing the same shell as TextInput: same height, border,
- * focus halo. The arrow is drawn in `currentColor` so it themes with the text
- * instead of relying on the platform's own (untintable) chevron.
- */
+// Native <select> in TextInput's shell. The arrow is drawn in currentColor: the platform chevron cannot be tinted.
 export interface SelectOption<T> {
   value: T;
   label: string;
@@ -21,9 +17,7 @@ const props = withDefaults(
     options: readonly SelectOption<T>[];
     label?: string;
     id?: string;
-    /** Keeps the label for screen readers only — for dense toolbars. */
     hideLabel?: boolean;
-    /** Caps the control's width; useful for long timezone names. */
     maxWidth?: string;
   }>(),
   { label: "", id: "", hideLabel: false, maxWidth: "" },
@@ -97,8 +91,7 @@ const selectId = computed(() => props.id || generatedId);
   border-radius: var(--radius-md);
   outline: none;
   appearance: none;
-  /* The ellipsis here was inert without this: a long timezone label is one
-     line that gets cut, not two that fit. */
+  /* Without nowrap the ellipsis was inert: a long label wrapped instead of cutting. */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

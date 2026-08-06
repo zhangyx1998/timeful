@@ -1,10 +1,7 @@
 /**
- * The indicator is the only save feedback on the page, so what each state
- * actually says is behaviour, not decoration: a guest decides whether their
- * answer is in there by reading this line. The states are rendered through the
- * SSR renderer, which needs no DOM and compiles the real SFC — a template that
- * stopped covering a status would show up here as an empty render rather than
- * as a blank corner of the identity card nobody noticed.
+ * The indicator is the only save feedback, so each state's wording is behaviour.
+ * Rendered via the SSR renderer: a status the template stopped covering shows up
+ * as an empty render.
  */
 import { describe, expect, it } from "vitest";
 import { renderToString } from "vue/server-renderer";

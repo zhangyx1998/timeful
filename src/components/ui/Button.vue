@@ -1,11 +1,6 @@
 <script setup lang="ts">
-/**
- * The only button in the app. Four variants, two sizes, one focus ring — used
- * by both the event page and the admin panel so they read as one product
- * (ARCHITECTURE.md § UX bar).
- *
- * Under a coarse pointer every size grows to the 44px tap-target floor.
- */
+// The only button in the app (ARCHITECTURE.md § UX bar). Under a coarse pointer
+// every size grows to the 44px tap-target floor.
 import Spinner from "./Spinner.vue";
 
 withDefaults(
@@ -13,10 +8,8 @@ withDefaults(
     variant?: "primary" | "secondary" | "ghost" | "danger";
     size?: "sm" | "md";
     type?: "button" | "submit" | "reset";
-    /** Shows a spinner and blocks interaction; implies disabled. */
     loading?: boolean;
     disabled?: boolean;
-    /** Full-width, for form submits on narrow screens. */
     block?: boolean;
   }>(),
   {

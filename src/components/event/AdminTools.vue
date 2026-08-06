@@ -1,18 +1,6 @@
 <script setup lang="ts">
-/**
- * The owner's controls on an event page, in one labelled box.
- *
- * They used to be two unlabelled glyphs in the navbar — a pencil and a house —
- * beside controls every visitor gets. Nothing said they were the owner's, and
- * there was nowhere to put a third. Gathered into a bordered group at the head
- * of the sidebar (or of the settings drawer on a phone) they read as what they
- * are: a section of the page that belongs to whoever is signed in, and one a
- * fourth control can join without crowding the title.
- *
- * A guest never renders this at all — the whole group hangs off `isAdmin`,
- * which fails closed. Nothing rests on that: every route behind these buttons
- * is gated by the session cookie regardless.
- */
+// The owner's controls. Guests never render this (`isAdmin` fails closed), but nothing
+// rests on that: every route behind these buttons is gated by the session cookie.
 import { ref } from "vue";
 import PushToggle from "./PushToggle.vue";
 import LogViewer from "../shared/LogViewer.vue";
@@ -31,14 +19,8 @@ import { formatDateTime } from "../../lib/dates";
 import type { EventDetails, EventDetailsUser } from "../../lib/api";
 
 const props = defineProps<{
-  /** The event these act on. The uuid, so a rename cannot strand them. */
+  /** The uuid, so a rename cannot strand these. */
   eventId: string;
-  /**
-   * Inside the phone's admin drawer the border and the heading are the sheet's
-   * own — it is titled "Admin" and wears the shield already — so both are
-   * dropped here and only the tools are left. Same reasoning, and the same
-   * prop name, as the respondents panel inside its own drawer.
-   */
   embedded?: boolean;
 }>();
 
@@ -51,12 +33,7 @@ const errorDetail = ref("");
 const users = ref<EventDetailsUser[]>([]);
 const signingOut = ref(false);
 
-/**
- * The dialog's two panes: the respondents' origins, and the event's slice of
- * the server log. The log tab mounts its viewer only while it is the one
- * showing, so the socket behind it opens on entering the tab and closes on
- * leaving it — a disposable viewing session, never a background one.
- */
+// The log tab mounts its viewer only while showing, so its socket opens and closes with the tab.
 const DETAIL_TABS = [
   { value: "details", label: "Details" },
   { value: "logs", label: "Server logs" },
@@ -64,11 +41,7 @@ const DETAIL_TABS = [
 
 const detailTab = ref<string>("details");
 
-/**
- * Fetched on open rather than held: it is a log, so what matters is what it
- * says now, and a page left open for an hour would otherwise show an hour-old
- * answer with no sign of it.
- */
+// Fetched on open rather than held: a page left open would show a stale answer with no sign of it.
 async function openDetails(): Promise<void> {
   detailsOpen.value = true;
   detailTab.value = "details";
@@ -90,8 +63,6 @@ async function openDetails(): Promise<void> {
 async function signOut(): Promise<void> {
   signingOut.value = true;
   try {
-    // Re-probes rather than assuming; the group disappears where it stands,
-    // with no reload and nothing else about the page disturbed.
     await adminLogout();
   } finally {
     signingOut.value = false;
@@ -106,10 +77,6 @@ async function signOut(): Promise<void> {
     :aria-labelledby="embedded ? undefined : 'admin-tools-title'"
     :aria-label="embedded ? 'Admin' : undefined"
   >
-    <!-- The half-solid shield is the app's one admin mark: the same glyph is on
-         the navbar button that opens the phone's admin drawer, on that drawer's
-         own header, and on the way back in at the foot of the column. Wherever
-         it appears, it means "this belongs to whoever is signed in". -->
     <h2 v-if="!embedded" id="admin-tools-title" class="tools__title">
       <IconShield class="tools__mark" aria-hidden="true" />
       Admin
@@ -121,8 +88,7 @@ async function signOut(): Promise<void> {
         Edit event
       </Button>
 
-      <!-- An anchor rather than a button: it goes somewhere, so a middle-click
-           and a long-press should offer what they always offer. -->
+      <!-- An anchor, not a button: middle-click and long-press should offer what they always offer. -->
       <a class="tool tool--link" href="/">
         <IconHome aria-hidden="true" />
         Back to home
@@ -133,12 +99,6 @@ async function signOut(): Promise<void> {
         Details
       </Button>
 
-      <!-- The owner's bell: this browser asking to hear when answers change.
-           Hidden entirely where push cannot work, plus the one case it can be
-           made to work — on iOS before a home-screen install it renders
-           disabled and says what to do. The prompt fires only from the press.
-           In the drawer and the sidebar alike, because both render this same
-           component. -->
       <PushToggle
         :event-id="eventId"
         role="owner"
@@ -158,8 +118,6 @@ async function signOut(): Promise<void> {
     </div>
   </section>
 
-  <!-- What the respondents list cannot say: two answers under one name look
-       identical there, and this is where they stop looking identical. -->
   <Dialog
     :open="detailsOpen"
     size="lg"
@@ -177,9 +135,6 @@ async function signOut(): Promise<void> {
         />
       </div>
 
-      <!-- The event's slice of the server log, streamed live. The viewer only
-           exists while its tab is showing, so closing the tab — or the dialog —
-           closes the socket behind it. -->
       <template v-if="detailTab === 'logs'">
         <p class="details__note">Live, and visible only to you.</p>
         <LogViewer
@@ -217,10 +172,6 @@ async function signOut(): Promise<void> {
                 <dd class="fact__value">{{ formatDateTime(user.lastEdit.at) }}</dd>
               </div>
             </dl>
-            <!-- The raw header, on one line with the whole of it in the
-                 tooltip: a parsed "Chrome on macOS" is a guess about a string
-                 that is a guess already, and the string itself is what an
-                 owner comparing two rows actually wants to compare. -->
             <p class="row__agent" :title="user.lastEdit.userAgent">
               {{ user.lastEdit.userAgent || "No user agent" }}
             </p>
@@ -237,17 +188,12 @@ async function signOut(): Promise<void> {
 </template>
 
 <style scoped>
-/* Bordered and titled, because what it contains is a different *kind* of thing
-   from the cards below it: those are about the event, these are about your
-   being signed in to it. */
 .tools {
   padding: 0.5rem 0.6rem 0.6rem;
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-md);
 }
 
-/* In the drawer the sheet is the box and its header is the title, so the group
-   is nothing but its rows. */
 .tools--embedded {
   padding: 0;
   border: none;
@@ -266,8 +212,6 @@ async function signOut(): Promise<void> {
   color: var(--color-text-muted);
 }
 
-/* A shade over the cap height of the word beside it: a badge on a label, not a
-   second heading. */
 .tools__mark {
   flex: none;
   width: 0.8rem;
@@ -281,9 +225,6 @@ async function signOut(): Promise<void> {
   gap: 0.1rem;
 }
 
-/* A column of labelled rows rather than a row of buttons: they are unrelated
-   actions that happen to belong to the same person, so each gets its own line
-   and none of them is the one you are being pushed towards. */
 .tool {
   justify-content: flex-start;
   gap: 0.5rem;
@@ -297,7 +238,6 @@ async function signOut(): Promise<void> {
   height: 0.95rem;
 }
 
-/* The one that is a link, dressed as the buttons beside it. */
 .tool--link {
   display: inline-flex;
   align-items: center;
@@ -321,23 +261,17 @@ async function signOut(): Promise<void> {
   }
 }
 
-/* --- the details dialog ---------------------------------------------------- */
-
 .details {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
 }
 
-/* Centred like the panel's own tabs: a switch over the content, not a row
-   of it. */
 .details__tabs {
   display: flex;
   justify-content: center;
 }
 
-/* The admin-only cause under a failure to load: a diagnostic, so it drops to
-   caption weight, goes monospace, and stays selectable. */
 .details__cause {
   display: block;
   overflow-wrap: anywhere;
@@ -420,8 +354,6 @@ async function signOut(): Promise<void> {
   font-family: var(--font-mono);
 }
 
-/* One line, whole string in the tooltip. A user agent is a paragraph of
-   punctuation and letting it wrap turns every row into a wall. */
 .row__agent {
   margin-top: 0.3rem;
   overflow: hidden;

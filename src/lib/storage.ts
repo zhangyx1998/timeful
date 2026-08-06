@@ -1,12 +1,6 @@
 /**
- * The handful of things the event page remembers between visits, and the three
- * lines of defence around `localStorage` that every one of them needs.
- *
- * Private browsing, a full quota and a blocked third-party context all make
- * `localStorage` *throw* rather than return nothing, and none of what is kept
- * here is worth a broken page: a preference that does not persist is a smaller
- * problem than a scheduler that does not mount. So every access is wrapped, and
- * a failure reads as "nothing stored".
+ * Wrapped localStorage access: private browsing, a full quota and a blocked
+ * third-party context all make it *throw*, and a failure reads as "nothing stored".
  */
 
 /** Every key the app writes, in one place so two of them cannot collide. */

@@ -1,12 +1,5 @@
 <script setup lang="ts">
-/**
- * Every device signed in as the owner.
- *
- * Signing a session out is destructive and irreversible from here — the one
- * marked "current" logs this browser out — so both the per-row action and the
- * sweep confirm in a dialog that says which it is about. The row action is an
- * icon: the table's own "Type" column already says what each row is.
- */
+// Every device signed in as the owner; revoking the "current" row signs this browser out.
 import { computed, onMounted, ref } from "vue";
 import { api, apiError } from "../../lib/api";
 import { formatDateTime } from "../../lib/dates";
@@ -27,7 +20,6 @@ const error = ref("");
 const busyToken = ref("");
 const purging = ref(false);
 
-/** What the one confirm dialog is currently asking about. */
 const confirming = ref<{ kind: "purge" } | { kind: "revoke"; session: SessionInfo } | null>(
   null,
 );
@@ -56,7 +48,6 @@ async function load(): Promise<void> {
   }
 }
 
-/** Runs whichever action the open dialog was asking about. */
 function confirmed(): void {
   const pending = confirming.value;
   if (!pending) return;
@@ -184,8 +175,7 @@ defineExpose({ load });
 </template>
 
 <style scoped>
-/* The card is flush, so the banner keeps its own distance from the edges.
-   ErrorNote declares no margin of its own, which is what makes this safe. */
+/* ErrorNote declares no margin of its own, which is what makes this safe. */
 .card-error {
   margin: 1rem;
 }
@@ -279,8 +269,7 @@ defineExpose({ load });
   white-space: nowrap;
 }
 
-/* Phones: the table stops being a table. Each session becomes a stacked block
-   labelled by its column name, so nothing has to scroll sideways. */
+/* Phones: each session becomes a stacked labelled block, so nothing scrolls sideways. */
 @media (max-width: 46rem) {
   .table,
   .table tbody,

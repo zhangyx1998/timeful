@@ -1,18 +1,6 @@
 /**
- * The event page is public, and the admin's respondent-delete controls are the
- * only thing on it that is not. What decides whether they render is
- * `fetchIsAdmin`, so its failure modes are the interesting part: every one of
- * them has to land on "not the admin". A `true` reached by accident — a stray
- * truthy value, an error page from a proxy, an offline fetch — would put
- * management controls in front of a guest.
- *
- * (The controls are cosmetic either way: the server checks the session itself.
- * This keeps the UI from lying about who someone is.)
- *
- * The other half is where a request is sent. There are two namespaces — `/api/*`
- * for what is global and `/<slug>/…` for what belongs to one event — so paths
- * are written out in full and reach `fetch` verbatim, and the event-scoped ones
- * are built by the helpers rather than spelled at each call site.
+ * `fetchIsAdmin` must land on "not the admin" for every failure mode, and
+ * paths must reach `fetch` verbatim in both namespaces (`/api/*`, `/<slug>/…`).
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {

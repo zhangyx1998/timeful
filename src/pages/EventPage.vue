@@ -1,11 +1,8 @@
 <script setup lang="ts">
 /**
- * Public event page.
- *
- * The server renders the shell — name, subtitle, meta — from the event it
- * serialised into `window.__EVENT__`. The scheduler mounts client-side only:
- * it depends on the browser's timezone and localStorage, which the server
- * cannot know without producing a hydration mismatch.
+ * Public event page. The server renders the shell from `window.__EVENT__`;
+ * the scheduler mounts client-side only (browser timezone and localStorage
+ * would otherwise produce a hydration mismatch).
  */
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -43,38 +40,19 @@ const injected = inject<EventDoc | null>("initialEvent", null);
 const event = ref<EventDoc | null>(injected);
 const mounted = ref(false);
 
-/**
- * Whether the visitor is the signed-in owner. The flag itself lives in
- * `lib/admin.ts`, because the scheduler's sidebar renders off it too and
- * signing in or out from there has to move it for the whole page at once. It
- * fails closed, and nothing rests on it: every route behind it is gated by the
- * session cookie regardless (ARCHITECTURE.md § Guest UX).
- */
+// `isAdmin` lives in lib/admin.ts and fails closed; every route behind it is
+// gated by the session cookie regardless (ARCHITECTURE.md § Guest UX).
 const editOpen = ref(false);
 
-/**
- * The phone's admin drawer, and the navbar shield that opens it.
- *
- * It lives up here rather than in the scheduler because the button does: the
- * navbar is this page's, and the tools it opens act on the event rather than on
- * either view of the chart — so the sheet answers a tap the same way whether
- * the group's answers or the visitor's own are on screen.
- *
- * `compact` is the same measurement the scheduler makes (`lib/viewport.ts`);
- * both are false until mount, so the server renders neither the button nor the
- * sheet and there is nothing here to mismatch on hydration.
- */
+// `compact` and `adminOpen` are false until mount, so SSR renders neither the
+// shield button nor the sheet and there is nothing to mismatch on hydration.
 const { compact } = useViewport();
 const adminOpen = ref(false);
 
-/** Widening past the phone layout puts the tools back in the sidebar, so the
- *  sheet holding a second copy of them goes — the same rule the scheduler
- *  applies to its own two drawers. */
 watch(compact, (on) => {
   if (!on) adminOpen.value = false;
 });
 
-/** The drawer asked for the edit form, which is this page's own dialog. */
 function onAdminEdit(): void {
   editOpen.value = true;
 }
@@ -82,16 +60,10 @@ function onAdminEdit(): void {
 /** Set when the event is deleted out from under an open page. */
 const gone = ref(false);
 
-/** The realtime subscription, while the page is mounted. */
 let realtime: RealtimeHandle | null = null;
 
-/**
- * The connector has been failing long enough to say so (`lib/realtime.ts`,
- * `onDegraded`). Raw here; what the footer actually shows is `realtimeDown`
- * below, which also asks whether this event was supposed to have live updates
- * at all — an event with them switched off gets the same refusals off the
- * server, and they are not news.
- */
+// Raw degraded flag; `realtimeDown` below also asks whether this event was
+// supposed to have live updates at all.
 const realtimeDegraded = ref(false);
 
 const realtimeDown = computed(
@@ -99,26 +71,13 @@ const realtimeDown = computed(
     realtimeDegraded.value && event.value !== null && realtimeAllowed(event.value),
 );
 
-/**
- * Who is on this page right now, straight off the channel — so it is empty
- * until the socket says otherwise, and empty again the moment it drops. It
- * belongs here rather than in the scheduler because the socket does: presence
- * arrives on the same connection as the snapshots, and there is one owner of
- * that connection.
- */
+/** Presence straight off the channel: empty until the socket says otherwise. */
 const present = ref<PresenceEntry[]>([]);
 
-/**
- * Who the scheduler is answering as, which the socket claims a write session
- * for on the visitor's behalf.
- *
- * Kept in a ref as well as pushed at the handle because the two are mounted in
- * an order neither can rely on: the scheduler may adopt a stored name before
- * this page has connected, in which case the connection reads it from here.
- */
+// Kept in a ref as well as pushed at the handle because mount order is
+// unreliable: the scheduler may adopt a stored name before this page connects.
 const identity = ref<RealtimeSession | null>(null);
 
-/** The scheduler, for the two things only this page can tell it to do. */
 const scheduler = ref<{
   leaveEditing: () => void;
   resumeEditing: () => void;
@@ -129,14 +88,8 @@ const occupiedBy = ref<RealtimeSession | null>(null);
 /** The identity this page just lost to another window, while the notice is up. */
 const replacedFor = ref<RealtimeSession | null>(null);
 
-/**
- * The scheduler's way onto the socket: one method, and no more of the handle
- * than that.
- *
- * A stable object rather than the handle itself, because the handle is replaced
- * on mount and the prop must not go stale — and because "can this page send a
- * save right now" is the only question the scheduler ever asks of it.
- */
+// A stable object rather than the handle itself: the handle is replaced on
+// mount and the prop must not go stale.
 const writer = {
   save(payload: SavePayload) {
     return realtime?.save(payload) ?? null;
@@ -145,57 +98,36 @@ const writer = {
 
 function onIdentity(session: RealtimeSession | null): void {
   identity.value = session;
-  // Reconnecting is how the room learns about it: the identity is part of the
-  // handshake, and the write session is a property of the connection.
+  // The identity is part of the handshake; the write session is a property of
+  // the connection.
   realtime?.setSession(session);
 }
 
-/**
- * "My availability" was entered again under an identity already adopted. If the
- * session was refused or taken away, this is the retry; if it is already held,
- * `setSession` sees no change and does nothing.
- */
+// The retry after a refusal; a session already held sees no change and does nothing.
 function onClaim(): void {
   realtime?.setSession(identity.value);
 }
 
-/**
- * The scheduler left the edit tab and has flushed what was pending: the write
- * session goes back, while `identity` stays. Presence stops listing this
- * editor, and the key is free for another device to claim without a takeover
- * prompt. Entering "My availability" again claims it back through `onClaim` —
- * including the occupied path, if somebody took the name in the meantime.
- */
+// The write session goes back while `identity` stays.
 function onRelease(): void {
   realtime?.setSession(null);
 }
 
-/**
- * Somebody else is editing as this person. Step back to the group view and ask
- * — a takeover is a thing done to another human, so it is never automatic.
- */
+// A takeover is a thing done to another human, so it is never automatic.
 function onOccupied(session: RealtimeSession): void {
   scheduler.value?.leaveEditing();
   occupiedBy.value = session;
 }
 
-/**
- * Set for exactly one reconnection: the one a takeover asked for.
- *
- * Without it every reopened session would push the page back into edit mode —
- * a network blip while somebody is reading the group's chart would take the
- * chart away from them.
- */
+// Set for exactly one reconnection — the one a takeover asked for — or every
+// reopened session would push the page back into edit mode.
 let resumeOnOpen = false;
 
 function takeOver(): void {
   const session = occupiedBy.value;
   occupiedBy.value = null;
   if (!session) return;
-  // A connector that has given up can claim nothing: `setSession` is a no-op
-  // once it is stopped, so "Take over" would be a button that does nothing.
-  // The dialog has already closed above; the page stays in the group view,
-  // and the footer is already saying live updates are unavailable.
+  // A connector that has given up can claim nothing: setSession is a no-op.
   if (realtime?.stopped) return;
   resumeOnOpen = true;
   realtime?.setSession(session, { takeover: true });
@@ -225,13 +157,8 @@ const subpage = computed<EventSubpage>(() => {
   return { kind: "root" };
 });
 
-/**
- * The window title, from the same builder the server's SSR head uses — which
- * is what keeps the hydrated title byte-equal to the served one on first
- * paint. What the client adds is the identity it has confirmed since: on an
- * edit path whose key has no stored answer yet (a first-time invitee), the
- * respondent list cannot name the person, but the page can.
- */
+// Same builder as the SSR head, keeping the hydrated title byte-equal to the
+// served one on first paint.
 const title = computed(() => {
   if (!event.value) return null;
   const sub = subpage.value;
@@ -255,37 +182,19 @@ const subtitle = computed(() =>
   event.value ? formatEventDateRange(event.value, subtitleOffset.value) : "",
 );
 
-/**
- * Adopts a new copy of the event, whoever brought it: the owner's edit dialog,
- * a refresh, or a snapshot pushed over the realtime channel. Everything the
- * page draws comes off `event`, so replacing it *is* the update — the title,
- * the date range, the heatmap and the respondents list all follow, and there is
- * exactly one path for "the event changed" rather than one per source.
- *
- * A renamed slug moves the event's URL, and the old one is dead the moment the
- * rename lands — so the address bar is corrected in place rather than pushed,
- * leaving no back-button entry pointing at a 404.
- *
- * What this deliberately does *not* touch is the visitor's own half-finished
- * answer. The grid's marks live in `EventScheduler`, which only re-seeds them
- * from a new document when it asked for one (`awaitingIdentityRefresh`), and
- * the current name is layered back over the group's answers by the response-
- * index override. So a snapshot arriving mid-drag updates everyone else and
- * leaves the drag alone.
- */
+// The one path for "the event changed", whoever brought it. The visitor's own
+// half-finished answer is untouched: the scheduler only re-seeds when it asked
+// for a refresh, and the override layers the current marks back over the group.
 function applyEvent(next: EventDoc): void {
-  // Both pipes land here — the socket's snapshot and refresh()'s refetch — and
-  // a refetch issued before somebody else's save can arrive after it. Every
-  // broadcast path bumps `updatedAt` (ARCHITECTURE.md § Realtime), so an older
-  // document is an answer to a question already overtaken. `<` rather than
-  // `<=`, so an equal-timestamp re-render still lands.
+  // Every broadcast path bumps `updatedAt` (ARCHITECTURE.md § Realtime), so an
+  // older document lost the race. `<` not `<=`, so an equal-timestamp
+  // re-render still lands.
   if (event.value && next.updatedAt < event.value.updatedAt) return;
   const before = event.value?.slug;
   event.value = next;
   if (next.slug && next.slug !== before) {
-    // Through the router rather than raw history, because the path now carries
-    // state (`/view`, `/edit/<key>`) that a bare `/${slug}` would drop — and
-    // the scheduler builds its tab navigation off the route's own params.
+    // Replaced, not pushed: the old slug is dead and must not sit in history.
+    // Through the router because the path carries state a bare /slug would drop.
     void router.replace({
       name: (route.name as string) || "event",
       params: { ...route.params, slug: next.slug },
@@ -309,12 +218,7 @@ function onEdited(saved: EventDoc): void {
   editOpen.value = false;
 }
 
-/**
- * The event was deleted while this page had it open. There is nothing left to
- * answer, so the scheduler goes rather than sitting there autosaving into a
- * 404 — the page says what happened and stops, which is the same thing the
- * standalone 404 page says to someone arriving at a dead link.
- */
+// Nothing left to answer; stop rather than autosave into a 404.
 function onGone(): void {
   gone.value = true;
   event.value = null;
@@ -330,8 +234,6 @@ onMounted(() => {
   mounted.value = true;
   void refreshAdmin();
 
-  // A silent enhancement: no indicator, nothing to configure, and a page whose
-  // socket never opens behaves exactly like one from before this existed.
   // Subscribed by uuid rather than slug so a rename cannot strand it.
   const id = event.value?.id;
   if (id) {
@@ -359,32 +261,19 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <!-- `event-page` carries no scoped styles: it is the marker the global sheet
-       keys the phone layout's document-level scroll lock off, which is a rule
-       about <html> and <body> and so cannot live in a scoped block. -->
+  <!-- `event-page` is the marker the global sheet keys the phone scroll lock
+       off — a rule about <html>/<body> that cannot live in a scoped block. -->
   <div class="page event-page">
     <AppHeader>
-      <!-- What every visitor gets, and nothing else. The owner's controls used
-           to sit here as two unlabelled glyphs among them; they are a labelled
-           group in the sidebar now, where they read as belonging to somebody
-           rather than to the page. -->
       <template #lead>
         <h1 v-if="event" class="name" :title="event.name">{{ event.name }}</h1>
-        <!-- Client-only, like the rest of the identity layer. The slug, not
-             the address bar: the canonical root URL is the only link worth
-             handing out, whatever shape this page is on. -->
+        <!-- Client-only. The slug, not the address bar: the canonical root URL
+             is the only link worth handing out. -->
         <InviteButton v-if="mounted && event" :slug="event.slug" />
       </template>
 
-      <!-- The dates belong with the name they qualify, so they lead the
-           right-hand group rather than sitting in the body. -->
       <p v-if="event" class="when" :title="subtitle">{{ subtitle }}</p>
 
-      <!-- The phone's way to the owner's tools, beside the theme switch because
-           it is the same kind of control: it acts on the whole page rather than
-           on either view of the chart. A guest never renders it — `isAdmin`
-           fails closed — and neither does the desktop, which keeps the tools
-           where they already are, at the head of the sidebar. -->
       <IconButton
         v-if="isAdmin && compact && event"
         label="Admin tools"
@@ -424,8 +313,7 @@ onBeforeUnmount(() => {
     </main>
 
     <!-- Before the form dialog below it, so the sheet's teleport anchor lands
-         first in <body> and the form it opens is drawn over it rather than
-         under it. -->
+         first in <body> and the form it opens is drawn over it. -->
     <AdminDrawer
       v-if="isAdmin && compact && event"
       :open="adminOpen"
@@ -442,14 +330,8 @@ onBeforeUnmount(() => {
       @close="editOpen = false"
     />
 
-    <!-- One session per person per event, so adopting a name somebody is
-         already editing under is a question rather than a fight. Cancelling
-         leaves the page in the group view with the name still remembered: "My
-         availability" asks again. -->
-    <!-- Client-only, like the scheduler: `Dialog` teleports to <body>, and a
-         teleport rendered into the SSR output is a hydration mismatch that
-         costs the whole page. There is no socket during SSR either, so neither
-         of these can have anything to say before mount. -->
+    <!-- Client-only: `Dialog` teleports to <body>, and a teleport rendered
+         into the SSR output is a hydration mismatch. -->
     <ConfirmDialog
       v-if="mounted"
       :open="occupiedBy !== null"
@@ -463,10 +345,6 @@ onBeforeUnmount(() => {
       another session. Take over?
     </ConfirmDialog>
 
-    <!-- The other end of the same handshake. Said plainly, because from here it
-         looks like the page simply stopped saving — and it is not reclaimed
-         automatically, or the two windows would take turns forever. One button
-         and nothing to cancel: an acknowledgement, not a choice. -->
     <ConfirmDialog
       v-if="mounted"
       :open="replacedFor !== null"
@@ -500,9 +378,6 @@ onBeforeUnmount(() => {
   color: var(--color-text);
 }
 
-/* The page's one h1, in the header rather than the body: the event's name is
-   what identifies this page, so it belongs in the bar that stays on screen.
-   One line, ellipsis past that, full name in the tooltip. */
 .name {
   min-width: 0;
   overflow: hidden;
@@ -514,9 +389,6 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
 }
 
-/* Leads the header's right-hand group. It gives up room before the icons do
-   and, on a narrow phone where it would leave the name a stub, gets out of the
-   way entirely — the grid's own column headings carry the dates there. */
 .when {
   flex: 0 1 auto;
   min-width: 0;
@@ -538,9 +410,6 @@ onBeforeUnmount(() => {
   color: var(--color-text-muted);
 }
 
-/* The event went away under an open page. Centred and quiet: it is the whole
-   of what is left to say, and it says the same thing the standalone 404 page
-   says to someone who arrives at a dead link. */
 .gone {
   padding: 3rem 0;
   text-align: center;
@@ -561,9 +430,7 @@ onBeforeUnmount(() => {
   color: var(--color-text-muted);
 }
 
-/* The same quiet way out the standalone 404 page offers: a plain link to `/`,
-   because leaving the event page is the point. The padding is invisible but
-   keeps the tap target at the floor. */
+/* Invisible padding keeps the tap target at the floor. */
 .gone__home {
   display: inline-block;
   padding: 0.75rem 1rem;
@@ -573,12 +440,9 @@ onBeforeUnmount(() => {
 }
 
 
-/* The phone layout is an app, not a document: the page is exactly the viewport
-   and does not scroll, so the scheduler can hand the chart a fixed pane and a
-   finger drag on it can only ever mean selection. Everything that needs to
-   scroll — the grid itself, a drawer's contents — scrolls inside its own box.
-   Deriving the pane's height from the flex column rather than subtracting the
-   header's height from the viewport keeps one number out of two files. */
+/* Phone layout: the page is exactly the viewport and does not scroll; anything
+   that scrolls does so inside its own box. The pane's height derives from the
+   flex column, not viewport minus header. */
 @media (max-width: 820px) {
   .page {
     display: flex;
@@ -593,16 +457,13 @@ onBeforeUnmount(() => {
     flex: 1 1 auto;
     flex-direction: column;
     min-height: 0;
-    /* The centring margins are what would otherwise opt this item out of
-       stretching to the column's width, leaving it max-content wide. */
+    /* The centring margins would otherwise opt this item out of stretching. */
     width: 100%;
     padding: 0.5rem calc(var(--page-pad) + var(--safe-right)) 0
       calc(var(--page-pad) + var(--safe-left));
   }
 }
 
-/* Sideways, the chart is what is left after the chrome and there is barely any
-   of it, so the shell spends nothing on air it can do without. */
 @media (max-height: 480px) and (max-width: 820px) {
   .main {
     padding-top: 0.25rem;

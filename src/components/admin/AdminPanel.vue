@@ -1,13 +1,4 @@
 <script setup lang="ts">
-/**
- * Signed-in management view, in three tabs.
- *
- * Events is what the owner comes here for; sessions and credentials are
- * housekeeping they touch once in a while, so they move behind Settings rather
- * than sitting under the list as two more panels to scroll past; Logs is the
- * server's own account of itself, streamed live. The switch is the same
- * segmented control the event page uses for its two views.
- */
 import { onMounted, ref } from "vue";
 import AccountSection from "./AccountSection.vue";
 import { api, apiError, eventDataPath } from "../../lib/api";
@@ -33,7 +24,6 @@ const emit = defineEmits<{ (e: "signed-out", message: string): void }>();
 const events = ref<EventSummary[]>([]);
 const loading = ref(true);
 const error = ref("");
-/** The admin-only line under the error; the panel is signed in by definition. */
 const errorDetail = ref("");
 
 const TABS = [
@@ -131,9 +121,6 @@ onMounted(loadEvents);
       </div>
 
       <ErrorNote :message="error" :detail="errorDetail" />
-      <!-- loadEvents() is idempotent, so a failure is not terminal. The button
-           rides the error's own v-if: pressing it clears the message, and both
-           leave together. -->
       <Button
         v-if="error"
         class="retry"
@@ -162,9 +149,6 @@ onMounted(loadEvents);
         />
       </template>
 
-      <!-- The server's own account of itself, live over a socket that exists
-           only while this tab is the one showing — leaving it closes the
-           stream, and returning replays the buffer afresh. -->
       <template v-else-if="tab === 'logs'">
         <section class="logs" aria-label="Server logs">
           <p class="logs__note">Kept in memory only, and visible only to you.</p>
@@ -200,7 +184,6 @@ onMounted(loadEvents);
   white-space: nowrap;
 }
 
-/* The email is the first thing to go when the header runs out of room. */
 @media (max-width: 30rem) {
   .header__email {
     display: none;
@@ -216,8 +199,6 @@ onMounted(loadEvents);
   padding: 1.5rem var(--page-pad) 3rem;
 }
 
-/* Centred and set apart from the panels below, the way the event page's view
-   switch sits over its content. */
 .tabs {
   display: flex;
   justify-content: center;
@@ -230,8 +211,6 @@ onMounted(loadEvents);
   flex: none;
 }
 
-/* Under the banner's left edge, so it reads as the banner's own action rather
-   than a control of the list below. */
 .retry {
   align-self: flex-start;
   margin-top: -0.75rem;

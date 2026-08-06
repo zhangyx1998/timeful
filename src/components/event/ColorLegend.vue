@@ -3,25 +3,15 @@ import { computed } from "vue";
 import { useSlotBaseColor } from "../../lib/colors";
 import { heatmapColor } from "../../lib/grid";
 
-/**
- * What the chart's colours mean, under the chart.
- *
- * Desktop only. A phone's foot row is a row of the fixed pane rather than
- * something the page scrolls past, and every pixel it spends is a pixel of
- * chart — so the caption is not shrunk there, it is dropped, and the height
- * goes to the grid. What a filled cell means is legible from the chart itself
- * once the cells are the size a phone gives them.
- */
+// What the chart's colours mean. Desktop only: the phone drops it and gives the height to the grid.
 const props = defineProps<{
   mode: "group" | "edit";
   max: number;
   total: number;
 }>();
 
-/** Same theme-resolved base the grid paints with. */
 const slotBase = useSlotBaseColor();
 
-/** A few steps of the same curve the grid paints with. */
 const steps = computed(() => {
   const max = Math.max(props.max, 1);
   const counts = max <= 4
@@ -64,8 +54,6 @@ const steps = computed(() => {
   color: var(--color-text-muted);
 }
 
-/* Whole entries wrap to the next line; "If needed" never comes apart from
-   itself, and a swatch never ends up on a line without its word. */
 .item {
   display: inline-flex;
   flex: none;

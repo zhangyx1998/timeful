@@ -1,26 +1,6 @@
 <script setup lang="ts">
-/**
- * Who the page is answering as, in its own container above the respondents
- * list.
- *
- * The second state is why it exists. With nobody adopted — a first visit, or
- * after "Just browsing" — the page said nothing at all about it, so browsing
- * looked exactly like being someone, right up until a drag on the grid did
- * nothing. It now says plainly that there is no name, and offers the way out.
- *
- * The save status lives here too: it is a statement about the name above it,
- * and belongs where that name is.
- *
- * Two shapes, one markup
- * ----------------------
- * Beside the grid (wide) it is a card: name, then status, then the way out,
- * stacked. Under the grid there is no "beside" — the column falls below a very
- * tall chart, which is exactly where a phone stops scrolling — so at the same
- * breakpoint the layout stacks (820px) the card leaves the flow and becomes a
- * bar pinned to the bottom of the viewport: who you are and whether you are
- * saved stay on screen while you paint. The row reads name at the left, status
- * and the way out at the right end.
- */
+// Who the page is answering as. A card beside the grid; at the 820px stack it
+// becomes the bottom bar of the phone shell.
 import PushToggle from "./PushToggle.vue";
 import SyncIndicator from "./SyncIndicator.vue";
 import Button from "../ui/Button.vue";
@@ -33,30 +13,16 @@ import type { SyncStatus } from "../../lib/sync";
 
 withDefaults(
   defineProps<{
-    /** The adopted name, or null when the visitor is only browsing. */
     name: string | null;
     status: SyncStatus;
     error: string | null;
     /** The admin-only line under the error; guests never receive one. */
     errorDetail?: string | null;
-    /**
-     * Offer to wipe this answer, here.
-     *
-     * The phone only. On a desktop the chart's foot has room to say "Clear my
-     * response" in words and that is where it belongs; on a phone the foot is
-     * a row of a fixed pane, and a bin glyph with no label in it was a control
-     * you had to already know. Beside the name it wipes, it needs no label —
-     * the row says whose answer it is, and the confirm dialog says the rest.
-     */
+    /** Phone only: the desktop's chart foot carries the labelled version. */
     canClear?: boolean;
     /** The confirm is open: the button stays armed under it. */
     clearing?: boolean;
-    /**
-     * The respondent's bell: notify this browser when the event changes.
-     * Null hides it — no adopted name means nobody to subscribe as. It
-     * renders in the card only; as a bar the row is spoken for, and the
-     * settings drawer carries the same toggle there.
-     */
+    /** Card only; as a bar the row is spoken for and the settings drawer carries the toggle. */
     push?: { eventId: string; userKey: string } | null;
   }>(),
   { canClear: false, clearing: false, push: null, errorDetail: null },
@@ -76,8 +42,6 @@ const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
           <span class="who__name" :title="name">{{ name }}</span>
         </p>
 
-        <!-- Where the name is, so is what is happening to it, and the way out
-             of it. As a bar these trail the name at the row's right end. -->
         <div class="trail">
           <SyncIndicator
             class="sync"
@@ -87,9 +51,6 @@ const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
             @retry="emit('retry')"
           />
 
-          <!-- Before the switch, because it is about the person the row
-               already names and the switch is about leaving them: destructive
-               first, then the way out. -->
           <IconButton
             v-if="canClear"
             class="swap clear"
@@ -101,18 +62,11 @@ const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
             <IconTrash aria-hidden="true" />
           </IconButton>
 
-          <!-- A glyph rather than the words it replaces: on a phone this rides
-               the end of a row the name is already competing for, and two
-               figures trading places says "someone else" in a fraction of the
-               width. The label lives on the button for anyone who needs it —
-               as its accessible name, and as its tooltip. -->
           <IconButton class="swap" size="xxs" label="Switch person" @click="emit('change')">
             <IconSwitchUser aria-hidden="true" />
           </IconButton>
         </div>
 
-        <!-- A statement about the name above it, like the status: whether
-             this browser wants to hear when the event itself changes. -->
         <PushToggle
           v-if="push"
           class="push-row"
@@ -127,8 +81,6 @@ const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
         <div class="lead">
           <p class="who">
             <span class="avatar" aria-hidden="true">
-              <!-- Dashed: the empty seat, same vocabulary as the sync
-                   indicator's resting state. -->
               <IconPerson stroke-dasharray="3 2.6" />
             </span>
             <span class="who__name who__name--anon">Just browsing</span>
@@ -154,7 +106,6 @@ const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
   box-shadow: var(--shadow-sm);
 }
 
-/* Dashed like the empty seat it is. */
 .identity--anon {
   border-style: dashed;
 }
@@ -168,8 +119,6 @@ const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
   min-width: 0;
 }
 
-/* Status and the way out are both statements about the name above them, and
-   now that the second is a glyph they fit on one line of the card together. */
 .trail {
   display: flex;
   align-items: center;
@@ -177,9 +126,7 @@ const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
   min-width: 0;
 }
 
-/* Capped at the column's width even though the column centres nothing and lets
-   its rows be as wide as they like: without this the name's own truncation has
-   nothing to truncate against. */
+/* max-width so the name's truncation has something to truncate against. */
 .who {
   display: flex;
   align-items: center;
@@ -206,9 +153,6 @@ const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
   height: 100%;
 }
 
-/* One line, always. A name is not prose, and a card 14rem wide that grows a
-   line every time someone types a longer one pushes the list below it around
-   for no gain — the full string is on the tooltip. */
 .who__name {
   min-width: 0;
   overflow: hidden;
@@ -233,15 +177,10 @@ const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
   font-size: 0.75rem;
 }
 
-/* IconButton's `xxs` box; only the glyph size is this card's own. */
 .swap {
   --icon-button-glyph: 1.05rem;
 }
 
-/* The bin takes the swap's box — same row, same target — and the colour of the
-   thing it does, told to IconButton through its hover properties. Armed while
-   its confirm is open, so the dialog and the button that raised it are visibly
-   the same act. */
 .clear {
   --icon-button-glyph: 1rem;
   --icon-button-hover-color: var(--color-danger);
@@ -253,29 +192,18 @@ const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
   background: var(--color-danger-soft);
 }
 
-/* Bleeds the card's own padding so its hover pill lines up with the rows
-   above; the card sets the width, the toggle fills it. */
+/* Bleeds the card's padding so its hover pill lines up with the rows above. */
 .push-row {
   align-self: stretch;
   margin: 0 -0.4rem -0.15rem;
 }
 
-/* --- the bar, under the grid --------------------------------------------
-   Same breakpoint as the scheduler's layout stack: the moment the identity
-   stops sitting beside the grid it becomes the bottom edge of the phone
-   layout — the last row of a shell that already fills the viewport, so it
-   needs no fixed positioning of its own to stay on screen while you paint. It
-   bleeds to both edges by cancelling the shell's own padding.
-
-   The `--safe-*` tokens are 0 unless the display actually takes something —
-   a home indicator under this row, a camera cutout beside it in landscape —
-   so where they do not apply this costs nothing, and where they do the row
-   clears them instead of hiding under them. */
+/* The bar: last row of a viewport-filling shell, so no fixed positioning needed.
+   --safe-* tokens are 0 unless the display takes something (home indicator, cutout). */
 @media (max-width: 820px) {
   .identity {
     flex: none;
-    /* Out past the shell's own padding, insets and all, so the fill reaches the
-       physical edges; the contents are padded back inside them. */
+    /* Bleed past the shell's padding so the fill reaches the physical edges. */
     margin-right: calc((var(--page-pad) + var(--safe-right)) * -1);
     margin-left: calc((var(--page-pad) + var(--safe-left)) * -1);
     padding: 0.5rem calc(var(--page-pad) + var(--safe-right))
@@ -285,8 +213,7 @@ const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
     box-shadow: 0 -2px 10px var(--shadow-color-md);
   }
 
-  /* A dashed line across the whole screen reads as a broken edge rather than
-     as an empty seat; the words carry that state here. */
+  /* A dashed line across the whole screen reads as a broken edge, not an empty seat. */
   .identity--anon {
     border-style: solid;
   }
@@ -300,8 +227,6 @@ const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
     margin: 0 auto;
   }
 
-  /* The name takes the row and gives way first: it is the one thing here that
-     can be arbitrarily long. */
   .who {
     flex: 1 1 auto;
     overflow: hidden;
@@ -316,16 +241,11 @@ const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
     flex: none;
   }
 
-  /* Status and the switch ride the right end of the name's own row, and hold
-     their width there: the comment above says the name gives way first, and it
-     can only do that if what it is giving way to refuses to. */
   .trail {
     flex: none;
     gap: 0.4rem;
   }
 
-  /* As a bar there is one row and it is spoken for; the settings drawer
-     carries the same toggle on a phone. */
   .push-row {
     display: none;
   }
@@ -335,8 +255,6 @@ const emit = defineEmits<{ change: []; pick: []; retry: []; clear: [] }>();
   }
 }
 
-/* Sideways: the row is already as short as its own controls allow, so only the
-   padding around them goes. The home-indicator inset stays whatever it is. */
 @media (max-height: 480px) and (max-width: 820px) {
   .identity {
     padding-top: 0.2rem;

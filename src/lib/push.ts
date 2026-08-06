@@ -1,18 +1,9 @@
 /**
- * The browser half of Web Push: feature detection, the service worker, the
- * subscription, and what this browser has asked to be told about.
- *
- * The server keeps no list a page could ask for — an endpoint is a secret,
- * so there is deliberately no `GET` for subscriptions — which means the
- * browser itself is the record of what it opted into. That record is a small
- * localStorage map of "event × role" markers beside the platform's own
- * `PushSubscription`. A marker without a live server-side subscription heals
- * itself: `resyncPush` re-registers on page load, so a subscription the
- * server pruned (or an endpoint the push service rotated) comes back without
- * anybody noticing it was gone.
- *
- * The permission prompt fires **only** from `enablePush`, which is only ever
- * called from an explicit click on the bell. Nothing here asks on page load.
+ * The browser half of Web Push. There is deliberately no GET for
+ * subscriptions — an endpoint is a secret — so a localStorage map of
+ * "event × role" markers is the record of what this browser opted into;
+ * `resyncPush` re-registers on load, healing anything the server pruned. The
+ * permission prompt fires only from `enablePush`, only ever on a click.
  */
 import {
   api,
@@ -36,14 +27,9 @@ export const PUSH_SW_PATH = "/push-sw.js";
 
 const STORAGE_KEY = "timeful.push";
 
-/**
- * Whether this page can offer push at all. All three gates are real: a
- * non-secure context has no service workers, iOS before home-screen install
- * has no `PushManager`, and either can be missing independently. Callers hide
- * the bell entirely when this is false — an explanation of why a feature
- * cannot work is chrome the page does not need — except for the one case
- * `pushBlock` names, where the explanation is an instruction.
- */
+// All three gates are real: a non-secure context has no service workers, and
+// iOS before home-screen install has no PushManager. Callers hide the bell
+// when false, except for the one case `pushBlock` names.
 export function pushSupported(): boolean {
   return (
     typeof window !== "undefined" &&
@@ -57,9 +43,8 @@ export function pushSupported(): boolean {
 /** The one blocked case worth a control on screen. */
 export type PushBlock = "install";
 
-/** iPhone, iPad, or an iPad wearing a desktop user agent (which reports
- *  itself as a Mac with a touchscreen). Same kind of sniff, and the same
- *  justification, as `isMacPlatform` in lib/history.ts. */
+// An iPad wearing a desktop user agent reports itself as a Mac with a
+// touchscreen; same sniff as `isMacPlatform` in lib/history.ts.
 function isIosLike(): boolean {
   return (
     /iphone|ipad|ipod/i.test(navigator.userAgent) ||
@@ -75,14 +60,8 @@ function isStandalone(): boolean {
   );
 }
 
-/**
- * Why the bell is here but cannot work — and only when the visitor is the one
- * who can fix it. iOS delivers push to a web app added to the home screen and
- * to nothing else, which is one tap in the share sheet away. Everything else
- * that stops push — a page served over plain http, a browser without the APIs —
- * is not the visitor's to resolve, and a permanently dead control aimed at
- * somebody who cannot act is chrome, not honesty: those keep no bell at all.
- */
+// iOS delivers push only to a web app added to the home screen — the one
+// block the visitor can fix. Every other blocked case shows no bell at all.
 export function pushBlock(): PushBlock | null {
   if (typeof window === "undefined" || pushSupported()) return null;
   if (!window.isSecureContext) return null;
@@ -94,10 +73,6 @@ export function pushBlock(): PushBlock | null {
 export function pushPermissionDenied(): boolean {
   return pushSupported() && Notification.permission === "denied";
 }
-
-// ---------------------------------------------------------------------------
-// the local record
-// ---------------------------------------------------------------------------
 
 function markerKey(binding: PushBinding): string {
   return `${binding.eventId}:${binding.role}`;
@@ -130,10 +105,6 @@ export function pushEnabled(binding: PushBinding): boolean {
   return markerKey(binding) in readMarkers();
 }
 
-// ---------------------------------------------------------------------------
-// the platform subscription
-// ---------------------------------------------------------------------------
-
 /** The VAPID key in the shape `subscribe` wants. */
 function applicationServerKey(base64url: string): Uint8Array<ArrayBuffer> {
   const padded = base64url.replace(/-/g, "+").replace(/_/g, "/");
@@ -143,11 +114,8 @@ function applicationServerKey(base64url: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-/**
- * One `PushSubscription` per origin, shared by every event this browser
- * follows: registering the worker is idempotent, and an existing subscription
- * is reused rather than re-minted.
- */
+// One PushSubscription per origin, shared by every event this browser follows;
+// an existing subscription is reused rather than re-minted.
 async function browserSubscription(): Promise<PushSubscription> {
   await navigator.serviceWorker.register(PUSH_SW_PATH);
   const registration = await navigator.serviceWorker.ready;
@@ -155,8 +123,7 @@ async function browserSubscription(): Promise<PushSubscription> {
   if (existing) return existing;
   const { key } = await api.get<PushPublicKey>("/api/push/public-key");
   return registration.pushManager.subscribe({
-    // Required by every browser anyway, and true besides: each push shows a
-    // notification, nothing runs silently.
+    // Required by every browser anyway, and true besides.
     userVisibleOnly: true,
     applicationServerKey: applicationServerKey(key),
   });
@@ -186,17 +153,11 @@ async function putBinding(binding: PushBinding): Promise<void> {
   });
 }
 
-// ---------------------------------------------------------------------------
-// the three verbs
-// ---------------------------------------------------------------------------
-
 export type EnableResult = "on" | "denied" | "failed";
 
 /**
- * The bell was pressed on. Asks for permission — this is the only call site
- * of the prompt, and it only ever runs from a click — then subscribes and
- * registers. "denied" is a state for the caller to render quietly, not an
- * error.
+ * The bell was pressed on. The only call site of the permission prompt, and
+ * only ever from a click; "denied" is a state to render quietly, not an error.
  */
 export async function enablePush(binding: PushBinding): Promise<EnableResult> {
   if (!pushSupported()) return "failed";
@@ -214,9 +175,8 @@ export async function enablePush(binding: PushBinding): Promise<EnableResult> {
 }
 
 /**
- * The bell was pressed off. The server forgets this binding; the browser's
- * own subscription is kept while any other Timeful event still uses it and
- * withdrawn once nothing does.
+ * The bell was pressed off. The browser's own subscription is kept while any
+ * other Timeful event still uses it and withdrawn once nothing does.
  */
 export async function disablePush(binding: PushBinding): Promise<void> {
   const markers = readMarkers();
@@ -227,25 +187,20 @@ export async function disablePush(binding: PushBinding): Promise<void> {
     const registration = await navigator.serviceWorker.getRegistration(PUSH_SW_PATH);
     const subscription = await registration?.pushManager.getSubscription();
     if (!subscription) return;
-    // `request` rather than `api.del`, which carries no body: the DELETE
-    // names the endpoint being forgotten, and the role that stops hearing.
+    // `request` rather than `api.del`, which carries no body: the DELETE names
+    // the endpoint and role being forgotten.
     await request(eventPushPath(binding.eventId), {
       method: "DELETE",
       body: { role: binding.role, endpoint: subscription.endpoint },
     }).catch(() => undefined);
     if (Object.keys(readMarkers()).length === 0) await subscription.unsubscribe();
   } catch {
-    // Unsubscribing is best-effort: the marker is gone, the toggle is off,
-    // and a leftover server record delivers to a subscription that no longer
-    // exists, which the push service will report and the server will prune.
+    // Best-effort: a leftover server record delivers to a dead subscription,
+    // which the push service reports and the server prunes.
   }
 }
 
-/**
- * Quietly re-registers a binding this browser believes in, healing a pruned
- * or rotated subscription. Called on page load when the marker is set and
- * permission is already granted — it never prompts.
- */
+/** Heals a pruned or rotated subscription on page load; never prompts. */
 export async function resyncPush(binding: PushBinding): Promise<void> {
   if (!pushEnabled(binding)) return;
   try {
