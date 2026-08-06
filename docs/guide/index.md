@@ -121,9 +121,11 @@ From the admin panel:
    a path of your own if you would rather send something memorable — but see
    [the security model](/reference/architecture#security) first, because the
    URL *is* the access control.
-3. **Copy link**, send it to the group.
+3. Send the link to the group — the **invite button** beside the event's name
+   copies it, and can put an invitee's name on it first, so their page opens
+   greeting them with their name already filled in.
 
-Guests open the link, type a name once, and drag across the grid. Their answers
+Guests open the link, confirm a name once, and drag across the grid. Their answers
 save themselves a moment after they stop dragging — there is no Save button —
 and everyone's answers stack into a heatmap underneath.
 

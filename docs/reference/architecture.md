@@ -1196,10 +1196,17 @@ event-scoped paths now gets.
 ### `/<slug>/…` — an event's own endpoints
 
 `data`, `details`, `settings`, `users`, `push`, `ws` and `logs` are the
-reserved sub-segments. The
+reserved API sub-segments (`RESERVED_SUBPATHS`). The
 event-scoped router is mounted after the static middleware (so a real file under
 `/assets/…` is still a file) and before the page handler (which owns
 single-segment paths).
+
+Two further sub-segments are reserved for the **page**, not the API: `view` and
+`edit` (`PAGE_SUBPATHS`, kept deliberately apart from the API set). The
+event-scoped catch-all forwards an *exact* page shape — `/<slug>/view`,
+`/<slug>/edit/<key>` — to the page handler below; a near miss
+(`/<slug>/view/extra`, `/<slug>/edit`) stays here and gets the ordinary
+undelayed 404 page a resolvable slug's typos always got.
 
 The first segment resolves as a uuid or a slug through `resolveEvent`, the same
 lookup the public `GET` uses. Two decisions follow, and they are independent:
@@ -1215,24 +1222,42 @@ link and gets the 404 *page*. This router sits in front of the page handler for
 every multi-segment path, so without that distinction a mistyped link would
 answer a person with raw JSON.
 
-### `/<anything else>` — an event slug
+### `/<anything else>` — an event page
 
-`resolveSlugPath` takes `decodeURIComponent(path.slice(1))` and rejects it if
-the encoding is malformed, or if the result is empty, contains `/`, or contains
-`.`. What survives is looked up in `links.json` and then read from disk.
+An event page's URL is **stateful**, in three shapes
+(`src/lib/event-routes.ts`, imported at runtime by both halves so they cannot
+disagree):
+
+| Shape | Meaning | `<title>` |
+| ----- | ------- | --------- |
+| `/<slug>` | the landing: asks who is answering (§ Guest UX) | `<event name> · Timeful` |
+| `/<slug>/view` | the group chart; asks nothing | `<event name> · Timeful` |
+| `/<slug>/edit/<userKey>` | the edit view as that person | `<display name>’s availability for <event name> · Timeful` when the key is a respondent, else the event alone |
+
+`parseEventPath` decodes each segment and applies the slug rules the
+single-segment path always had: a malformed escape, an empty slug, a `/` or a
+`.` in it is a miss. The edit key is a single further segment, re-normalized
+like every arriving key; a key nobody has answered under **still serves the
+page** — the slug is the sole capability, the key is an address within an event
+already proven reachable, and unknown keys must not answer differently or they
+would become an oracle. All three shapes answer identically:
 
 | Outcome | Response |
 | ------- | -------- |
-| miss (any method) | [tarpit](#the-tarpit), then the 404 page — or 429 |
+| miss (any method, any shape) | [tarpit](#the-tarpit), then the 404 page — or 429 |
 | hit, non-read method | the 404 page, immediately, no delay |
 | hit, `GET`/`HEAD` | 200, server-rendered event page |
 
 An SSR hit renders `EventPage` and then transforms the template:
 `<div id="app">` gains `data-ssr`, `<!--app-html-->` becomes the rendered
-markup, the `<title>` becomes `<event name> · Timeful` (HTML-escaped),
-`<!--app-head-->` becomes the meta block, and a
+markup, the `<title>` becomes the shape's title from `eventPageTitle`
+(HTML-escaped) — the client derives its titles from the same function, which is
+what keeps the hydrated title byte-equal to the served one on first
+paint — `<!--app-head-->` becomes the meta block, and a
 `<script>window.__EVENT__ = …</script>` is inserted before `</body>`. That
-serialisation escapes `<`, U+2028 and U+2029.
+serialisation escapes `<`, U+2028 and U+2029. The served bytes never vary on
+the query string: `?name=` (§ Guest UX) is a client-only concern, and the page
+for `/<slug>?name=…` is byte-identical to the bare one.
 
 The **entire** event document, responses included, is inlined into the page.
 That is the point — the grid is populated on first paint with no round-trip —
@@ -1485,16 +1510,34 @@ muted monospace line under the generic message.
 
 ### Guest UX
 
-1. A visitor whose name is in `localStorage["timeful.guestName"]` (site-wide) is
-   restored silently: no dialog, their answers loaded, the grid ready. Everyone
-   else gets the identity dialog. A stored name that is no longer legal — one
-   with a dash, from before [user keys](#user-keys) — is dropped and asked for
-   again, once; the key the guest retypes lands on the very record the old
-   spelling pointed at.
-2. That dialog's input **always opens blank**. A stored name skips the dialog
-   entirely; it never pre-fills it. Existing respondents are suggested, and
-   typing a name that normalizes to one of their keys shows an inline hint that
-   continuing will load and overwrite that answer — whatever the spelling.
+1. **Every landing asks; nobody is entered silently.** Arriving at
+   [`/<slug>`](#anything-else-an-event-page), the page works out who it is
+   probably talking to — the `?name=` on a personalized link first, else the
+   name in `localStorage["timeful.guestName"]` (site-wide) — and shows a
+   **welcome prompt**: a greeting in the event's own spelling where the key
+   matches a respondent (with the same one-line already-answered consequence
+   the identity dialog shows), a primary **Continue** with exactly the identity
+   dialog's confirm semantics, a quiet **"Not \<name\>?"** that opens the
+   generic dialog instead, and a quiet **View only** that goes to `/view`.
+   With nothing usable to greet by, the generic identity dialog opens — as a
+   landing it carries **View only** in place of "Just browsing" (no purge:
+   somebody never asked before has withdrawn nothing); reached mid-page it
+   keeps "Just browsing" exactly as ever. Landing on `/<slug>/view` asks
+   nothing; landing on `/<slug>/edit/<key>` welcome-confirms that key (the
+   respondent's spelling, else the remembered name when it files under the
+   key, else the key's dashes read as the spaces they were). The decision is
+   the pure `resolveEntryIdentity` in `src/lib/entry-identity.ts`, from the
+   same guest-name rules as everything else. A stored name that is no longer
+   legal — one with a dash, from before [user keys](#user-keys) — is dropped
+   and asked for again, once; the key the guest retypes lands on the very
+   record the old spelling pointed at.
+2. That dialog's input **always opens blank**. Neither a stored name nor a
+   link's `?name=` ever pre-fills it — a believed identity gets the one-tap
+   welcome prompt instead, never the field. Existing respondents are
+   suggested, and typing a name that normalizes to one of their keys shows an
+   inline hint that continuing will load and overwrite that answer — whatever
+   the spelling. Declining a greeting costs nothing: the remembered name stays
+   stored until the visitor confirms somebody else or browses.
 3. Confirming adopts the **event's** spelling where there is one, so the group
    keeps seeing the name it knows rather than having it rewritten by whoever
    answered last. The dialog validates from the server's own rules as you type:
@@ -1516,6 +1559,25 @@ muted monospace line under the generic message.
    phone, a bottom-sheet drawer of its own behind a shield in the navbar —
    carrying Edit event, Back to home, Details and Logout. A guest renders none
    of it.
+
+**Personalized links, and the URL as state.** An event's root URL may carry
+`?name=<display name>` (URL-encoded). The **invite dialog** — behind the
+person-plus button beside the event's name, where the copy-link button used to
+be — is the blessed producer: a name typed there is validated live from the
+guest-name rules (blank is valid and means the plain link), previewed, and
+copied onto the canonical root URL, `inviteLink` in `src/lib/entry-identity.ts`
+producing exactly what the landing consumes. The query is read only at the root
+landing and only by the client — SSR never varies on it — and it never
+pre-fills the generic dialog; it selects who the welcome prompt greets, no
+more. Answering the landing is what consumes it: the prompt's resolution
+navigates off the root with `history.replaceState` — Continue to
+`/<slug>/edit/<key>`, View only or a dismissal to `/<slug>/view` — so one
+history entry replaces another, a reload no longer re-prompts with the query,
+and a URL copied afterwards carries nobody's name. From there the two tabs
+*are* the two routes: switching pushes `/view` or `/edit/<key>`, the
+[write-session release](#named-write-sessions) rides the route change out of
+`/edit`, and back/forward replay the same transitions. The user key in an edit
+URL is an address, not a secret — the slug remains the sole capability.
 
 ### The owner, on an event page
 
