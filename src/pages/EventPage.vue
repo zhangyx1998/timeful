@@ -1,13 +1,15 @@
 <script setup lang="ts">
 /**
- * Public event page. The server renders the shell from `window.__EVENT__`;
- * the scheduler mounts client-side only (browser timezone and localStorage
- * would otherwise produce a hydration mismatch).
+ * Public event page. The server renders the shell plus a static availability
+ * preview; the interactive scheduler mounts client-side only (browser timezone
+ * and localStorage would otherwise produce a hydration mismatch) and replaces
+ * it (ARCHITECTURE.md § Routing / SSR).
  */
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AdminDrawer from "../components/event/AdminDrawer.vue";
 import EventScheduler from "../components/event/EventScheduler.vue";
+import SchedulerPreview from "../components/event/SchedulerPreview.vue";
 import InviteButton from "../components/event/InviteButton.vue";
 import EventFormDialog from "../components/shared/EventFormDialog.vue";
 import AppHeader from "../components/ui/AppHeader.vue";
@@ -39,6 +41,10 @@ defineProps<{ slug?: string; userKey?: string }>();
 const injected = inject<EventDoc | null>("initialEvent", null);
 const event = ref<EventDoc | null>(injected);
 const mounted = ref(false);
+
+// The server's layout guess for the static preview; hydration gets the same
+// value from `window.__PREVIEW__`, so the two renders cannot disagree.
+const previewCompact = inject<boolean>("previewCompact", false);
 
 // `isAdmin` lives in lib/admin.ts and fails closed; every route behind it is
 // gated by the session cookie regardless (ARCHITECTURE.md § Guest UX).
@@ -300,7 +306,8 @@ onBeforeUnmount(() => {
           @release="onRelease"
           @edit="editOpen = true"
         />
-        <p v-else class="loading">Loading availability…</p>
+        <!-- The static group heatmap the mounted scheduler replaces. -->
+        <SchedulerPreview v-else :event="event" :compact="previewCompact" />
       </template>
 
       <div v-else-if="gone" class="gone">

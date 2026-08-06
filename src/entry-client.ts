@@ -18,7 +18,11 @@ const container = document.getElementById("app");
 const hydrate = container?.hasAttribute("data-ssr") ?? false;
 
 const initialEvent = window.__EVENT__ ?? null;
-const { app, router } = createApp(initialEvent, { hydrate });
+const { app, router } = createApp(initialEvent, {
+  hydrate,
+  // Hydration must re-render the exact preview the server chose.
+  previewCompact: window.__PREVIEW__?.compact ?? false,
+});
 
 void router.isReady().then(() => {
   app.mount(container ?? "#app");

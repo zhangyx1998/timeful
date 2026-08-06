@@ -15,6 +15,8 @@ export type CreateAppOptions = {
    * rendered tree away, so the CSR route builds a plain app instead.
    */
   hydrate?: boolean;
+  /** The layout the SSR preview was rendered for (ARCHITECTURE.md § Routing / SSR). */
+  previewCompact?: boolean;
 };
 
 /**
@@ -29,10 +31,11 @@ export function createApp(
   app: VueApp<Element>;
   router: Router;
 } {
-  const { hydrate = true } = options;
+  const { hydrate = true, previewCompact = false } = options;
   const app = hydrate ? createSSRApp(AppRoot) : createVueApp(AppRoot);
   const router = createRouter();
   app.use(router);
   app.provide("initialEvent", initialEvent);
+  app.provide("previewCompact", previewCompact);
   return { app, router };
 }
