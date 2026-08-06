@@ -1296,8 +1296,53 @@ be public, or it needs the same treatment.
 Injected meta: `robots=noindex`, a description, `og:type`, `og:site_name`,
 `og:title`, `og:description`, `og:url`, and the `twitter:` card equivalents.
 
-The interactive grid mounts client-side only, which sidesteps server/client
-timezone hydration mismatches.
+#### The availability preview
+
+The interactive scheduler still mounts client-side only — it reads the browser
+timezone and localStorage, either of which would be a hydration mismatch — but
+the served page is not a spinner while it waits. All three canonical shapes
+SSR a **static availability preview** where the scheduler will mount: the
+group-view heatmap, columns, gutter labels and cell tones computed from the
+same event document the page inlines (`SchedulerPreview.vue`, over the pure
+`src/lib/preview.ts`). It carries no listeners and never varies on who is
+asking — the personal-marks emphasis of `/edit` is a client concern, so the
+preview is always the group chart.
+
+- **The seam is a replacement, not a hydration handover.** The preview *is*
+  hydrated — it sits inside `EventPage`'s pre-mount branch, so the client's
+  first render must reproduce it byte-equal, which it can because the preview
+  is a pure function of the document and the layout hint, both inlined. On
+  mount the existing `mounted` gate swaps the whole block for the live
+  scheduler, exactly where the "Loading availability…" splash used to be.
+- **Geometry comes from a per-request hint.** `Sec-CH-UA-Mobile: ?1` (a
+  low-entropy hint Chromium sends by default) selects the compact layout, `?0`
+  the desktop one, and browsers that send neither get a coarse UA sniff
+  (`wantsCompactPreview`, `server/app.ts`). The preview is then sized with the
+  grid's own pure functions against a nominal viewport — 390px compact, 1280px
+  desktop (capped by `--page-max`) — and the chosen flag is inlined as
+  `window.__PREVIEW__` beside `window.__EVENT__` so hydration renders the same
+  answer. A wrong guess costs one reflow at mount, which is what every load
+  paid before the preview existed. The page therefore sends
+  `Vary: Sec-CH-UA-Mobile, User-Agent`; the query-string rule above is
+  untouched.
+- **Timezone is UTC, clock 12-hour.** SSR has no viewer timezone, so the
+  preview is laid out at offset 0 — the same choice the SSR subtitle has
+  always made — and the mounted grid re-lays out in the viewer's zone and
+  stored preferences.
+- **Tones are classes, never baked RGB.** The live grid resolves
+  `--color-slot-available` through computed styles and paints inline `rgba()`;
+  the preview cannot, so a heat cell carries its alpha as a custom property
+  and the stylesheet mixes it — `color-mix(in srgb, var(--color-slot-available)
+  var(--heat), transparent)` — which is the same pixels *and* keeps the static
+  chart re-theming under `light-dark()` and `data-theme`. Dimensions shared
+  with the live grid (row height, gaps, header height, column sizing) live in
+  `src/lib/grid.ts` so the two cannot drift apart.
+- Realtime needs nothing new: the preview reflects the document at render
+  time, and the join snapshot is the same document, so nothing flashes when it
+  arrives.
+
+With JavaScript blocked the page now shows the real chart instead of a
+permanent spinner.
 
 ### Styles and caching
 
