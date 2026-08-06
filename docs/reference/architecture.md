@@ -1283,30 +1283,6 @@ Injected meta: `robots=noindex`, a description, `og:type`, `og:site_name`,
 The interactive grid mounts client-side only, which sidesteps server/client
 timezone hydration mismatches.
 
-### Styles ship inline
-
-`createStaticRenderer` folds the built stylesheet into the template the first
-time it loads it: every same-origin `<link rel="stylesheet">` Vite emitted is
-replaced by an inline `<style>` block carrying the asset's contents
-(`inlineStylesheets` in `server/app.ts`), and the transformed template is what
-gets cached — so the `'/'` shell and every SSR event page serve their styles
-in the document itself. Every served page is dynamic HTML, so there was no
-cache to lose; the ~13 kB (compressed) the page gains buys the removal of the
-one render-blocking fetch — no flash of unstyled content, and no way for a
-proxy hiccup, a poisoned cache, or a half-finished deploy to leave the page
-styleless. The server sends it uncompressed, as it does all HTML; the reverse
-proxy is where compression belongs. The CSS asset stays in `client/assets/`
-and keeps being served; nothing references it any more. A link whose asset
-cannot be read is left as the link it was — a page that can still try beats
-one with neither — and a cross-origin stylesheet (none today) is not ours to
-read and is left alone.
-
-In dev there is no built asset and Vite injects styles from JS modules well
-after first paint, so the dev renderer softens the flash by inlining
-`src/styles/tokens.css` alone into the template head (`server/dev.ts`); the
-copy Vite injects later wins by document order, so HMR still applies.
-Production never takes that path.
-
 ### Static assets
 
 Mounted after `/api` and before the page handler:
