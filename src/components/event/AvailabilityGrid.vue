@@ -1926,6 +1926,27 @@ defineExpose({ measure, clearSelection });
   background: var(--color-bg);
 }
 
+/* The gutter's opacity, bled a couple of pixels past its own left edge.
+   The columns translate beneath the pinned gutter, and the two live on
+   different compositor layers: at a fractional device-pixel offset — a
+   non-integer DPR, a pinch zoom, a scroll position between device pixels —
+   the scrollport's clip edge and the gutter's painted box can round to
+   different pixels, and the sliver between them shows a strip of whatever
+   column is passing underneath. Painting past the edge means no rounding
+   direction can expose it: the overhang is clipped by the scrollport when the
+   boxes agree and covers the seam when they do not. Rides the gutter, so it
+   holds during the rubber-band too; same bleed on both sides of the edge, so
+   zoom can round either way. */
+.gutter::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -2px;
+  width: 4px;
+  background: var(--color-bg);
+}
+
 /* The corner. Pinned on the other axis too, so a vertical scroll cannot slide
    the hour labels up into the headings' band. */
 .gutter-head {
