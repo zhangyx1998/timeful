@@ -81,7 +81,7 @@ const panel = ref<HTMLElement | null>(null);
  * element is what owns the viewport's scroll.
  */
 let locks = 0;
-let previousOverflow: { root: string; body: string } | null = null;
+let previousOverflow: { root: string; body: string; pad: string } | null = null;
 
 /**
  * Whatever had focus when a dialog opened, so closing can hand it back. A
@@ -99,9 +99,23 @@ let opener: HTMLElement | null = null;
 function lockPage() {
   if (locks++ > 0) return;
   const root = document.documentElement;
-  previousOverflow = { root: root.style.overflow, body: document.body.style.overflow };
+  // What hiding the root scrollbar is about to hand back to the layout.
+  // Classic scrollbars (Windows, macOS with "always show") take layout space,
+  // so removing them widens the viewport and nudges centred content sideways
+  // — a visible jump on every dialog. The same width goes onto the body as
+  // padding for as long as the lock holds, so the content's box never moves.
+  // Overlay scrollbars measure zero and this is a no-op. Measured here rather
+  // than fixed with `scrollbar-gutter: stable`, which would hold a permanent
+  // empty gutter on every page and is missing from pre-18.2 Safari besides.
+  const gutter = window.innerWidth - root.clientWidth;
+  previousOverflow = {
+    root: root.style.overflow,
+    body: document.body.style.overflow,
+    pad: document.body.style.paddingRight,
+  };
   root.style.overflow = "hidden";
   document.body.style.overflow = "hidden";
+  if (gutter > 0) document.body.style.paddingRight = `${gutter}px`;
 }
 
 function unlockPage() {
@@ -110,6 +124,7 @@ function unlockPage() {
   if (locks > 0 || !previousOverflow) return;
   document.documentElement.style.overflow = previousOverflow.root;
   document.body.style.overflow = previousOverflow.body;
+  document.body.style.paddingRight = previousOverflow.pad;
   previousOverflow = null;
 }
 
