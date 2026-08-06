@@ -81,6 +81,21 @@ function replaceOnce(html: string, marker: string, value: string): string {
   return html.replace(marker, () => value);
 }
 
+/**
+ * The layout hint for the SSR availability preview (ARCHITECTURE.md § Routing
+ * / SSR): the low-entropy `Sec-CH-UA-Mobile` client hint where a browser sends
+ * one, else a coarse UA sniff. A wrong guess costs one reflow at mount.
+ */
+export function wantsCompactPreview(headers: {
+  clientHintMobile?: string;
+  userAgent?: string;
+}): boolean {
+  const hint = headers.clientHintMobile;
+  if (hint === "?1") return true;
+  if (hint === "?0") return false;
+  return /Mobi|Android|iPhone|iPad/i.test(headers.userAgent ?? "");
+}
+
 
 // ---------------------------------------------------------------------------
 // renderers
@@ -166,8 +181,12 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
   ): Promise<string> {
     // One publicEvent copy feeds both the markup and `window.__EVENT__`.
     const event = publicEvent(stored);
+    const compact = wantsCompactPreview({
+      clientHintMobile: req.get("sec-ch-ua-mobile"),
+      userAgent: req.get("user-agent"),
+    });
     const render = await renderer.loadRender();
-    const { html } = await render(req.path, { event });
+    const { html } = await render(req.path, { event, compact });
     const absoluteUrl = `${req.protocol}://${req.get("host") ?? "localhost"}${req.path}`;
     const { title, tags } = eventHead(event, absoluteUrl, sub);
 
@@ -179,7 +198,8 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
     out = replaceOnce(
       out,
       "</body>",
-      `<script>window.__EVENT__ = ${serializeState(event)}</script>\n  </body>`,
+      `<script>window.__EVENT__ = ${serializeState(event)}; ` +
+        `window.__PREVIEW__ = { compact: ${compact} }</script>\n  </body>`,
     );
     return out;
   }
@@ -219,6 +239,8 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
         return;
       }
 
+      // The preview's layout varies on the device, so caches must key on it.
+      res.set("Vary", "Sec-CH-UA-Mobile, User-Agent");
       sendHtml(
         200,
         await renderEventPage(

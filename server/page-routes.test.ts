@@ -4,7 +4,8 @@
  * slug 302 to the event root, unknown slugs stay the tarpitted 404.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Renderer } from "./app.ts";
+import { wantsCompactPreview, type Renderer } from "./app.ts";
+import type { SsrContext } from "../src/entry-server.ts";
 import {
   apiCall,
   eventFixture,
@@ -17,6 +18,9 @@ import {
 } from "./test-support.ts";
 import type { StoredEvent } from "./types.ts";
 
+/** What the page handler last handed the renderer, for the hint assertions. */
+let lastSsrContext: SsrContext | undefined;
+
 /** A real template with a title to replace, and a stub render function. */
 const STUB_RENDERER: Renderer = {
   loadTemplate: () =>
@@ -24,7 +28,11 @@ const STUB_RENDERER: Renderer = {
       "<!doctype html><html><head><title>Timeful</title><!--app-head--></head>" +
         '<body><div id="app"><!--app-html--></div></body></html>',
     ),
-  loadRender: () => Promise.resolve(async () => ({ html: "<main>ssr</main>" })),
+  loadRender: () =>
+    Promise.resolve(async (_url: string, ssrContext: SsrContext = {}) => {
+      lastSsrContext = ssrContext;
+      return { html: "<main>ssr</main>" };
+    }),
 };
 
 let varDir: string;
@@ -163,6 +171,36 @@ describe("event page shapes", () => {
     await token.text();
     expect(token.status).toBe(302);
     expect(token.headers.get("location")).toBe(`/${event.slug}?bmFtZT1BZGE`);
+  });
+
+  it("threads the device hint into the render and inlines it beside the event", async () => {
+    const get = async (headers: Record<string, string>) => {
+      const res = await fetch(`${ts.base}/${event.slug}`, { headers });
+      return { body: await res.text(), vary: res.headers.get("vary") };
+    };
+
+    const mobile = await get({ "sec-ch-ua-mobile": "?1" });
+    expect(lastSsrContext?.compact).toBe(true);
+    expect(mobile.body).toContain("window.__PREVIEW__ = { compact: true }");
+    // Caches must key the page on the hint that shaped it.
+    expect(mobile.vary).toContain("Sec-CH-UA-Mobile");
+
+    const desktop = await get({ "sec-ch-ua-mobile": "?0" });
+    expect(lastSsrContext?.compact).toBe(false);
+    expect(desktop.body).toContain("window.__PREVIEW__ = { compact: false }");
+
+    // No client hint: the coarse UA sniff decides.
+    await get({ "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) Mobile/15E148" });
+    expect(lastSsrContext?.compact).toBe(true);
+    await get({ "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" });
+    expect(lastSsrContext?.compact).toBe(false);
+  });
+
+  it("reads the hint's three states exactly", () => {
+    expect(wantsCompactPreview({ clientHintMobile: "?1" })).toBe(true);
+    expect(wantsCompactPreview({ clientHintMobile: "?0", userAgent: "Mobi" })).toBe(false);
+    expect(wantsCompactPreview({ userAgent: "Linux; Android 14" })).toBe(true);
+    expect(wantsCompactPreview({})).toBe(false);
   });
 
   it("keeps the API carve-out an API answer, never a page or a redirect", async () => {
