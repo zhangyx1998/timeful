@@ -1,13 +1,6 @@
 /**
- * Shared plumbing for the server tests that exercise the real Express app on
- * a real socket over a temporary `VAR_DIR` (docs § Testing).
- *
- * Everything here is a plain function, deliberately not a registered hook:
- * `routes/events.test.ts` and `routes/update.test.ts` want one server per
- * file (`beforeAll`) while `realtime.test.ts` needs a fresh server per test
- * because the test body attaches the upgrade listener — and their teardowns
- * differ in whether mocks are restored. Each file composes its own hooks from
- * these pieces.
+ * Shared plumbing for server tests: real app, real socket, temp VAR_DIR (docs
+ * § Testing). Plain functions, not registered hooks — each file composes its own.
  */
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -64,11 +57,7 @@ export async function makeVarDir(prefix: string): Promise<string> {
 export async function removeVarDir(dir: string): Promise<void> {
   if (ORIGINAL_VAR_DIR === undefined) delete process.env.VAR_DIR;
   else process.env.VAR_DIR = ORIGINAL_VAR_DIR;
-  // Retries because a request can outlive its own response: `touchSession`
-  // refreshes `lastSeenAt` fire-and-forget (ARCHITECTURE.md § Passwords and
-  // sessions), so an authenticated call may still be landing a write in here
-  // when the directory goes. Without the retries that surfaces, rarely and
-  // only under load, as ENOTEMPTY from a test that has already passed.
+  // Retries: `touchSession` writes fire-and-forget (ARCHITECTURE.md § Passwords and sessions), so a late write can ENOTEMPTY the removal.
   await fs.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
 }
 

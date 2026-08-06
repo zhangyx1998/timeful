@@ -1,13 +1,6 @@
 /**
- * Slugs are the public path of an event, and — when generated — the only
- * secret protecting it. Defaults are 12 crypto-random base62 characters
- * (~71 bits), i.e. capability URLs. Custom slugs stay allowed for the admin.
- *
- * Generation lives here because it needs `node:crypto`. What makes a slug
- * *legal* does not, and lives in `src/lib/slug-rules.ts` so the event form can
- * apply exactly the same rules as the admin types — one definition, both
- * halves, the same wording. They are re-exported here so every existing
- * importer keeps working.
+ * Generated slugs are capability URLs: 12 crypto-random base62 chars (~71 bits).
+ * Legality rules live in `src/lib/slug-rules.ts`, shared with the event form.
  */
 import crypto from "node:crypto";
 
@@ -22,10 +15,7 @@ export const SLUG_ALPHABET =
 
 export const SLUG_LENGTH = 12;
 
-/**
- * A uniformly random base62 string. Bytes >= 248 are discarded so that the
- * 62-symbol alphabet is not skewed by the modulo (rejection sampling).
- */
+/** Uniform base62 via rejection sampling: bytes >= 248 are discarded. */
 export function randomSlug(length: number = SLUG_LENGTH): string {
   const limit = 256 - (256 % SLUG_ALPHABET.length); // 248
   let out = "";

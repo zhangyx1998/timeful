@@ -1,10 +1,6 @@
 /**
- * The prompts, driven both ways: scripted keypresses against a stdin that
- * claims to be a terminal, and scripted lines against one that does not.
- *
- * No test here touches the real stdin, and none of them can hang: a prompt
- * with no answer left either ends the input (which is an error) or fails the
- * test by timing out.
+ * The prompts, driven both ways: scripted keypresses on a fake TTY, scripted lines on a pipe.
+ * Nothing touches the real stdin and nothing can hang.
  */
 import { describe, expect, it } from "vitest";
 import { PassThrough, Writable } from "node:stream";

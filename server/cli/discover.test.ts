@@ -1,9 +1,6 @@
 /**
- * The unit scanner, against fixture unit files in a temporary directory.
- *
- * The fixtures are written by hand rather than generated, so that a change to
- * a generator that the parser does not follow shows up here as a failure —
- * which is the whole risk of keeping the record in the units themselves.
+ * The unit scanner, against fixtures written by hand rather than generated — so a generator
+ * change the parser does not follow shows up here as a failure.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";

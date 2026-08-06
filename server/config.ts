@@ -1,10 +1,4 @@
-/**
- * Runtime knobs read from the environment.
- *
- * Every getter reads `process.env` on each call so a value can be changed by
- * tests (and so the server picks up whatever the operator exported) without a
- * module-load ordering dance.
- */
+/** Env knobs; every getter re-reads `process.env` so tests can change values. */
 
 /** A positive integer from the environment, or `fallback`. */
 export function envInt(name: string, fallback: number): number {
@@ -32,14 +26,7 @@ export const missQueueCap = (): number =>
 export const leaseTtlMs = (): number =>
   Math.max(1, envInt("LEASE_TTL_MS", LEASE_TTL_DEFAULT_MS));
 
-/**
- * A boolean from the environment, or `fallback`.
- *
- * Off is `0`, `false`, `no` or `off`; on is `1`, `true`, `yes` or `on`. An
- * empty or unset variable means "not configured here", and anything else is
- * ignored rather than guessed at — a typo should not quietly turn a feature
- * off.
- */
+/** Unrecognised values keep the fallback — a typo must not quietly flip a feature. */
 export function envFlag(name: string, fallback: boolean): boolean {
   const raw = process.env[name]?.trim().toLowerCase();
   if (raw === undefined || raw === "") return fallback;
@@ -48,11 +35,5 @@ export function envFlag(name: string, fallback: boolean): boolean {
   return fallback;
 }
 
-/**
- * The server-wide kill switch for live updates. On by default.
- *
- * Live updates are configured per event; this sits above that. Off means no
- * upgrade listener is registered at all, so no event gets a channel whatever
- * its own setting says, and every page works on the REST API alone.
- */
+/** Server-wide kill switch above the per-event setting. On by default. */
 export const realtimeEnabled = (): boolean => envFlag("TIMEFUL_REALTIME", true);

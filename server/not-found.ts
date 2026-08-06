@@ -1,19 +1,8 @@
 /**
- * The miss page, and the one way to send it.
- *
- * Standalone by design: it is served for paths that resolve to nothing, so it
- * must not depend on the client bundle, the SSR bundle, or the index.html
- * template being present. Colors are inlined copies of the light/dark pairs in
- * src/styles/tokens.css (bg, text, text-muted, accent); `color-scheme: light
- * dark` + `light-dark()` follows the system, and the `data-theme` rules let the
- * same stored override the app uses win over it. The `theme-color` pair is the
- * same two values again, so the browser's own chrome matches the page rather
- * than sampling it and landing a shade off.
- *
- * It lives in its own module rather than in `app.ts` because the event-scoped
- * router needs it too — a mistyped `/<slug>/typo` is a person with a bad link,
- * not an API client, and answering it with JSON would be answering the wrong
- * question. `app.ts` imports the router, so the router cannot import `app.ts`.
+ * The standalone miss page: no bundle or template dependency; colors are
+ * inlined copies of the tokens.css pairs, and the theme script is a hand-kept
+ * copy of index.html's. Own module because the event-scoped router needs it
+ * too and cannot import app.ts.
  */
 import type { Response } from "express";
 

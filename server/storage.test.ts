@@ -1,9 +1,6 @@
 /**
- * The startup write probe: the guardrail that turns "the data directory is
- * not writable" into one diagnostic at boot instead of a 500 on the first
- * guest who saves. The errno branches are covered with synthetic errors —
- * a test machine has no polite way to produce a real EROFS — and the probe
- * itself against real directories in tmp.
+ * The startup write probe. Errno branches use synthetic errors — a test
+ * machine has no polite way to produce a real EROFS.
  */
 import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";

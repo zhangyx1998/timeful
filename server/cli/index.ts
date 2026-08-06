@@ -1,19 +1,4 @@
-/**
- * `npx timeful` — the packaged entry point.
- *
- * Bundled by rollup into `dist/cli.js`, which sits beside the `client/` and
- * `server/` asset trees it serves. The working directory is the operator's
- * **webroot**: `timeful.config.json` and `var/` are read from and written
- * there, and nothing else ever is.
- *
- * Three actions, and bare `timeful` picks between the first two by looking at
- * the directory:
- *
- *   timeful init      make this directory a webroot (the wizard)
- *   timeful serve     serve a webroot, and never anything else
- *   timeful service   install / control the background service for a webroot
- *   timeful upgrade   point an installed service at the build running this
- */
+/** `npx timeful`, bundled into dist/cli.js beside the asset trees it serves; the CWD is the webroot, the only place ever written. */
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -104,7 +89,6 @@ async function runAuto(args: CliArgs, cwd: string): Promise<void> {
     return;
   }
 
-  // Not a webroot: initialize it, with or without questions.
   if (args.yes) {
     const config = mergeConfig({ cwd, env: envOverrides(), flags: args.overrides });
     await initialize(cwd, config, args);
@@ -155,13 +139,11 @@ async function runServe(args: CliArgs, cwd: string): Promise<void> {
   await start(mergeConfig({ cwd, file, env: envOverrides(), flags: args.overrides }), args);
 }
 
-/** The diagnosis every not-a-webroot refusal opens with; the cure varies. */
 const notAWebroot = (dir: string): string =>
   `${dir} is not a Timeful webroot: it has no ${CONFIG_FILE}.`;
 
 function notAWebrootForSetup(cwd: string): CliError {
-  // Nothing to read answers from. Say so and leave the directory alone —
-  // hanging on a closed stdin is the one thing a scripted run must never do.
+  // Never hang on a closed stdin in a scripted run.
   return new CliError(
     [
       notAWebroot(cwd),
@@ -192,7 +174,6 @@ async function wizard(args: CliArgs, cwd: string): Promise<void> {
   console.log("Run 'timeful' in this directory to start the server.");
 }
 
-/** Makes `cwd` a webroot: config file on disk, data directory created. */
 async function initialize(cwd: string, config: ResolvedConfig, args: CliArgs): Promise<void> {
   if (args.dryRun) {
     console.log(`  would write ${configPath(cwd)}`);
@@ -216,14 +197,10 @@ async function start(config: ResolvedConfig, args: CliArgs): Promise<void> {
     return;
   }
 
-  // The storage layer reads VAR_DIR at call time; this is the one place the
-  // resolved data directory has to be published to it.
+  // The one place the resolved data directory is published to the storage layer.
   process.env.VAR_DIR = config.varDir;
 
-  // Before listening: a data directory this process cannot write fails every
-  // save, and a sandboxed service that can read everything looks healthy
-  // right up to the first one. Dying here puts the diagnosis in journalctl
-  // and in front of the service install's post-start watch.
+  // Die on an unwritable data directory before listening, into journalctl and the post-start watch.
   const unwritable = await probeVarDirWritable();
   if (unwritable) throw new CliError(unwritable);
 
@@ -261,7 +238,6 @@ async function runService(args: CliArgs, cwd: string): Promise<void> {
 
   const installed = await discover();
 
-  // No verb at all is a question, not a command: what is installed here?
   if (!args.action) return listServices(installed, host);
 
   const targets = await resolveTargets(args, cwd, installed, `service ${args.action}`);
@@ -280,14 +256,7 @@ async function discover(): Promise<DiscoveredService[]> {
   });
 }
 
-/**
- * Which webroots the verb applies to: `-A/--all`, an explicit path, this
- * directory, or — when none of those settle it — a question.
- *
- * `label` is the command as the operator typed it ("service restart",
- * "upgrade"), so every message can hand back a command they can run rather
- * than a description of one.
- */
+/** `label` is the command as typed, so every message can quote a runnable one. */
 async function resolveTargets(
   args: CliArgs,
   cwd: string,
@@ -347,14 +316,7 @@ async function resolveTargets(
 // upgrade
 // ---------------------------------------------------------------------------
 
-/**
- * `timeful upgrade`: point installed services at the build running this
- * command, and restart them.
- *
- * The process running these lines is already the new version — npx fetched it
- * before our code existed — so there is nothing to download. See upgrade.ts for
- * why re-pinning the unit is the whole of an upgrade.
- */
+/** Points installed services at the build running this command — already the new version, npx fetched it. */
 async function runUpgrade(args: CliArgs, cwd: string): Promise<void> {
   const host = nodeHost({ dryRun: args.dryRun });
   if (host.dryRun) console.log("Dry run: nothing below is written or executed.");
@@ -369,9 +331,7 @@ async function runUpgrade(args: CliArgs, cwd: string): Promise<void> {
     confirmPrivileged: confirmSudo,
   };
 
-  // Only a stable path prompts a registry lookup, and only because the rewrite
-  // below cannot help it. A dry run asks nothing of the network either: the
-  // contract is that it touches nothing at all.
+  // A dry run asks nothing of the network: the contract is that it touches nothing at all.
   if (installKind(CLI_PATH) === "stable")
     await reportStableInstall(context, host.dryRun ? undefined : () => fetchLatestVersion());
 
@@ -381,8 +341,6 @@ async function runUpgrade(args: CliArgs, cwd: string): Promise<void> {
       webroot,
       await installedUnits(webroot, args, host),
       context,
-      // A directory the operator named deserves the long explanation when it
-      // has no service; one that -A swept past deserves a line.
       { explicit: !args.all },
     );
   }
@@ -453,11 +411,7 @@ async function installedUnits(
   return present;
 }
 
-/**
- * Installs the service for one webroot. `preloaded` is the config the wizard
- * just committed: on `--dry-run` nothing was written, so reading the webroot
- * back would refuse a directory the dry run only pretended to initialize.
- */
+/** `preloaded`: on --dry-run nothing was written, so reading the webroot back would refuse. */
 async function installFor(
   webroot: string,
   args: CliArgs,
@@ -513,10 +467,7 @@ async function statusFor(webroot: string, args: CliArgs, host: ServiceHost): Pro
   }
 }
 
-/**
- * Which tier to install. Explicit flags win; otherwise the user tier, except
- * that an interactive Linux box with systemd is offered the hardened one.
- */
+/** Explicit flags win; otherwise user, except an interactive Linux box with systemd is offered the hardened tier. */
 async function chooseTier(args: CliArgs, host: ServiceHost): Promise<ServiceTier> {
   if (args.tier) {
     if (!availableTiers(process.platform).includes(args.tier))

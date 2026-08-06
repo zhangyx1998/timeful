@@ -1,22 +1,7 @@
 /**
- * The published bundle must not contain the dev server.
- *
- * `dist/cli.js` is bundled from `server/cli/index.ts`, whose module graph
- * never reaches `server/index.ts` — the only importer of `server/dev.ts` — so
- * Vite and the dev renderer stay out *by construction*, not by an external
- * rule in the rollup config. Construction can regress silently: rollup does
- * follow dynamic imports, so a future import edge from the CLI graph to the
- * dev seam would ship Vite — inlined or as a chunk — without any build error.
- * These tests pin the property to the artifact.
- *
- * Skipped when `dist/` has not been built. CI builds before it tests (the CLI
- * end-to-end tests need `dist/client`), so they always run there; locally they
- * run after any `npm run build`.
- *
- * Note `vite-hmr` is deliberately not on the telltale list: the realtime
- * listener names that subprotocol so it can step aside for Vite in dev
- * (server/realtime.ts), and that check ships. What must not ship is Vite
- * itself and the dev renderer around it.
+ * The published bundle must not contain the dev server: the CLI's module graph never reaches
+ * server/dev.ts, and these tests pin that property to the artifact. Skipped when dist/ has not
+ * been built. `vite-hmr` is deliberately not a telltale — that subprotocol check ships.
  */
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";

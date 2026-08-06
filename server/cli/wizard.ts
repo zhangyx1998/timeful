@@ -1,12 +1,4 @@
-/**
- * First-run wizard: turns an empty directory into a Timeful webroot.
- *
- * Built on the prompts in tui.ts — no prompt library, no color library, nothing
- * that would add a runtime dependency to a package whose whole point is that
- * `npx timeful` pulls one thing. Streams are injected so the flow can be driven
- * by a scripted stdin in tests, which is also what a piped stdin gets: the
- * numbered line prompts rather than the arrow-key list.
- */
+/** First-run wizard, on tui.ts's dependency-free prompts; streams are injected so tests drive it over a piped stdin. */
 import type { Overrides } from "./args.ts";
 import {
   CONFIG_FILE,
@@ -21,16 +13,9 @@ export interface WizardOptions {
   cwd: string;
   input: Tty["input"];
   output: Tty["output"];
-  /**
-   * Command-line settings, used as the offered defaults: `timeful --port 8080`
-   * in a fresh directory should not then propose 3000.
-   */
+  /** Command-line settings, used as the offered defaults. */
   defaults?: Overrides;
-  /**
-   * Persists the answers (write the config file, create the data directory)
-   * before the last two questions are asked, so "start now?" is only offered
-   * once the directory really is a webroot. Injectable for tests.
-   */
+  /** Persists the answers before the last two questions, so "start now?" is only offered on a real webroot. */
   commit: (config: ResolvedConfig) => Promise<void>;
 }
 
@@ -40,10 +25,7 @@ export interface WizardResult {
   installService: boolean;
 }
 
-/**
- * Runs the wizard. Resolves to null when the user declines to initialize the
- * directory — that is a normal outcome, not an error.
- */
+/** Null when the user declines — a normal outcome, not an error. */
 export async function runWizard(options: WizardOptions): Promise<WizardResult | null> {
   const { cwd, defaults = {}, commit } = options;
   const io: Tty = { input: options.input, output: options.output };
@@ -60,11 +42,8 @@ export async function runWizard(options: WizardOptions): Promise<WizardResult | 
     }
     say(io);
 
-    // The built-in defaults, resolved once, so the questions need not restate
-    // them. `varDirRaw`, not `varDir`: the wizard proposes "./" (the webroot
-    // itself), not an absolute path. The command-line values stay raw on
-    // purpose — a typo in `--trusted-proxy` is prefilled below for fixing,
-    // never thrown over.
+    // varDirRaw, not varDir: propose "./", not an absolute path. Command-line values
+    // stay raw so a typo is prefilled for fixing, never thrown over.
     const fallback = mergeConfig({ cwd });
 
     const port = await askPort(io, defaults.port ?? fallback.port);
@@ -89,8 +68,7 @@ export async function runWizard(options: WizardOptions): Promise<WizardResult | 
     });
     return { config, startNow, installService };
   } catch (err) {
-    // A stdin that closes mid-wizard is an error, not a hang — and the
-    // directory is left exactly as it was found.
+    // A stdin that closes mid-wizard errors instead of hanging; the directory is left as found.
     if (err instanceof InputEndedError)
       throw new CliError("Input ended before the wizard finished; nothing was written.");
     throw err;
@@ -123,10 +101,7 @@ const TRUSTED_PROXY_CHOICES = [
   { value: "none", label: "none", hint: "ignore X-Forwarded-* entirely" },
 ];
 
-/**
- * The answer is stored as typed, so the config file keeps the operator's
- * wording; it is validated here, while they are still around to fix it.
- */
+/** Stored as typed so the config keeps the operator's wording; validated now, while they can fix it. */
 async function askTrustedProxy(io: Tty, fallback: string): Promise<string> {
   const index = TRUSTED_PROXY_CHOICES.findIndex(
     (choice) => choice.value === fallback.trim().toLowerCase(),

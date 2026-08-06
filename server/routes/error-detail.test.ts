@@ -1,14 +1,7 @@
 /**
- * The admin-only `detail` on error bodies.
- *
- * Two properties, and the first is the contract: a **guest's error bodies do
- * not change at all** — byte-identical to what they were before the field
- * existed, asserted against the raw response text, because the generic body is
- * the security boundary and "an extra field nobody notices" is exactly how a
- * boundary erodes. The second is the point: the signed-in admin is told the
- * cause of a 500 (message, errno code, path) that the public body summarises
- * as "Internal server error", and is *not* told anything twice — a 4xx whose
- * message is already the whole story carries no detail.
+ * Admin-only `detail` on error bodies: a guest's bodies stay byte-identical
+ * (the generic body is the security boundary), the admin is told a 500's
+ * cause, and nothing is said twice.
  */
 import fs from "node:fs/promises";
 import path from "node:path";

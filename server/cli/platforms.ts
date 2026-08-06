@@ -1,20 +1,7 @@
 /**
- * The per-platform facts service.ts and discover.ts must agree on.
- *
- * One side *writes* units — a launchd LaunchAgent, a systemd unit, a schtasks
- * launcher — and the other finds them again by scanning the platform's unit
- * directory and parsing the webroot back out of what it wrote. There is no
- * registry file tying the two together (see discover.ts), so the naming
- * scheme, the directories and the parsers live here, once, where neither side
- * can drift from the other.
- *
- * The parsers are deliberately **more lenient** than the generators: a shorter
- * hash, a re-cased extension, an `ExecStart` without `serve`, are all files an
- * older version of this CLI — or a hand — may have left behind, and every one
- * of them must keep being found or an installed service becomes invisible to
- * the CLI that installed it. Never tighten a parser here onto what today's
- * generator happens to emit; discover.test.ts carries fixtures for exactly
- * that regression.
+ * The per-platform facts service.ts and discover.ts must agree on. Parsers are deliberately
+ * more lenient than generators — units an older version left behind must stay findable;
+ * never tighten a parser onto today's output (discover.test.ts carries the fixtures).
  */
 import path from "node:path";
 
@@ -22,16 +9,12 @@ export type ServiceTier = "user" | "system";
 
 /** What the per-tier unit directories are built from; a slice of `ServiceSpec`. */
 export interface PlaceInputs {
-  /** The invoking user's home directory. */
   home: string;
   /** `XDG_CONFIG_HOME`, when set. */
   configHome?: string;
   /** `LOCALAPPDATA`, when set (Windows). */
   localAppData?: string;
 }
-
-// The directories, as named functions, so a generator can call the one it
-// means without indexing through the table.
 
 /** macOS user tier: `~/Library/LaunchAgents`. */
 export const launchAgentsDir = (inputs: PlaceInputs): string =>
@@ -41,25 +24,14 @@ export const launchAgentsDir = (inputs: PlaceInputs): string =>
 export const systemdUserDir = (inputs: PlaceInputs): string =>
   path.join(inputs.configHome || path.join(inputs.home, ".config"), "systemd", "user");
 
-/**
- * Linux system tier. A posix constant, and a unit path under it is always
- * built with `path.posix.join`: it names a path on the machine the unit will
- * run on, not the one generating it, so a cross-generated unit must never
- * pick up another platform's separators.
- */
+/** Linux system tier. Paths under it always use `path.posix.join`: they name the target machine, not the generator's. */
 export const SYSTEMD_SYSTEM_DIR = "/etc/systemd/system";
 
-/**
- * Windows: `%LOCALAPPDATA%\Timeful`. The `schtasks` logon task runs the
- * launcher script kept there, so the directory is the record worth scanning —
- * a task without its launcher could not start anyway.
- */
+/** Windows: `%LOCALAPPDATA%\Timeful` — the schtasks task runs the launcher kept there. */
 export const windowsLaunchersDir = (inputs: PlaceInputs): string =>
   path.join(inputs.localAppData || path.join(inputs.home, "AppData", "Local"), "Timeful");
 
-// XML escaping: one map, inverted, so an entity the plist generator starts
-// writing is an entity the parser puts back.
-
+// One map, inverted, so the plist generator and parser can never disagree.
 const XML_ESCAPES: Record<string, string> = {
   "&": "&amp;",
   "<": "&lt;",
@@ -106,9 +78,7 @@ function cliFromPlist(contents: string): string | null {
 }
 
 function cliFromUnit(contents: string): string | null {
-  // The generators do not quote the two POSIX paths, so a node binary with a
-  // space in its path is unreadable here; `ExecStart` with no `serve` is an
-  // older unit and still parses.
+  // Paths are unquoted, so a node path with a space is unreadable; ExecStart without serve is an older unit.
   const exec = /^ExecStart=(.+)$/m.exec(contents)?.[1].trim();
   if (!exec) return null;
   const words = exec.split(/\s+/);
@@ -129,10 +99,7 @@ export interface PlatformNaming {
   idPrefix: string;
   /** The unit file's extension, dot included. */
   ext: string;
-  /**
-   * systemd addresses a unit by its file name, extension and all; a launchd
-   * label and a schtasks task name drop it.
-   */
+  /** systemd addresses a unit by file name with extension; launchd labels and schtasks names drop it. */
   idIncludesExt: boolean;
   /** Windows compares file names case-insensitively, so the scanner must too. */
   ignoreCase?: boolean;

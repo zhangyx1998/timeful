@@ -1,10 +1,6 @@
 /**
- * Slug leases: short-lived reservations of a not-yet-created slug, so the
- * admin UI can show the final URL before the event exists.
- *
- * Runtime memory only — never persisted. A restart drops every lease, which is
- * safe: an unconsumed lease only ever blocked a slug from being handed out
- * twice. Expired entries are swept lazily on access, so no timers are held.
+ * In-memory slug reservations so the UI can show the URL before the event
+ * exists. Never persisted — a restart safely drops them; swept lazily, no timers.
  */
 import { leaseTtlMs } from "./config.ts";
 
@@ -47,11 +43,7 @@ export function reserveLease(
   return { slug, expiresAt };
 }
 
-/**
- * Consumes a live lease on `slug` (event creation claiming its reservation).
- * Returns true when a live lease existed. Expired leases are dropped and
- * report false — the slug was already free.
- */
+/** True when a live lease existed; expired ones report false. */
 export function consumeLease(slug: string, now: number = Date.now()): boolean {
   const live = isLeased(slug, now);
   leases.delete(slug);

@@ -1,12 +1,6 @@
 /**
- * End-to-end tests for the CLI as a process: argv in, exit code and streams
- * out. Everything here runs the real entry point, so it also covers the parts
- * that only exist at the top level — the exit codes and the stdin check.
- *
- * No service is ever activated here: everything that would touch the machine
- * runs with --dry-run, and the service tests run against a temporary HOME so
- * the unit scanner sees only what they planted. Activating a service belongs to
- * the operator, not to a test run.
+ * End-to-end: argv in, exit code and streams out, through the real entry point. No service is
+ * ever activated — machine-touching runs use --dry-run and a temporary HOME.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
@@ -263,13 +257,7 @@ function sandbox(): { env: NodeJS.ProcessEnv; unsetEnv: string[] } {
   };
 }
 
-/**
- * Writes a unit for `webroot` where this platform keeps them, as if installed.
- *
- * `cliPath` pins an ExecStart (or its plist/launcher equivalent), which is what
- * `timeful upgrade` reads back and rewrites; the service verbs never look at it
- * and pass nothing.
- */
+/** Writes a unit where this platform keeps them; `cliPath` pins the ExecStart that `timeful upgrade` reads back. */
 async function plantUnit(webroot: string, cliPath?: string): Promise<string> {
   const hash = webrootHash(webroot);
   if (process.platform === "darwin") {

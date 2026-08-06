@@ -1,11 +1,3 @@
-/**
- * The Express application: API mount, SSR/static middleware, 404 page.
- *
- * Everything the server needs is passed in, so the same app is built by the
- * repo entry (`server/index.ts`), by the packaged CLI, and by tests. Only the
- * `Renderer` differs: static files + the built SSR bundle in production, Vite
- * middleware in development (`server/dev.ts`, which is never bundled).
- */
 import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
@@ -17,12 +9,8 @@ import type { Express, NextFunction, Request, Response } from "express";
 import { cookieParser, loadSession, sessionTokenFromHeader, touchSession } from "./auth.ts";
 import { realtimeEnabled } from "./config.ts";
 import { logError, redactPath, stackHead } from "./log.ts";
-// Runtime, like the slug rules: what a link-holder may see is one definition,
-// and the SSR page applies exactly the one the JSON route applies.
 import { publicEvent } from "../src/lib/event.ts";
-// Runtime too: the URL shapes an event page answers under, and the title each
-// one carries, are one definition — the hydrated title must be byte-equal to
-// the served one (ARCHITECTURE.md § Routing / SSR).
+// Runtime imports: hydrated title must be byte-equal to the served one (ARCHITECTURE.md § Routing / SSR).
 import {
   eventPageTitle,
   parseEventPath,
@@ -49,11 +37,8 @@ import { readEvent, readLinks } from "./storage.ts";
 import { tarpitMiss } from "./tarpit.ts";
 import type { ErrorDetail, StoredEvent } from "./types.ts";
 
-// Re-exported from where it used to live, so importers keep working; the page
-// itself moved to its own module because the event-scoped router needs it too.
 export { NOT_FOUND_HTML };
 
-/** The SSR bundle's shape, borrowed from the source entry it is built from. */
 type SsrModule = typeof import("../src/entry-server.ts");
 export type RenderFn = SsrModule["render"];
 
@@ -101,11 +86,7 @@ function replaceOnce(html: string, marker: string, value: string): string {
 // renderers
 // ---------------------------------------------------------------------------
 
-/**
- * Production renderer: static files from the client build, `render` from the
- * SSR bundle. Both are read from `assets`, which is resolved relative to the
- * running module (see paths.ts) — never from the working directory.
- */
+/** Production renderer; `assets` resolves from the running module (paths.ts), never the CWD. */
 export function createStaticRenderer(assets: AssetPaths): Renderer {
   let templateCache: string | undefined;
   let renderCache: RenderFn | undefined;
@@ -127,8 +108,7 @@ export function createStaticRenderer(assets: AssetPaths): Renderer {
       return templateCache;
     },
     async loadRender() {
-      // `import()` wants a URL: a bare absolute path is ambiguous on Windows
-      // and a relative one would resolve against this module, not the assets.
+      // `import()` wants a URL: a bare absolute path is ambiguous on Windows.
       renderCache ??= (
         (await import(pathToFileURL(assets.serverEntry).href)) as SsrModule
       ).render;
@@ -149,8 +129,6 @@ export interface AppOptions {
 export function createApp({ trustProxy, renderer }: AppOptions): Express {
   const app = express();
   app.disable("x-powered-by");
-  // Only these peers may speak X-Forwarded-For/-Proto for someone else; `req.ip`
-  // then resolves to the rightmost entry that is not itself trusted.
   app.set("trust proxy", trustProxy);
   app.use(express.json({ limit: "2mb" }));
   app.use(cookieParser);
@@ -167,12 +145,8 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
 
   renderer.attach?.(app);
 
-  // Event-scoped endpoints live on the event's own path, not under `/api`
-  // (ARCHITECTURE.md § API). Mounted *after* the static middleware so a real
-  // file under `/assets/…` is still a file rather than a slug named "assets",
-  // and before the page handler, which owns single-segment paths. The push
-  // router goes first: it owns only `/:slug/push`, and the event router's
-  // catch-all would otherwise swallow it.
+  // After static middleware, before the page handler; push router first or the
+  // event router's catch-all swallows `/:slug/push` (ARCHITECTURE.md § API).
   app.use(pushScopedRouter);
   app.use(eventScopedRouter);
 
@@ -190,18 +164,14 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
     req: Request,
     sub: EventSubpage,
   ): Promise<string> {
-    // The whole document is inlined into the page, so the page is a public
-    // route like any other and takes the same strip. Done once, here: the
-    // markup is rendered from this copy and the `window.__EVENT__` script
-    // serialises the same one, so the two cannot disagree.
+    // One publicEvent copy feeds both the markup and `window.__EVENT__`.
     const event = publicEvent(stored);
     const render = await renderer.loadRender();
     const { html } = await render(req.path, { event });
     const absoluteUrl = `${req.protocol}://${req.get("host") ?? "localhost"}${req.path}`;
     const { title, tags } = eventHead(event, absoluteUrl, sub);
 
-    // Tells entry-client.ts there is real markup to hydrate. Stamped before the
-    // markup goes in, so a rendered `<div id="app">` can never be hit instead.
+    // Stamped before the markup goes in, so a rendered `<div id="app">` is never hit.
     let out = replaceOnce(template, `<div id="app">`, `<div id="app" data-ssr>`);
     out = replaceOnce(out, "<!--app-html-->", html);
     out = out.replace(/<title>[\s\S]*?<\/title>/, () => `<title>${escapeHtml(title)}</title>`);
@@ -220,13 +190,11 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
       res
         .status(status)
         .set("Content-Type", "text/html; charset=utf-8")
-        // Pages are dynamic; only the hashed assets they link to are cacheable.
         .set("Cache-Control", "no-cache")
         .end(html);
 
     try {
-      // '/' is CSR only — the admin app boots from the bare shell. It resolves
-      // by definition, so it is never queued.
+      // '/' is CSR only — the admin app boots from the bare shell.
       if (req.path === "/") {
         if (!isRead) {
           sendHtml(404, NOT_FOUND_HTML);
@@ -236,11 +204,7 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
         return;
       }
 
-      // Resolve first: only an actual miss enters the tarpit, whatever the
-      // method or shape. A hit with an unusable method is a plain, undelayed
-      // 404 — and a hit on a non-canonical page path is a 302 to the event
-      // root, query preserved, so SSR only ever renders the canonical URLs
-      // and an odd address self-corrects instead of serving content there.
+      // Only an actual miss enters the tarpit; a non-canonical hit 302s to the event root.
       const resolved = await resolveSlugPath(req.path);
       if (!resolved) {
         await tarpitMiss(req, res, () => sendHtml(404, NOT_FOUND_HTML));
@@ -283,8 +247,7 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
     const raw = err instanceof Error ? err.message : "";
     if (status >= 500) {
       console.error(err);
-      // Into the owner's log too, with the request path made safe for the
-      // global buffer: the first segment of an event-scoped path is the slug.
+      // redactPath: the first segment of an event-scoped path is the slug.
       logError(raw || "Internal server error", {
         code: errnoCode(err),
         path: redactPath(req.path),
@@ -293,15 +256,11 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
       });
     }
     const message = status >= 500 ? "Internal server error" : raw || "Bad request";
-    // The admin gets the cause; a guest's body stays byte-identical to what it
-    // has always been. Included only where it says more than the public
-    // message already does — a 500's real error, or an errno with a path —
-    // never as a duplicate line under a 400 that already spoke plainly.
+    // The admin gets the cause; a guest's body stays byte-identical.
     const detail = (await loadSession(req).catch(() => null))
       ? adminDetail(err, raw, message)
       : undefined;
-    // `/api/*` by its prefix, and the event-scoped endpoints by the mark
-    // `jsonRoute` leaves — their paths look exactly like page URLs.
+    // Event-scoped paths look like page URLs; `jsonRoute` is their mark.
     if (req.path.startsWith("/api") || res.locals.jsonRoute === true) {
       res.status(status).json({ error: message, ...(detail ? { detail } : {}) });
       return;
@@ -312,7 +271,6 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
   return app;
 }
 
-/** The `code` of a Node system error, when the value carries one. */
 function errnoCode(err: unknown): string | undefined {
   if (typeof err !== "object" || err === null || !("code" in err)) return undefined;
   return typeof err.code === "string" ? err.code : undefined;
@@ -324,13 +282,7 @@ function errnoPath(err: unknown): string | undefined {
   return typeof err.path === "string" ? err.path : undefined;
 }
 
-/**
- * What an authenticated admin is told about an error, beyond the public body.
- *
- * Only when it adds something: a 4xx whose message already is the whole story
- * gets no `detail`, so the panel never prints the same sentence twice. A 500's
- * public body says "Internal server error" and the detail says why.
- */
+/** Admin-only error detail; omitted when it would repeat the public message. */
 function adminDetail(
   err: unknown,
   raw: string,
@@ -355,9 +307,7 @@ function eventHead(
   const name = escapeHtml(event.name);
   const description = escapeHtml(`Fill in your availability for ${event.name}.`);
   const tags = [
-    // Event URLs are capability links (ARCHITECTURE.md § Security): knowing one
-    // is permission to answer it, so none of them belong in a search index. The
-    // OG/Twitter tags stay — unfurling a link in a chat app is the point.
+    // Capability links stay out of search indexes (ARCHITECTURE.md § Security); OG tags stay for unfurls.
     `<meta name="robots" content="noindex" />`,
     `<meta name="description" content="${description}" />`,
     `<meta property="og:type" content="website" />`,
@@ -369,21 +319,10 @@ function eventHead(
     `<meta name="twitter:title" content="${name}" />`,
     `<meta name="twitter:description" content="${description}" />`,
   ].join("\n    ");
-  // The OG tags stay on the event's name whatever the shape: an unfurl
-  // identifies the event, while the window title identifies the page.
   return { title: eventPageTitle(event, sub), tags };
 }
 
-/**
- * Resolves a request path to an event and what the path asked of it
- * (`event-routes.ts` owns the classification). The three canonical shapes —
- * `/<slug>`, `/<slug>/view`, `/<slug>/edit/<key>` — serve the page; any other
- * page-like path under a resolving slug is non-canonical and the caller
- * redirects it to the root; a slug that does not resolve is the miss it
- * always was, whatever followed it. An edit key that names nobody still
- * serves the page: the slug is the sole capability, and the page itself
- * answers the question the key asks.
- */
+/** An edit key that names nobody still serves the page: the slug is the sole capability. */
 async function resolveSlugPath(
   pathname: string,
 ): Promise<{ event: StoredEvent; shape: EventPagePath } | null> {
@@ -399,12 +338,7 @@ async function resolveSlugPath(
 // listening
 // ---------------------------------------------------------------------------
 
-/**
- * Builds a renderer against the HTTP server it will be served from. The
- * factory form exists for development: Vite serves its HMR WebSocket off the
- * app's own server (`server.hmr.server` in `server/dev.ts`), so it needs the
- * instance before the middleware attaches — which is before `listen`.
- */
+/** Factory form exists so dev can hang Vite's HMR WebSocket off the app's own server. */
 export type RendererFactory = (server: Server) => Renderer | Promise<Renderer>;
 
 export interface ServeOptions extends Omit<AppOptions, "renderer"> {
@@ -414,30 +348,11 @@ export interface ServeOptions extends Omit<AppOptions, "renderer"> {
   renderer: Renderer | RendererFactory;
   /** Named in the startup line, e.g. "dev" or "production". */
   mode?: string;
-  /**
-   * Serve the realtime WebSocket channel. Defaults to the `TIMEFUL_REALTIME`
-   * reading; the CLI passes the value it resolved from the config file instead.
-   * When false, no upgrade listener is registered at all.
-   */
+  /** Serve the realtime channel. Defaults to the `TIMEFUL_REALTIME` reading. */
   realtime?: boolean;
 }
 
-/**
- * The client address of a WebSocket upgrade, evaluated by the app's own
- * `trust proxy` setting.
- *
- * An upgrade never reaches Express, so there is no `req.ip` to read — but the
- * rule for deriving one is a property of the app rather than of the request,
- * and Express keeps it on the request *prototype*. Borrowing that prototype
- * asks the same question the `PUT` asks, with the same answer, instead of
- * reimplementing a forwarded-chain walk that would drift from it. Nothing
- * depends on it succeeding: the peer address is the fallback, which is what
- * this would have been without it.
- *
- * The [tarpit](./tarpit.ts) deliberately does *not* use this. Counting misses
- * wants the address a client cannot lie about; recording where an answer was
- * edited from wants the one nginx is forwarding.
- */
+/** Upgrade client IP via the app's own trust-proxy rule, borrowed off Express's request prototype. */
 function upgradeClientIp(app: Express, req: IncomingMessage): string {
   try {
     const proto = Object.create(app.request) as {
@@ -453,18 +368,14 @@ function upgradeClientIp(app: Express, req: IncomingMessage): string {
     proto.connection = req.socket;
     if (typeof proto.ip === "string" && proto.ip) return proto.ip;
   } catch {
-    // Fall through: an Express that no longer exposes this is not a reason to
-    // refuse the upgrade.
+    // Fall through to the peer address.
   }
   return req.socket.remoteAddress || "";
 }
 
 /** Builds the app and listens. Resolves once the socket is open. */
 export async function serve(options: ServeOptions): Promise<Server> {
-  // The server exists before the app so a renderer factory can be handed it:
-  // in dev, Vite attaches its HMR upgrade listener here and hot reload rides
-  // the app's own port instead of a fixed second one. `server.on("request",
-  // app)` is exactly what `app.listen` would have done.
+  // Server exists before the app so a renderer factory (dev HMR) can be handed it.
   const server = http.createServer();
   const renderer =
     typeof options.renderer === "function"
@@ -475,27 +386,18 @@ export async function serve(options: ServeOptions): Promise<Server> {
 
   const realtime = options.realtime ?? realtimeEnabled();
   await new Promise<void>((resolve, reject) => {
-    // Left attached: a rejection after settling is a no-op, and a later
-    // 'error' with no listener would crash the process instead.
+    // Left attached: a later 'error' with no listener would crash the process.
     server.on("error", reject);
     server.listen(options.port, options.host, resolve);
   });
 
-  // Attached to the listening server, never to the app: an upgrade is a
-  // property of the HTTP connection and never reaches Express at all. The
-  // listener is always registered now — it also carries the admin-only log
-  // streams (`/api/logs`, `/<slug>/logs`), which exist whatever the realtime
-  // switch says; with realtime off the event channel inside it is not served
-  // and those upgrades are destroyed unresolved, exactly as the absent
-  // listener used to leave them.
+  // Upgrades never reach Express; always registered — it also carries the admin log streams.
   const hub = attachRealtime(server, {
     resolveEvent,
     writeResponse,
     clientIp: (req) => upgradeClientIp(app, req),
     realtime,
-    // The same cookie, the same session store, the same answer `requireAdmin`
-    // would give — read from the handshake's raw headers, because an upgrade
-    // never reaches Express and there is no middleware to have parsed them.
+    // The same answer `requireAdmin` gives, read from raw headers — no middleware ran.
     verifyAdmin: async (req) => {
       const token = sessionTokenFromHeader(
         Array.isArray(req.headers.cookie) ? req.headers.cookie[0] : req.headers.cookie,
@@ -510,14 +412,7 @@ export async function serve(options: ServeOptions): Promise<Server> {
   return server;
 }
 
-/**
- * The startup printout. A loopback bind keeps the single line it has always
- * printed — the CLI's end-to-end tests match that literal. A wildcard bind is
- * reachable from the LAN, so the loopback URL comes first and every
- * non-internal IPv4 address follows: the URL a phone needs. A specific
- * non-loopback address prints itself alone — binding 192.168.x.y does not
- * listen on 127.0.0.1, and a URL that will not answer must not be printed.
- */
+/** Startup printout; the CLI's e2e tests match the loopback line's literal. */
 function startupLines(options: ServeOptions, realtime: boolean): string[] {
   const { host, port } = options;
   const wildcard = host === "0.0.0.0" || host === "::";

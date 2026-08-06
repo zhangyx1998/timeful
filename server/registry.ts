@@ -1,20 +1,7 @@
 /**
- * Asking npm what the latest published version is.
- *
- * This is one of **exactly two kinds of outbound call in the application** —
- * the other being push delivery (server/push/deliver.ts), which only ever
- * POSTs to endpoints a browser explicitly subscribed — and it is never made
- * on its own initiative: the admin presses a button, or an operator types
- * `timeful upgrade`. Nothing polls, nothing phones home on startup, and no
- * page load reaches the network. Timeful is a self-hosted app whose whole
- * promise is that it depends on no third party at runtime; a background
- * version check would quietly break that promise, and an admin-triggered one
- * does not.
- *
- * Everything here fails soft. The registry being unreachable is the normal
- * state of an air-gapped or firewalled box, not an error worth a stack trace,
- * so `fetchLatestVersion` never throws and never returns anything derived from
- * the caller's request.
+ * npm registry lookup — one of exactly two outbound calls in the app (the
+ * other is push delivery), and only ever admin-triggered; nothing polls or
+ * phones home. Fails soft: an unreachable registry is normal, not an error.
  */
 import { VERSION } from "./cli/version.ts";
 
@@ -34,10 +21,7 @@ export const isDevelopmentBuild = (version: string = VERSION): boolean =>
 export interface RegistryLookup {
   /** The published version, or null when the registry could not be read. */
   latest: string | null;
-  /**
-   * Why `latest` is null, in words safe to show anyone. Present only then, and
-   * never carrying anything from the request that asked.
-   */
+  /** Why `latest` is null, in words safe to show anyone. */
   problem?: string;
 }
 
@@ -49,13 +33,7 @@ export interface LookupOptions {
   url?: string;
 }
 
-/**
- * The published version of `timeful`, or a reason there is none to report.
- *
- * Deliberately not a throw: every caller wants to carry on regardless — the
- * CLI still re-points and restarts the service offline, and the admin panel
- * still shows the running version.
- */
+/** Never throws: every caller wants to carry on offline. */
 export async function fetchLatestVersion(
   options: LookupOptions = {},
 ): Promise<RegistryLookup> {
@@ -84,8 +62,7 @@ export async function fetchLatestVersion(
       return { latest: null, problem: "The npm registry answered with no version." };
     return { latest: version.trim() };
   } catch (err) {
-    // An abort is the timeout firing; anything else is DNS, TLS or no route at
-    // all. Both read the same to whoever asked, so both say the same thing.
+    // An abort is the timeout firing; anything else is DNS, TLS or no route.
     const timedOut = err instanceof Error && err.name === "AbortError";
     return {
       latest: null,
@@ -102,15 +79,7 @@ export async function fetchLatestVersion(
 // comparing versions
 // ---------------------------------------------------------------------------
 
-/**
- * Enough of semver to answer one question, and no more.
- *
- * Only the release triple is compared numerically; a prerelease sorts *before*
- * the release it leads to, and build metadata is ignored. Timeful publishes
- * plain `x.y.z` releases, so anything cleverer would be untested code guarding
- * a case that does not arise — and the failure mode here is deliberately the
- * quiet one: an unparseable version is simply never "newer".
- */
+/** Release triple only; a prerelease sorts before its release; an unparseable version is never "newer". */
 export function isNewerVersion(candidate: string, current: string): boolean {
   const a = parseVersion(candidate);
   const b = parseVersion(current);

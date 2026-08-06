@@ -1,12 +1,4 @@
-/**
- * Server-side shapes: what lives on disk under `var/`, plus the Express
- * request augmentation used by the auth middleware.
- *
- * The event document and the JSON the API hands back are shared with the
- * client, so they are imported from `src/lib/` rather than restated here —
- * the two halves can never drift. These imports are type-only and therefore
- * erased before Node ever sees them.
- */
+/** Shapes on disk under `var/`; shared wire types come type-only from `src/lib/` so the halves cannot drift. */
 import type {
   EventDoc,
   EventResponse,
@@ -28,9 +20,7 @@ import type {
   RealtimeMessage,
   SaveMessage,
 } from "../src/lib/realtime.ts";
-// The one server-side shape re-exported *from* the server: the realtime module
-// takes the write path as an injected function and needs its signature without
-// importing the route layer it lives in.
+// The one server-side re-export: realtime needs the injected write path's signature without importing the route layer.
 import type { EditOrigin, ResponseInput, ResponseWrite } from "./routes/events.ts";
 
 export type {
@@ -82,11 +72,7 @@ export interface SessionRecord {
 /** `var/sessions.json` — token -> session. */
 export type SessionsMap = Record<string, SessionRecord>;
 
-/**
- * `var/vapid.json` — the server's VAPID key pair, minted on first use and kept
- * for the life of the data directory: a push subscription is bound to the
- * public key it was created against, so regenerating would orphan every one.
- */
+/** `var/vapid.json` — minted once and kept: subscriptions are bound to the public key, regenerating orphans them. */
 export interface VapidKeyRecord {
   /** base64url, 65-byte uncompressed P-256 point — served to browsers. */
   publicKey: string;
@@ -95,14 +81,7 @@ export interface VapidKeyRecord {
   createdAt: string;
 }
 
-/**
- * One push subscription, as stored in `var/push.json`.
- *
- * `endpoint` is the push service URL the browser handed out. It is a
- * capability — anyone holding it can send (encrypted) messages to that
- * browser — so it is treated like a session token: stored, matched, never
- * logged and never served back out.
- */
+/** One entry of `var/push.json`; `endpoint` is a capability — never logged, never served back out. */
 export interface PushSubscriptionRecord {
   /** The event's uuid, never its slug: a rename must not orphan this. */
   eventId: string;
@@ -122,10 +101,7 @@ export interface PushStore {
 /** `var/links.json` — public slug -> event id. */
 export type LinksMap = Record<string, string>;
 
-/**
- * A JSON file mutation: return the next value, or `undefined` to leave the
- * file untouched.
- */
+/** Return the next value, or `undefined` to leave the file untouched. */
 export type Mutator<T> = (current: T) => T | undefined | Promise<T | undefined>;
 
 declare module "express-serve-static-core" {

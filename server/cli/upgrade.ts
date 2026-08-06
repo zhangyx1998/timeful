@@ -1,24 +1,7 @@
 /**
- * `timeful upgrade` — move an installed service onto the build that is running
- * this command.
- *
- * The verb exists because of one property of `npx`. By the time
- * `npx timeful@latest upgrade` reaches this file, npx has **already** fetched
- * and unpacked the new version: the process executing these lines *is* the new
- * Timeful. So upgrading never downloads anything and never overwrites anything
- * in place. It re-points the service unit at the bits already running and
- * restarts it.
- *
- * That matters because a service unit pins an absolute path
- * (`ExecStart=<node> <cli> serve`, and the plist and launcher equivalents), and
- * for an npx install that path is inside npm's `_npx` cache. Installing a
- * service from `npx timeful` and then running `npx timeful@latest` a year later
- * upgrades the copy in your terminal and leaves the service exactly where it
- * was. Re-pinning is the fix, and it is the whole job.
- *
- * What is never touched: `var/`, `timeful.config.json`, and anything else in
- * the webroot. There are no migrations — old documents are read as they stand
- * (ARCHITECTURE.md § Storage) — so there is nothing for an upgrade to convert.
+ * npx has already fetched the new version by the time this runs; units pin absolute paths
+ * (often inside the _npx cache), so re-pinning + restart is the whole upgrade. The webroot
+ * is never touched and there are no migrations (ARCHITECTURE.md § Storage).
  */
 import path from "node:path";
 import { pinnedCliPath } from "./discover.ts";
@@ -32,36 +15,16 @@ import {
 } from "./service.ts";
 import { isNewerVersion, type RegistryLookup } from "../registry.ts";
 
-/**
- * What the running CLI is, as far as upgrading is concerned.
- *
- * - `npx`   — the path is inside npm's `_npx` cache, so it belongs to this
- *             fetch and re-pinning the unit is exactly the right move.
- * - `stable`— a global install or a checkout. The path does not move, so a
- *             rewritten unit would exec the same file; taking a new version
- *             means replacing what lives at that path, which is npm's job and
- *             not ours.
- */
+/** `npx`: the path is inside the _npx cache, so re-pin; `stable`: the path does not move, replacing it is npm's job. */
 export type InstallKind = "npx" | "stable";
 
-/**
- * npm unpacks an `npx <pkg>` into `<npm cache>/_npx/<hash>/node_modules/…`, and
- * `_npx` is the only part of that layout npm has kept stable across versions.
- * Matching a whole path *segment* rather than a substring keeps the heuristic
- * conservative: a global install under a directory that merely contains the
- * letters `_npx` is not misread, and the cost of guessing wrong is only which
- * of two accurate sentences gets printed.
- */
+/** `_npx` is the only path segment npm has kept stable; whole-segment matching keeps the heuristic conservative. */
 export function installKind(cliPath: string): InstallKind {
   const segments = cliPath.split(/[\\/]+/);
   return segments.includes("_npx") ? "npx" : "stable";
 }
 
-/**
- * The version of the package a CLI entry belongs to, from the `package.json`
- * beside it — which is where the build puts it (ARCHITECTURE.md § Packaging).
- * Null when there is none to read, which is the normal answer for a checkout.
- */
+/** Version from the package.json beside the CLI entry (ARCHITECTURE.md § Packaging); null for a checkout. */
 export async function versionBeside(
   host: ServiceHost,
   cliPath: string,
@@ -95,13 +58,7 @@ export interface UpgradeContext {
 /** What happened to one webroot. Reported back so `-A` can summarise. */
 export type UpgradeOutcome = "no-service" | "unchanged" | "upgraded";
 
-/**
- * Re-points every installed unit of one webroot and restarts it.
- *
- * `explicit` distinguishes a webroot the operator named from one `-A` swept
- * up: naming a serve-only directory deserves an explanation of how *that*
- * upgrades, while sweeping past one deserves a single line.
- */
+/** Re-points every installed unit of one webroot; `explicit` earns a named webroot the long no-service explanation. */
 export async function upgradeWebroot(
   webroot: string,
   units: readonly ServiceUnit[],
@@ -143,13 +100,10 @@ export async function upgradeWebroot(
       host.log(`    now ${cliPath}`);
     }
 
-    // Identical paths are only "nothing to do" if the bits behind that path are
-    // also the ones running. They usually are — it is the same file — but the
-    // check is cheap and the sentence it earns is worth more than the guess.
+    // The same path does not guarantee the same bits; the version check is cheap.
     if (pinned === cliPath && (await versionBeside(host, pinned)) === version) {
       host.log(`    already up to date (${version}). Nothing to do.`);
-      // The one case the comparison above cannot see: the package at that path
-      // was replaced under a running service, which still holds the old code.
+      // A package replaced in place under a running service is invisible to the comparison.
       host.log("    (Replaced the install in place? Run 'timeful service restart'.)");
       continue;
     }
@@ -164,21 +118,7 @@ export async function upgradeWebroot(
   return outcome;
 }
 
-/**
- * What to say before touching anything, when the running CLI did not come from
- * an npx cache.
- *
- * Re-pinning a unit that already execs a stable path changes nothing, so the
- * only way such an install takes a new version is for something to replace what
- * lives at that path. That something is `npm`, and running it on the operator's
- * behalf is not this command's business: a global install is a machine-wide
- * change, it may need a privilege we were not given, and the operator may be
- * pinned to a version on purpose. So the ritual is printed, never performed.
- *
- * The registry is asked only here, and only when a lookup was supplied — the
- * whole verb works offline, because the `@latest` form never needed the network
- * in the first place.
- */
+/** The npm ritual is printed, never performed: replacing a stable install is npm's job, may need privileges, and may be pinned on purpose. The registry is asked only here, only when a lookup was supplied. */
 export async function reportStableInstall(
   context: UpgradeContext,
   lookup?: () => Promise<RegistryLookup>,
@@ -197,8 +137,7 @@ export async function reportStableInstall(
 
   const { latest, problem } = await lookup();
   if (latest === null) {
-    // Unreachable is not fatal. The re-pin and the restart below still work,
-    // and an air-gapped machine is a supported way to run this.
+    // Unreachable is not fatal; air-gapped machines are supported.
     host.log(`${problem ?? "The npm registry could not be reached."} Continuing anyway.`);
     host.log();
     return;

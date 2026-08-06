@@ -1,11 +1,6 @@
 /**
- * `GET /api/update-check` against the real Express app.
- *
- * The registry is stubbed at the global `fetch` — the same seam the handler
- * reaches through — so the one outbound call the app can make is never made
- * from a test run. Calls the test itself makes to its own server pass straight
- * through, which is also how the "was the registry asked at all?" assertions
- * work.
+ * `GET /api/update-check` against the real app. The registry is stubbed at the
+ * global `fetch`, so the one outbound call is never made from a test run.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { setCredential } from "../auth.ts";

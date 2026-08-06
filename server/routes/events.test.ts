@@ -1,29 +1,7 @@
 /**
- * The event-scoped HTTP surface, end to end.
- *
- * Three things are pinned here at once, and none of them exist until routing,
- * validation and the storage layer have all had their say — so these run
- * against a real Express app on a real socket, over a real temp `VAR_DIR`.
- *
- * **Where an event's endpoints live.** Everything addressed to one event hangs
- * off that event's own URL — `/<slug>/data`, `/<slug>/settings`,
- * `/<slug>/users/<key>` — because the URL is the capability, and hanging those
- * off `/api` only ever hid that. `/api` keeps the global half, the list and the
- * create, and nothing else. The old `/api/events/<id>` spellings are gone
- * outright, with no compatibility shim, which is asserted rather than assumed.
- *
- * **What a response is.** A response is filed under the guest's user key and
- * carries the display name it was typed as. The zero-record invariant survives
- * the move intact (ARCHITECTURE.md § API): an event only ever contains
- * respondents with at least one entry, so a PUT whose `availability` and
- * `ifNeeded` are both empty deletes the response rather than storing a hollow
- * one, and is a no-op when there was nothing there. The DELETE endpoint is
- * public — the capability URL is the auth boundary — so a guest can clear their
- * own record without a session.
- *
- * **What an old file means.** Files written before keys existed are migrated on
- * read rather than by a script, so the last section writes one straight into
- * the temp dir in the pre-key shape and asks the API what it makes of it.
+ * The event-scoped HTTP surface end to end, against a real app and temp
+ * VAR_DIR: endpoints live on the event's own URL, the zero-record invariant
+ * holds (ARCHITECTURE.md § API), and pre-key files migrate on read.
  */
 import fs from "node:fs/promises";
 import path from "node:path";

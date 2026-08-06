@@ -21,20 +21,14 @@ import type { Request, Response } from "express";
 const MIN_PASSWORD_LENGTH = 8;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-/**
- * A failed login/setup attempt. Passwords are the weakest secret in the
- * system, so rejections go through the same per-IP tarpit (and pending cap)
- * as slug misses: serial, 100ms apiece, 429 past the cap. Successful auth is
- * never delayed.
- */
+/** Failed auth joins the same per-IP tarpit as slug misses; success is never delayed. */
 function authFailure(
   req: Request,
   res: Response,
   status: number,
   error: string,
 ): Promise<void> {
-  // The refusal and a coarse address prefix — never the email that was tried,
-  // which is a guess at the owner's identity and nobody else's business.
+  // Address prefix only — never the email that was tried.
   logWarn(`Auth failure from ${redactIp(clientIp(req))}: ${error}`);
   return tarpitMiss(req, res, () => {
     res.status(status).json({ error });

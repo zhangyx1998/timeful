@@ -1,59 +1,13 @@
 /**
- * Optional per-event realtime: two sockets, one room.
- *
- * A page holding an event open joins that event's room over one of two
- * upgrades, and every successful mutation broadcasts a **full hydrated
- * snapshot** to the room, so a second browser sees an answer land without
- * reloading. Joining is answered with the current snapshot too — a page that
- * reconnects after missing a broadcast has no other way to ask what it missed.
- * Deletion broadcasts `{ type: "gone" }`.
- *
- * **`GET /<slug>/ws` — the browse socket.** Read-only in the strictest sense
- * available: no `message` listener is ever registered on it, so no byte a
- * client sends reaches any state. Inbound data frames are read off the wire by
- * the protocol layer and dropped on the floor. It carries no identity, claims
- * nothing, and appears in no presence list. This invariant is not weakened by
- * anything below — the write path lives on a *different* socket, with a
- * different URL, that the server admits deliberately and one at a time.
- *
- * **`GET /<slug>/users/<userKey>` — the named write session.** This socket *is*
- * the edit session for that key. It accepts exactly one kind of frame,
- * `{ type: "save", displayName, availability, ifNeeded }`, and runs it through
- * `writeResponse` — the same function, not a copy of it, that the REST `PUT`
- * runs. Anything else inbound is ignored without closing the connection. The
- * key is also the room's presence identity, and the display name that rides in
- * the query is what a list renders beside it.
- *
- * **One session per key.** A second upgrade for a key that is already held is
- * accepted and then closed with `4409`; with `?takeover=1` the *incumbent* is
- * sent `{ type: "replaced" }`, closed with `4410`, and the newcomer takes its
- * place. There is no automatic reclaim. Exclusivity is a property of sessions,
- * so with realtime switched off — at either level — there are no sessions and
- * it is not enforced: the REST `PUT` is the write path, exactly as before.
- *
- * **It is optional, at two levels.** Each event carries a `realtime` flag the
- * owner sets in the edit dialog — absent means on, so no existing event file
- * has to be rewritten — and an event with it off is refused at the upgrade and
- * never broadcast to. Above that sits a server-wide kill switch
- * (`TIMEFUL_REALTIME`, config key `realtime`): with it off no upgrade listener
- * is registered at all and Node's default handling closes any upgrade attempt,
- * whatever the individual events say. Either way everything the app does still
- * works — the page falls back to the behaviour it had before this file
- * existed, REST for every read and every write, with zero feature loss.
- *
- * **The capability URL is still the whole of the auth boundary.** Subscribing
- * requires resolving the event's uuid or slug, exactly as `GET` does, and an
- * upgrade that fails to resolve goes through the *same* per-IP miss tarpit as
- * an HTTP miss (`missTarpit`, not a second copy of it) so neither socket is any
- * cheaper to scan than the endpoint beside it. Nothing here can enumerate
- * events, and no slug is ever logged.
+ * Per-event realtime rooms (ARCHITECTURE.md § Realtime). The browse socket is
+ * read-only — no `message` listener, ever; writes ride the per-key session
+ * socket through the REST PUT's own `writeResponse`. A failed slug resolution
+ * joins the same miss tarpit as HTTP, and no slug is ever logged.
  */
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
-// Runtime imports from `src/lib`, and deliberate exceptions to the type-only
-// rule in `server/types.ts`: "absent means on", what a client frame looks like,
-// and what a user key is are each a definition both halves must share exactly.
+// Runtime imports from `src/lib`: deliberate exceptions to the type-only rule in `server/types.ts`.
 import { publicEvent, realtimeAllowed } from "../src/lib/event.ts";
 import {
   CLOSE_OCCUPIED,
@@ -86,15 +40,7 @@ import type {
 /** How often the server pings an idle socket. */
 export const HEARTBEAT_MS = 30_000;
 
-/**
- * Largest frame accepted from a client before the connection is closed.
- *
- * A browse socket never reads a byte of it, so for that socket this is not a
- * protocol limit — only how much of a hostile frame is buffered before hanging
- * up. A write session does read its frames, and a save carrying two arrays of
- * up to 20000 ISO timestamps is far bigger than a kilobyte, so the cap is the
- * body limit the REST route already accepts: 2 MB, and no more generous.
- */
+/** Largest client frame: the REST body limit, and no more generous. */
 export const MAX_CLIENT_PAYLOAD = 2 * 1024 * 1024;
 
 /** `/<slug>/ws`, with an optional query, and nothing else. */
@@ -109,12 +55,7 @@ const EVENT_LOGS_PATH = /^\/([^/?#]+)\/logs(?:\?[^#]*)?$/;
 /** `/api/logs` — the global admin log stream. `/api` is global-only. */
 const GLOBAL_LOGS_PATH = /^\/api\/logs(?:\?[^#]*)?$/;
 
-/**
- * Longest display name accepted from the upgrade URL, matching the guest-name
- * limit the response routes enforce. Anything longer falls back to the key
- * rather than being truncated: a name silently shortened would put a stranger's
- * spelling in the list.
- */
+/** Matches the guest-name limit; longer falls back to the key rather than truncating. */
 const MAX_NAME_LENGTH = 100;
 
 // ---------------------------------------------------------------------------
@@ -123,22 +64,13 @@ const MAX_NAME_LENGTH = 100;
 
 interface Room {
   sockets: Set<WebSocket>;
-  /**
-   * Who holds a write session here, by key, and the socket that holds it.
-   *
-   * A map rather than a multiset, which is the whole of the exclusivity rule:
-   * one live session per (event, key), and the entry *is* the claim. A browse
-   * socket is in `sockets` and never in here.
-   */
+  /** One live session per (event, key); the entry *is* the claim. Browse sockets never appear. */
   sessions: Map<string, WebSocket>;
   /** The spelling to render for a key, as its session announced it. */
   displayNames: Map<string, string>;
 }
 
-/**
- * Rooms are keyed by the event's **uuid**, never its slug: a rename moves the
- * slug and must not orphan the subscribers who joined under the old one.
- */
+/** Keyed by uuid, never slug: a rename must not orphan subscribers. */
 const rooms = new Map<string, Room>();
 
 /** Sockets that have answered the most recent heartbeat ping. */
@@ -183,15 +115,13 @@ function leave(eventId: string, socket: WebSocket): boolean {
   claimed.delete(socket);
   let changed = false;
   if (key !== undefined && room.sessions.get(key) === socket) {
-    // Only when this socket is still the holder: a session it lost to a
-    // takeover belongs to somebody else now, and its close must not evict them.
+    // Only when still the holder: a taken-over session belongs to someone else now.
     room.sessions.delete(key);
     room.displayNames.delete(key);
     changed = true;
   }
   if (room.sockets.size === 0) {
     rooms.delete(eventId);
-    // Nobody is left to be told, so there is no change to announce.
     return false;
   }
   return changed;
@@ -209,8 +139,7 @@ export function presencePeople(eventId: string): PresenceEntry[] {
 function send(eventId: string, message: RealtimeMessage): void {
   const room = rooms.get(eventId);
   if (!room || room.sockets.size === 0) return;
-  // Serialised once for the whole room: the snapshot is the largest thing this
-  // server sends, and a busy event has every subscriber getting the same bytes.
+  // Serialised once for the whole room.
   const payload = JSON.stringify(message);
   for (const socket of room.sockets) {
     if (socket.readyState !== socket.OPEN) continue;
@@ -228,32 +157,14 @@ function broadcastPresence(eventId: string): void {
   send(eventId, { type: "presence", people: presencePeople(eventId) });
 }
 
-/**
- * Publishes the current state of an event to everyone watching it.
- *
- * Called after a mutation has been persisted, never before: subscribers must
- * not be told about a write that could still fail. The whole document goes out
- * — the same bytes `GET /<slug>/data` would return — so the client has one code
- * path for "the event changed" rather than one per kind of change.
- */
+/** Broadcasts the full public document; call only after the mutation has been persisted. */
 export function broadcastEvent(event: StoredEvent): void {
-  // An event with live updates switched off has no room to talk to — the
-  // check is here rather than at each of the call sites so there is no way to
-  // add another that forgets it.
+  // Checked here rather than at each call site so none can forget it.
   if (!realtimeAllowed(event)) return;
-  // "The same bytes `GET /<slug>/data` would return" includes what that route
-  // leaves out: a snapshot is a public copy of the document, and a broadcast
-  // reaches every browse socket on the event.
   send(event.id, { type: "event", event: publicEvent(event) as EventDoc });
 }
 
-/**
- * Turns an event's room off without saying the event is gone.
- *
- * This is what a `realtime: false` rename means: the event is still there and
- * still answerable over REST, so `gone` would be a lie. The subscribers are
- * simply hung up on; they will try to reconnect, be refused, and give up.
- */
+/** For `realtime: false` edits: the event still exists, so no `gone` — subscribers are just hung up on. */
 export function closeRoom(eventId: string): void {
   const room = rooms.get(eventId);
   if (!room) return;
@@ -261,12 +172,7 @@ export function closeRoom(eventId: string): void {
   for (const socket of room.sockets) socket.close(1000, "Live updates disabled");
 }
 
-/**
- * Tells an event's subscribers it no longer exists, then closes the room.
- *
- * Terminal in both directions: the client stops reconnecting on `gone`, and
- * there is nothing left here for a reconnect to resolve anyway.
- */
+/** Terminal: the client stops reconnecting on `gone`. */
 export function broadcastGone(eventId: string): void {
   send(eventId, { type: "gone" });
   const room = rooms.get(eventId);
@@ -294,15 +200,7 @@ export function sessionKeys(eventId: string): string[] {
 // the admin log streams
 // ---------------------------------------------------------------------------
 
-/**
- * Open log-viewer sockets — the admin's disposable view onto the in-memory
- * log buffers, global (`/api/logs`) or one event's (`/<slug>/logs`).
- *
- * Deliberately not rooms: a viewer belongs to no event's presence, blocks
- * nothing, and is never broadcast to. On connect the buffer is replayed in one
- * frame and live entries follow; the client closes when the panel does, and
- * there is no reconnect contract — it is a viewing session, not sync.
- */
+/** Admin log-viewer sockets: not rooms — replay then live entries, no reconnect contract. */
 const logViewers = new Set<WebSocket>();
 
 /** Test hook: how many log viewers are currently connected. */
@@ -315,53 +213,22 @@ export function logViewerCount(): number {
 // ---------------------------------------------------------------------------
 
 export interface RealtimeOptions {
-  /**
-   * Resolves a uuid-or-slug to an event, or null. Injected rather than imported
-   * so this module stays underneath the route layer — the same lookup the
-   * public `GET` uses, not a second copy of it.
-   */
+  /** Injected so this module stays under the route layer — the same lookup the public `GET` uses. */
   resolveEvent: (idOrSlug: string) => Promise<StoredEvent | null>;
-  /**
-   * Applies one guest's answer, validating it exactly as the REST `PUT` does —
-   * because it *is* what the REST `PUT` calls. Injected for the same reason as
-   * `resolveEvent`: one validator, one write path, no second copy to drift.
-   */
+  /** The REST `PUT`'s own validator and write path — injected, not copied. */
   writeResponse: (
     eventId: string,
     key: string,
     input: ResponseInput,
     origin: EditOrigin | null,
   ) => Promise<ResponseWrite>;
-  /**
-   * The address to record against a save made over this connection.
-   *
-   * Injected because resolving a forwarded chain is Express's job and an
-   * upgrade never reaches Express: `serve()` hands down a resolver built from
-   * the app's own `trust proxy` setting, and without one this falls back to
-   * the peer address, which is what the tarpit uses.
-   *
-   * Note that this is deliberately *not* what the tarpit counts by. A miss
-   * queue wants the address nobody can spoof; a log of where an answer was
-   * edited from wants the address a reverse proxy is forwarding, or every
-   * entry behind nginx reads `127.0.0.1`.
-   */
+  /** Address recorded on saves — the forwarded one; the tarpit deliberately counts by peer address. */
   clientIp?: (req: IncomingMessage) => string;
   /** Ping interval. Defaults to `HEARTBEAT_MS`; tests wind it on. */
   heartbeatMs?: number;
-  /**
-   * Whether the realtime event channel is served at all. With `false` only
-   * the admin log streams are: a `/<slug>/ws` or `/<slug>/users/<key>` upgrade
-   * is destroyed without resolving anything — the same closed door the absent
-   * listener used to be, behind one listener that still has to exist for the
-   * log streams. Defaults to true.
-   */
+  /** False serves only the admin log streams; event-channel upgrades are destroyed unresolved. */
   realtime?: boolean;
-  /**
-   * Whether the upgrade carries a valid admin session, for the log streams.
-   * Checked **before** the handshake is completed; an upgrade without one is
-   * destroyed exactly like any other refused upgrade. When absent, the log
-   * streams are off entirely — nothing can be verified, so nothing is served.
-   */
+  /** Checked before the handshake completes; absent means the log streams are off entirely. */
   verifyAdmin?: (req: IncomingMessage) => Promise<boolean>;
 }
 
@@ -370,16 +237,7 @@ export interface RealtimeServer {
   close(): Promise<void>;
 }
 
-/**
- * The client address for tarpit accounting.
- *
- * An upgrade never reaches Express, so there is no `req.ip` and no
- * trust-proxy evaluation to lean on: this is the peer on the other end of the
- * socket, full stop. Behind a reverse proxy that groups every client under the
- * proxy's address — which costs a shared 100ms queue on *misses only*, and
- * never slows a subscriber who named a real event. Unspoofable in exchange,
- * which for a scan counter is the better half of the trade.
- */
+/** Tarpit accounting wants the unspoofable peer address, not a forwarded one. */
 function peerAddress(req: IncomingMessage): string {
   return req.socket.remoteAddress || "unknown";
 }
@@ -393,37 +251,20 @@ interface Upgrade {
   takeover: boolean;
 }
 
-/**
- * Registers the upgrade listener on a running HTTP server.
- *
- * Call it only when realtime is enabled: when it is off, nothing is registered
- * and Node's own default (no `upgrade` listener means close the socket) is what
- * answers, which is exactly the behaviour wanted.
- */
 export function attachRealtime(server: Server, options: RealtimeOptions): RealtimeServer {
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: MAX_CLIENT_PAYLOAD,
-    // permessage-deflate stays off (ws's default): compression on attacker-
-    // controlled frames buys nothing here and costs memory per connection.
+    // permessage-deflate stays off: costs memory per connection on attacker-controlled frames.
   });
 
   server.on("upgrade", handleUpgrade);
 
   function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
-    // In dev, Vite's HMR WebSocket rides this same server (`server/dev.ts`
-    // hands it to `server.hmr.server`) and tags every upgrade with the
-    // `vite-hmr` subprotocol — Vite's fixed token, not configurable from the
-    // client. Those are Vite's to answer, whatever URL they arrive on, so the
-    // check comes before any parse and any destroy. It is conditioned on
-    // another listener actually sharing the server: when this listener is
-    // alone — production — behaviour is exactly what it was, tarpit and all,
-    // whatever protocol a client claims.
+    // Dev-only: Vite's HMR shares this server; defer only when another listener actually exists.
     if (server.listenerCount("upgrade") > 1 && isViteHmr(req)) return;
 
-    // The admin log streams, global and per-event. Parsed ahead of the event
-    // channel because `/api/logs` is not an event path at all, and `/logs` is
-    // a reserved sub-segment the event channel must never read as a slug.
+    // Parsed first: `/api/logs` is not an event path, and `/logs` must never be read as a slug.
     const logs = parseLogsUpgrade(req.url ?? "");
     if (logs) {
       void acceptLogs(req, socket, head, logs);
@@ -432,32 +273,19 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
 
     const target = parseUpgrade(req.url ?? "");
     if (!target) {
-      // Not ours. Claiming it would break anything else that shares this
-      // server — in dev, Vite's HMR listener — so only close it when there is
-      // provably nobody else who could answer.
+      // Not ours; only destroy when provably nobody else (dev HMR) could answer.
       if (server.listenerCount("upgrade") === 1) socket.destroy();
       return;
     }
     if (options.realtime === false) {
-      // The kill switch: the event channel is not served, and the door is as
-      // closed as the absent listener used to be — destroyed unresolved, so a
-      // scan learns nothing, hit or miss.
+      // Kill switch: destroyed unresolved, so a scan learns nothing, hit or miss.
       socket.destroy();
       return;
     }
     void accept(req, socket, head, target);
   }
 
-  /**
-   * An admin log-stream upgrade: verify the session cookie **before** the
-   * handshake completes, then — for an event stream — resolve the event.
-   *
-   * A refusal is `socket.destroy()`, the same hangup every other refused
-   * upgrade gets: an unauthenticated caller learns nothing, not even that the
-   * path exists. The event lookup runs only after the session verified, so it
-   * cannot be used to probe slugs — and a miss then is a stale admin tab, not
-   * a scan, refused without a tarpit like every admin route.
-   */
+  /** Session verified before the handshake and before the event lookup, so slugs cannot be probed. */
   async function acceptLogs(
     req: IncomingMessage,
     socket: Duplex,
@@ -514,14 +342,12 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
             eventId,
             (entry) => sendFrame({ type: "entry", entry }),
             () => {
-              // The event was deleted; the stream is over, in words first.
               sendFrame({ type: "gone" });
               ws.close(1000, "Event deleted");
             },
           );
 
-    // No `message` listener, like the browse socket: a viewer reads and never
-    // writes, so nothing a client sends here can reach any state.
+    // No `message` listener, like the browse socket: a viewer never writes.
     ws.on("close", () => {
       unsubscribe();
       logViewers.delete(ws);
@@ -537,14 +363,11 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
   ): Promise<void> {
     const event = await options.resolveEvent(target.idOrSlug);
     if (!event) {
-      // The refusal, with the address down to a prefix — never the URL, whose
-      // first segment is whatever slug the caller guessed at.
+      // Address only, never the URL — its first segment is a guessed slug.
       logWarn(
         `Refused a WebSocket upgrade for an unknown event from ${redactIp(peerAddress(req))}`,
       );
-      // The same queue an HTTP miss joins, so subscribing is no cheaper to scan
-      // than fetching. Over the per-IP cap, `enter` refuses without spending
-      // the delay and the socket goes immediately.
+      // The same queue an HTTP miss joins; over the per-IP cap, `enter` refuses without the delay.
       await missTarpit.enter(peerAddress(req));
       if (!socket.destroyed) socket.destroy();
       return;
@@ -552,12 +375,7 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
     // The client may have given up while the lookup or the delay ran.
     if (socket.destroyed) return;
 
-    // Live updates are off for this event. Refused with a plain 403 and *no*
-    // tarpit delay: whoever asked has already proved they hold the capability
-    // URL by naming an event that resolved, so this is not a scan and queueing
-    // it would only punish a page that is behaving. The browser cannot read
-    // the status — a failed upgrade is just a close to `WebSocket` — so the
-    // client gives up after a few refusals rather than on the code.
+    // Plain 403, no tarpit: naming an event that resolved already proved the capability.
     if (!realtimeAllowed(event)) {
       logInfo("Refused an upgrade: live updates are off for this event", {
         eventId: event.id,
@@ -568,11 +386,7 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
       return;
     }
 
-    // Read here and carried for the life of the connection. A `save` frame
-    // arriving twenty minutes later has no request behind it — there is no
-    // header to read and no socket lookup that would say anything the
-    // handshake did not already say — so where the session came from is
-    // decided once, when it was opened.
+    // Decided once at open: a later save frame has no request behind it.
     const origin: EditOrigin = {
       ip: options.clientIp?.(req) || peerAddress(req),
       userAgent: headerValue(req, "user-agent"),
@@ -595,15 +409,12 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
       alive.add(ws);
     });
     ws.on("error", () => {
-      // A socket that errors also closes; the room cleanup lives there. This
-      // handler exists so the error is not re-thrown as an uncaught exception.
+      // Exists so the error is not re-thrown as uncaught; room cleanup lives in `close`.
       alive.delete(ws);
     });
 
     if (target.key === null) {
-      // The browse socket. No `message` listener, deliberately and permanently:
-      // this one is a read-only channel and a client's bytes must never reach
-      // any state. See the module header.
+      // The browse socket: no `message` listener, deliberately and permanently.
       joinAndWatch(ws, event, null);
       return;
     }
@@ -612,31 +423,23 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
     const incumbent = room?.sessions.get(target.key);
     if (incumbent && incumbent.readyState === incumbent.OPEN) {
       if (!target.takeover) {
-        // Occupied, and nobody asked to evict anyone. The handshake has already
-        // completed, which is the point: a close code is readable by the
-        // browser where an HTTP status on a refused upgrade is not. The socket
-        // never joins the room, so nothing about the incumbent changes.
+        // Closed after the handshake: a close code is readable by the browser where a refused-upgrade status is not.
         logInfo(`Refused a second write session for "${target.key}": occupied`, {
           eventId,
         });
         ws.close(CLOSE_OCCUPIED, "occupied");
         return;
       }
-      // A takeover the page asked for after being told the key was busy. The
-      // incumbent is told in words before it is hung up on, so its own page can
-      // say what happened rather than showing a dropped connection.
       logInfo(`Write session for "${target.key}" taken over`, { eventId });
       sendTo(incumbent, { type: "replaced" });
-      // Dropped from the map first: the incumbent's `close` handler then sees a
-      // session it no longer holds and leaves the newcomer's claim alone.
+      // Dropped from the map first, so the incumbent's `close` handler leaves the newcomer's claim alone.
       room?.sessions.delete(target.key);
       incumbent.close(CLOSE_REPLACED, "replaced");
     }
 
     joinAndWatch(ws, event, { key: target.key, displayName: target.displayName });
 
-    // The one inbound path in this file, and the only one there will be: a
-    // save, validated by the REST route's own validator.
+    // The one inbound path: a save, validated by the REST route's own validator.
     ws.on("message", (data) => {
       void onSave(ws, eventId, target.key as string, data, origin);
     });
@@ -650,27 +453,16 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
     const eventId = snapshot.id;
     const changed = join(eventId, ws, session);
 
-    // Whoever just arrived may have been away through somebody else's save —
-    // a laptop lid closed, a server restart — and the room's snapshot goes out
-    // on mutations only, so a page that missed one has no way to ask for it.
-    // Joining is answered with the document as it stands: the same public copy
-    // `broadcastEvent` sends, stripped of `lastEdit` like every other frame a
-    // browse socket can see.
+    // Joining is answered with the current public snapshot — a reconnect has no other way to catch up.
     sendTo(ws, { type: "event", event: publicEvent(snapshot) as EventDoc });
 
-    // Whoever just arrived is told who is here, straight away — a list that
-    // only fills in when the next person moves would be a list you cannot
-    // trust. When their own claim is new to the room that is the same message
-    // everybody else needs, so it goes to the room and they read it there
-    // rather than getting a second copy of it.
+    // New arrivals get presence immediately; a new claim goes to the whole room instead.
     if (changed) broadcastPresence(eventId);
     else sendTo(ws, { type: "presence", people: presencePeople(eventId) });
 
     ws.on("close", () => {
       alive.delete(ws);
-      // Covers being reaped by the heartbeat as well: `terminate()` closes the
-      // socket, so there is one path out of a room however the exit was
-      // decided.
+      // Also covers heartbeat reaping: `terminate()` closes, so there is one path out of a room.
       if (leave(eventId, ws)) broadcastPresence(eventId);
     });
   }
@@ -682,13 +474,10 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
     data: unknown,
     origin: EditOrigin,
   ): Promise<void> {
-    // A frame that is not a save is dropped in silence. Closing on it would
-    // punish a client from a future version of this app for speaking a word
-    // this one has not learned yet, and there is nothing to gain by it.
+    // Non-save frames are dropped in silence — a future client's new word is not a reason to close.
     const message = parseSaveMessage(frameText(data));
     if (!message) return;
-    // The claim can have been taken over between the frame being sent and it
-    // being read. The session is no longer this socket's to write through.
+    // The claim may have been taken over since the frame was sent.
     if (rooms.get(eventId)?.sessions.get(key) !== ws) return;
 
     try {
@@ -703,13 +492,10 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
         return;
       }
       sendTo(ws, { type: "saved" });
-      // A clear that cleared nothing changed nothing, and a room should only
-      // ever be woken for something that actually happened.
+      // A no-op clear must not wake the room.
       if (changed && event) broadcastEvent(event);
     } catch (err) {
-      // The same message the REST PUT would have answered with, because it is
-      // the same validator that produced it. A 5xx says nothing useful to a
-      // guest, so it does not travel.
+      // The REST PUT's own message; 5xx text never travels to a guest.
       const status = statusOf(err) ?? 500;
       const detail = err instanceof Error ? err.message : "";
       sendTo(ws, {
@@ -719,10 +505,7 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
     }
   }
 
-  // A connection through a proxy that has stopped forwarding looks exactly like
-  // an idle one, so the server asks: ping every round, terminate anything that
-  // did not answer the previous one. Unref'd — a heartbeat is not a reason for
-  // the process to stay alive.
+  // A dead proxy looks idle: ping every round, terminate what missed the last. Unref'd.
   const heartbeat = setInterval(() => {
     for (const room of rooms.values()) {
       for (const ws of room.sockets) {
@@ -734,8 +517,7 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
         ws.ping();
       }
     }
-    // Log viewers are reaped by the same rule: a dialog that vanished with its
-    // network must not hold a subscription to the log forever.
+    // Log viewers are reaped by the same rule.
     for (const ws of logViewers) {
       if (!alive.has(ws)) {
         ws.terminate();
@@ -760,11 +542,7 @@ export function attachRealtime(server: Server, options: RealtimeOptions): Realti
   };
 }
 
-/**
- * True when the upgrade names the `vite-hmr` subprotocol. The header is a
- * comma-separated offer list, so it is split and compared token by token
- * rather than substring-matched.
- */
+/** The header is a comma-separated offer list: compared token by token, never substring-matched. */
 function isViteHmr(req: IncomingMessage): boolean {
   return headerValue(req, "sec-websocket-protocol")
     .split(",")
@@ -801,14 +579,7 @@ function parseLogsUpgrade(url: string): LogsUpgrade | null {
   return { scope: "event", idOrSlug };
 }
 
-/**
- * What an upgrade URL is asking for, or null when it is not ours.
- *
- * Two shapes and no others: `/<slug>/ws` is the browse socket, and
- * `/<slug>/users/<userKey>` is the write session for that key. The key is
- * re-normalized out of the path exactly as the REST route re-normalizes it, so
- * one person cannot hold two sessions by spelling their own key two ways.
- */
+/** The key is re-normalized exactly as the REST route does, so two spellings cannot hold two sessions. */
 function parseUpgrade(url: string): Upgrade | null {
   const browse = BROWSE_PATH.exec(url);
   if (browse) {
@@ -842,17 +613,7 @@ function parseQuery(query: string | undefined): URLSearchParams | null {
   }
 }
 
-/**
- * The spelling this connection wants shown for its key, or null.
- *
- * Self-asserted, and nothing rests on it being true: it decides which letters
- * appear beside a pair of dots, and anyone holding the capability URL could
- * already write a response under any name they liked (§ Security — the URL is
- * the trust boundary). So it is validated for shape only — trimmed, and dropped
- * if it is empty or longer than a name may be — and never for identity. The key
- * in the path, which *is* load-bearing, is normalized separately and is not
- * taken from here.
- */
+/** Self-asserted display name: validated for shape only, never identity; the load-bearing key comes from the path. */
 function assertedName(query: URLSearchParams | null): string | null {
   const raw = query?.get("name");
   if (raw === null || raw === undefined) return null;

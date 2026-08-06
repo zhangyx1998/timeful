@@ -1,24 +1,12 @@
 /**
- * The push subscription store: `var/push.json` through the storage layer.
- *
- * One file for all events rather than a field on the event document, because
- * the event document is public to every link-holder — it is inlined into the
- * SSR page byte for byte — and an endpoint URL is a capability to message
- * somebody's browser. Keeping subscriptions out of the document means no new
- * exception to `publicEvent` and nothing new that could leak through it.
- *
- * Endpoints are treated like session tokens: stored, matched, pruned — never
- * logged, never served.
+ * `var/push.json` via the storage layer. Kept out of the event document, which
+ * is public to every link-holder; endpoints are treated like session tokens —
+ * never logged, never served.
  */
 import { readPushStore, updatePushStore } from "../storage.ts";
 import type { PushRole, PushSubscriptionRecord } from "../types.ts";
 
-/**
- * A ceiling per event, so a link-holder cannot grow `var/push.json` without
- * bound: the endpoint is attacker-suppliable and the route is public by
- * design. Generous — an event with two hundred subscribed browsers is a
- * hundred-person event where everybody subscribed twice.
- */
+/** Ceiling per event: the endpoint is attacker-suppliable and the route is public by design. */
 export const MAX_SUBSCRIPTIONS_PER_EVENT = 200;
 
 /** One browser, one role, one event: the identity a subscription upserts on. */
@@ -33,10 +21,7 @@ function matches(
   );
 }
 
-/**
- * Adds or replaces a subscription. Returns false when the event is at its
- * ceiling and this endpoint is not already among the subscribers.
- */
+/** Upserts; false when the event is at its ceiling and the endpoint is new. */
 export async function saveSubscription(
   record: PushSubscriptionRecord,
 ): Promise<boolean> {
@@ -80,10 +65,7 @@ export async function subscriptionsFor(
   );
 }
 
-/**
- * Drops endpoints a push service has declared dead (404/410 on delivery) —
- * across every event, because a gone browser is gone for all of them.
- */
+/** Drops dead endpoints across every event — a gone browser is gone for all of them. */
 export function pruneEndpoints(endpoints: ReadonlySet<string>): Promise<unknown> {
   if (endpoints.size === 0) return Promise.resolve();
   return updatePushStore((store) => {

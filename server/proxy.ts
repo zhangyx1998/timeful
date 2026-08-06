@@ -1,15 +1,6 @@
 /**
- * `--trusted-proxy=<ip-or-cidr>[,...]` — which peer addresses may speak
- * `X-Forwarded-For` / `X-Forwarded-Proto` for someone else.
- *
- * Default is loopback (`127.0.0.1`, `::1`): the intended deployment is nginx
- * on the same host. `--trusted-proxy=none` turns XFF trust off entirely.
- * Only literal IPs and CIDR ranges are accepted — a hostname would have to be
- * resolved at request time, which is neither cheap nor trustworthy.
- *
- * The parsed value goes straight into Express `trust proxy`, which makes
- * `req.ip` the rightmost entry of the forwarded chain that is not itself
- * trusted, and `req.protocol`/`req.secure` follow `X-Forwarded-Proto`.
+ * `--trusted-proxy` parsing: which peers may speak X-Forwarded-*. Literal IPs
+ * and CIDRs only — a hostname would need per-request resolution.
  */
 import net from "node:net";
 
@@ -46,11 +37,7 @@ function entryProblem(entry: string): string | null {
   return null;
 }
 
-/**
- * Validates raw trusted-proxy values, from wherever they came: the CLI flag,
- * `timeful.config.json`, or a wizard answer. Each value may itself be a
- * comma-separated list. Throws `TrustedProxyError` on anything malformed.
- */
+/** Each value may itself be a comma-separated list; throws `TrustedProxyError`. */
 export function parseTrustedProxyValue(
   value: string | readonly string[],
 ): TrustProxySetting {
@@ -74,10 +61,7 @@ export function parseTrustedProxyValue(
   return entries;
 }
 
-/**
- * Reads every `--trusted-proxy` occurrence from `argv` (both `--flag=value`
- * and `--flag value` forms). Throws `TrustedProxyError` on a bad value.
- */
+/** Reads every occurrence, in both `--flag=value` and `--flag value` forms. */
 export function parseTrustedProxies(argv: readonly string[]): TrustProxySetting {
   const raw: string[] = [];
   for (let i = 0; i < argv.length; i += 1) {

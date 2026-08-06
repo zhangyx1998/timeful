@@ -1,10 +1,4 @@
-/**
- * Shared test doubles for the CLI's tests.
- *
- * Not a `*.test.ts` file, so vitest never collects it as a suite; and the CLI
- * bundle is built from `server/cli/index.ts` alone, so nothing here can reach
- * `dist`.
- */
+/** Shared test doubles. Not `*.test.ts`, so vitest never collects it; the bundle is built from index.ts alone, so nothing here reaches dist. */
 import { PassThrough, Writable } from "node:stream";
 import {
   formatCommand,
@@ -14,27 +8,15 @@ import {
 } from "./service.ts";
 import type { Tty } from "./tui.ts";
 
-/**
- * Pacing for the post-start watch that probes immediately and never sleeps.
- * Handed to `installService`/`upgradeWebroot` in tests, which would otherwise
- * spend real seconds watching a fake service.
- */
+/** Post-start watch pacing that never sleeps. */
 export const noWait: VerifyOptions = { sleep: async () => {} };
 
 export interface FakeHostOptions {
   /** Files already on disk before the test starts: path -> contents. */
   seed?: Record<string, string>;
-  /**
-   * Paths that exist without readable contents, on top of `seed`'s. A unit
-   * file can be present on the machine without this host having its text —
-   * `serviceStatus`'s installed check depends on exactly that.
-   */
+  /** Paths that exist without readable contents, on top of `seed`'s. */
   existing?: string[];
-  /**
-   * Permission bits by path, for the traversal check. A path not listed here
-   * cannot be statted (mode() answers null), which the check lets through —
-   * so tests only name the directories whose modes they mean to assert on.
-   */
+  /** Permission bits by path; unlisted paths stat as null, which the traversal check lets through. */
   modes?: Record<string, number>;
   which?: (binary: string) => boolean;
   /** Fail (exit 3) every command whose formatted form contains this string. */
@@ -48,8 +30,7 @@ export function fakeHost(options: FakeHostOptions = {}) {
   const files = new Map(Object.entries(options.seed ?? {}));
   const ran: ServiceCommand[] = [];
   const lines: string[] = [];
-  // Existence is tracked apart from contents, seeded from the union of both
-  // options, so a seeded file exists and a bare `existing` path reads as null.
+  // A seeded file exists; a bare `existing` path reads as null.
   const existing = new Set([...files.keys(), ...(options.existing ?? [])]);
   const host: ServiceHost = {
     dryRun: options.dryRun,
@@ -81,9 +62,7 @@ export function fakeHost(options: FakeHostOptions = {}) {
       }
       ran.push(cmd);
       const failed = options.fail && formatCommand(cmd).includes(options.fail);
-      // The success stdout does double duty: `readRunReport` has no
-      // `ActiveState=` line to find, so its first word becomes the state
-      // ("running"), and the whole line becomes `status.report`.
+      // readRunReport takes the first word as the state; the whole line becomes status.report.
       return { code: failed ? 3 : 0, stdout: failed ? "" : "active (running)", stderr: "" };
     },
     async which(binary) {
@@ -96,16 +75,7 @@ export function fakeHost(options: FakeHostOptions = {}) {
   return { host, files, ran, text: () => lines.join("\n") };
 }
 
-/**
- * A scripted stdin that is a pipe, answering one prompt at a time, plus a
- * transcript of everything that was printed.
- *
- * Answers are fed reactively rather than all at once: readline hands over a
- * single line per `question()` and leaves the rest of an already-buffered
- * chunk sitting in its internal buffer, so a stdin written up front would
- * stall after the first answer. Waiting for each prompt is also what a person
- * does. A prompt is recognisable as the only output with no trailing newline.
- */
+/** A scripted piped stdin, one answer per prompt — a stdin written up front stalls in readline's buffer after the first line. A prompt is the only output with no trailing newline. */
 export function scripted(answers: string[], endWhenExhausted = false) {
   const queue = [...answers];
   const input = new PassThrough();
@@ -116,8 +86,7 @@ export function scripted(answers: string[], endWhenExhausted = false) {
       written.push(line);
       if (line.endsWith("\n")) return callback();
       const next = queue.shift();
-      // Out of answers: either close the input (to exercise EOF) or leave the
-      // prompt waiting, which fails the test rather than hiding a stray prompt.
+      // Out of answers: close the input to exercise EOF, or leave the prompt waiting to fail the test.
       if (next === undefined) {
         if (endWhenExhausted) setImmediate(() => input.end());
         return callback();

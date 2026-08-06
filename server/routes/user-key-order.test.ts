@@ -1,15 +1,7 @@
 /**
- * Pins the order of key validation against slug resolution on the two guest
- * record routes, `PUT`/`DELETE /<slug>/users/<userKey>`: **the user key is
- * validated BEFORE the slug resolves.**
- *
- * The order is load-bearing and nothing else asserts it. An illegal key is a
- * fast `400` on the request's own merits. Were the slug resolved first, an
- * illegal key under an unknown slug would flip into a tarpitted `404`
- * (ARCHITECTURE.md § The tarpit — the queue is for slug *misses*, not for
- * requests that disqualified themselves), and one under a valid slug would
- * cost a links and event read before being refused. The route wrapper that
- * owns the order is `publicUserRoute` in `routes/events.ts`.
+ * Pins that the user key validates BEFORE the slug resolves on the guest
+ * record routes — load-bearing order nothing else asserts (`publicUserRoute`
+ * in routes/events.ts; ARCHITECTURE.md § The tarpit).
  */
 import fs from "node:fs/promises";
 import os from "node:os";

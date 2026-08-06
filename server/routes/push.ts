@@ -1,21 +1,8 @@
 /**
- * Web Push endpoints: the global public key, and each event's subscriptions.
- *
- * `GET /api/push/public-key` is global because the VAPID pair is global —
- * one server, one signing identity, whatever event a browser subscribes from —
- * which is exactly the `/api` rule (ARCHITECTURE.md § API): global state lives
- * under `/api`, event state lives on the event's path. It is public because a
- * public key is public by definition and a respondent subscribing from an
- * event page has no session to show.
- *
- * `PUT`/`DELETE /<slug>/push` are event-scoped because a subscription is a
- * fact about one event: who to tell, and about what. Subscribing as the
- * **owner** requires the admin session on top of the URL; subscribing as a
- * **respondent** is public by the same contract as answering — the capability
- * URL is the boundary, and a subscription only ever causes notifications to
- * the browser that minted the keys in it. Unsubscribing needs no session in
- * either role: the endpoint being removed is itself a secret only the
- * subscribing browser ever held, so naming it is proof enough.
+ * Web Push endpoints. The public key is global (ARCHITECTURE.md § API);
+ * subscriptions are event-scoped. Owner subscribe needs the admin session;
+ * respondent subscribe is public like answering. Unsubscribe needs no session:
+ * the endpoint itself is a secret only the subscribing browser ever held.
  */
 import { Router } from "express";
 import type { Request, Response } from "express";
@@ -29,9 +16,7 @@ import {
 } from "../push/subscriptions.ts";
 import { tarpitMiss } from "../tarpit.ts";
 import type { PushRole, PushSubscriptionKeys, StoredEvent } from "../types.ts";
-// Runtime, the same import the response routes make: a key claimed in a body
-// is re-normalized exactly like a key in a path, so no caller can invent a
-// second spelling of one person.
+// Runtime: a key claimed in a body is re-normalized exactly like a key in a path.
 import { userKeyFromParam } from "../../src/lib/user-key.ts";
 import { resolveEvent } from "./events.ts";
 
@@ -50,13 +35,7 @@ const MAX_ENDPOINT_LENGTH = 2048;
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
-/**
- * The push service URL, as the browser handed it out. HTTPS only — a browser
- * never mints anything else — with plain HTTP allowed on loopback so that
- * development and the delivery tests do not need a certificate authority.
- * This is the one URL in the application the server will POST to that a
- * client chose, so the check is strict rather than polite.
- */
+/** HTTPS only (plain HTTP on loopback for dev/tests): the one client-chosen URL the server POSTs to, so strict. */
 function requireEndpoint(value: unknown): string {
   if (typeof value !== "string" || !value || value.length > MAX_ENDPOINT_LENGTH)
     throw new BadRequest("A push endpoint URL is required");
@@ -96,9 +75,7 @@ function requireRole(value: unknown): PushRole {
 // routes
 // ---------------------------------------------------------------------------
 
-// GET /api/push/public-key — public. Minting on first ask is what "generated
-// on first use" means; from then on the stored pair is the answer, because a
-// subscription is bound to the key it was created against.
+// GET /api/push/public-key — public; minted on first ask, then the stored pair is the answer.
 pushRouter.get("/push/public-key", async (_req: Request, res: Response) => {
   const record = await ensureVapidKeys();
   res.json({ key: record.publicKey });
@@ -133,9 +110,7 @@ async function putSubscription(
 
   let userKey: string | undefined;
   if (role === "owner") {
-    // The owner's subscription is behind the login wall like every owner
-    // tool: the capability URL says you may answer, not that you are the one
-    // to be told when answers change.
+    // Owner subscriptions sit behind the login wall like every owner tool.
     if (!(await loadSession(req))) {
       res.status(401).json({ error: "Not authenticated" });
       return;
@@ -157,16 +132,14 @@ async function putSubscription(
     createdAt: new Date().toISOString(),
   });
   if (!saved) {
-    // The per-event ceiling (see subscriptions.ts). 429 rather than 400: the
-    // request was well-formed, there is simply no room left.
+    // The per-event ceiling; 429 — the request was well-formed, there is simply no room.
     res.status(429).json({ error: "Too many subscriptions for this event" });
     return;
   }
   res.json({ ok: true });
 }
 
-// DELETE /<slug>/push — unsubscribe this browser, in one role. Idempotent:
-// a subscription that was already pruned server-side is still a success.
+// DELETE /<slug>/push — unsubscribe this browser, in one role. Idempotent.
 async function deleteSubscription(
   req: Request,
   res: Response,

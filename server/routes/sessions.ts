@@ -10,9 +10,7 @@ import { param } from "../http.ts";
 import { readSessions } from "../storage.ts";
 import type { SessionInfo } from "../types.ts";
 
-// NOTE: this router is mounted at /api alongside the others, so auth must be
-// attached per route — a router-level `use(requireAdmin)` would gate every
-// /api request, including the public event endpoints.
+// Mounted at /api alongside the others: a router-level `use(requireAdmin)` would gate every /api request.
 export const sessionsRouter = Router();
 
 // GET /api/sessions

@@ -1,21 +1,4 @@
-/**
- * The CLI's terminal UI, hand-rolled.
- *
- * The published package declares no runtime dependencies, so the arrow-key list
- * below is a few hundred lines of ANSI and `node:readline` rather than an
- * import. Every prompt has two modes:
- *
- *  - **interactive** — stdin is a TTY, so raw mode plus keypress events drive a
- *    redrawn list; Enter confirms, Ctrl+C restores the terminal and exits 130.
- *  - **line** — stdin is a pipe, so the same question is asked as a numbered
- *    prompt that a script (or a test) answers with one line.
- *
- * Line mode is a genuine degradation, not a fallback nobody uses: it is how the
- * wizard is driven under test. What it is *not* is a way to answer a question
- * with nobody there — anything that needs a person checks `isInteractive` first
- * and fails with an explicit-argument hint rather than hanging (see the callers
- * in index.ts).
- */
+/** Hand-rolled TUI — the package declares no runtime dependencies. Raw-mode prompts on a TTY, line mode on a pipe (how the wizard is tested); callers check isInteractive rather than hang. */
 import { emitKeypressEvents } from "node:readline";
 import { createInterface } from "node:readline/promises";
 import { CliError } from "./errors.ts";
@@ -45,12 +28,10 @@ export class CancelledError extends CliError {
   }
 }
 
-/** True when a person can actually see and answer a redrawn prompt. */
 export function isInteractive(io: Tty): boolean {
   return Boolean(io.input.isTTY) && typeof io.input.setRawMode === "function";
 }
 
-/** The process's own streams as a `Tty`. */
 export function stdio(): Tty {
   return { input: process.stdin, output: process.stdout };
 }
@@ -72,14 +53,7 @@ const SHOW_CURSOR = "\x1b[?25h";
 // line input
 // ---------------------------------------------------------------------------
 
-/**
- * One line from `io.input`, with the terminal editing readline gives us for
- * free. A closed input rejects instead of hanging forever — a piped stdin that
- * runs out mid-question is the normal way that happens.
- *
- * The interface is created and closed per question rather than held open for a
- * whole flow, because raw-mode prompts take the same stream over in between.
- */
+/** A closed input rejects instead of hanging; the interface is per question because raw-mode prompts take the stream over in between. */
 export async function question(io: Tty, prompt: string): Promise<string> {
   if ((io.input as { readableEnded?: boolean }).readableEnded) throw new InputEndedError();
   const rl = createInterface({ input: io.input, output: io.output });
@@ -193,10 +167,6 @@ export interface SelectRequest<T> {
   other?: OtherOption<T>;
 }
 
-/**
- * One choice out of a list. Returns the chosen option's value, or whatever
- * `other.parse` made of a typed answer.
- */
 export async function select<T>(io: Tty, request: SelectRequest<T>): Promise<T> {
   if (request.options.length === 0 && !request.other)
     throw new CliError("Nothing to choose from.");
@@ -338,12 +308,7 @@ export function say(io: Tty, line = ""): void {
   io.output.write(`${line}\n`);
 }
 
-/**
- * Replaces the previous `height` lines with `lines`, and reports the new
- * height. Every line is clipped to the terminal width first: a line that wraps
- * occupies two rows, and the cursor arithmetic would then rub out the wrong
- * ones.
- */
+/** Replaces the previous `height` lines; callers pre-clip, since a wrapped line breaks the cursor arithmetic. */
 function frame(io: Tty, lines: string[], height: number): number {
   erase(io, height);
   io.output.write(`${lines.join("\n")}\n`);
@@ -381,15 +346,7 @@ function guardExit(key: Key): void {
   if (key.ctrl && key.name === "d") throw new InputEndedError();
 }
 
-/**
- * Feeds keypresses to `handle` until it returns something other than PENDING.
- *
- * Raw mode is turned on for the duration and off again however the session
- * ends — resolved, rejected or thrown — because a terminal left in raw mode
- * after the process exits is unusable. The stream is paused on the way out so
- * the keypress decoder, which stays attached for the life of the stream, does
- * not swallow input meant for the next readline interface.
- */
+/** Raw mode is always restored, and the stream paused on the way out so the keypress decoder does not swallow input meant for the next readline interface. */
 function keySession<T>(io: Tty, handle: (key: Key) => T | typeof PENDING): Promise<T> {
   const input = io.input;
   emitKeypressEvents(input as NodeJS.ReadableStream);

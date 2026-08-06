@@ -1,30 +1,8 @@
 /**
- * The in-memory server log: what the owner can see about their own server.
- *
- * Two kinds of ring buffer, and nothing else. A **global** buffer of the last
- * `GLOBAL_LOG_CAPACITY` entries, and a **per-event** buffer of the last
- * `EVENT_LOG_CAPACITY` for each event that has had something logged against it
- * (dropped when the event is deleted). Nothing is persisted to disk, and
- * nothing new is written to stdout or the journal — the buffers are a richer,
- * admin-only view beside whatever the existing `console` output already says.
- *
- * **Redaction rules** (ARCHITECTURE.md § Security):
- *
- * - An event **slug never enters the global buffer** — a slug is the
- *   capability that protects its event, and the global log must be safe to
- *   read aloud. Uuids are fine; an entry about one event is tagged with its
- *   uuid and the per-event buffer holds a copy.
- * - A **push endpoint is never logged at all**, in either buffer — it is a
- *   capability to message somebody's browser, treated exactly like a session
- *   token. Callers log the endpoint's **host** only (`endpointHost`).
- * - A client **IP is redacted to a coarse prefix** (`redactIp`) wherever one
- *   is worth mentioning — enough to see a pattern, not enough to name a guest.
- * - A **request path is redacted** (`redactPath`) before it is logged: the
- *   first segment of an event-scoped path is the slug unless it is a uuid,
- *   so anything that is not `/api/*` or a uuid is replaced with `:event`.
- *
- * This module deliberately imports nothing from the rest of the server, so
- * anything — storage, routes, the realtime layer — can log without a cycle.
+ * In-memory ring buffers, global and per-event; nothing persisted. Redaction
+ * (ARCHITECTURE.md § Security): slugs never enter the global buffer, push
+ * endpoints are logged as host only, IPs and paths are redacted. Leaf module —
+ * imports nothing from the server, so anything can log without a cycle.
  */
 import type { LogEntry, LogLevel } from "../src/lib/logs.ts";
 
@@ -106,11 +84,7 @@ export function eventLogEntries(eventId: string): LogEntry[] {
   return [...(eventBuffers.get(eventId) ?? [])];
 }
 
-/**
- * Forgets an event's buffer and tells its watchers the stream is over. Called
- * when the event is deleted: a buffer for a document that no longer exists is
- * not history, it is a leak with a timer on it.
- */
+/** Called on event deletion; a buffer for a deleted event is a leak. */
 export function dropEventLog(eventId: string): void {
   eventBuffers.delete(eventId);
   const listeners = eventListeners.get(eventId);
@@ -159,15 +133,10 @@ export function resetLog(): void {
 // redaction
 // ---------------------------------------------------------------------------
 
-// Local copy of storage.ts's rule, so this module can stay a leaf: storage
-// logs its own write failures through here, and an import back the other way
-// would be a cycle.
+// Local copy of storage.ts's rule: this module must stay a leaf.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/**
- * A client address reduced to a coarse prefix — enough to see one address
- * misbehaving repeatedly, not enough to identify a guest from the log.
- */
+/** Coarse prefix — enough to see a repeat offender, not to identify a guest. */
 export function redactIp(ip: string): string {
   if (!ip) return "unknown";
   if (ip.includes(".")) {
@@ -180,10 +149,7 @@ export function redactIp(ip: string): string {
   return `${groups[0] ?? "x"}:${groups[1] ?? "x"}:…`;
 }
 
-/**
- * The host of a push endpoint, and never more of it: the full URL is a
- * capability to message somebody's browser, treated like a session token.
- */
+/** Host only: the full endpoint URL is a capability, treated like a session token. */
 export function endpointHost(endpoint: string): string {
   try {
     return new URL(endpoint).host || "invalid-endpoint";
@@ -192,13 +158,7 @@ export function endpointHost(endpoint: string): string {
   }
 }
 
-/**
- * A request path made safe for the global buffer. `/api/*` and `/` pass
- * through; anything else starts with a slug-or-uuid segment, and a slug must
- * not be logged — it is replaced with `:event`, while a uuid (harmless without
- * the login it already requires) is kept, since it is what ties the entry to
- * its event.
- */
+/** The first segment of a non-/api path is a slug unless it is a uuid; slugs become ":event". */
 export function redactPath(path: string): string {
   if (path === "/" || path === "/api" || path.startsWith("/api/")) return path;
   const segments = path.split("/");
@@ -207,10 +167,7 @@ export function redactPath(path: string): string {
   return segments.join("/");
 }
 
-/**
- * The first line of a stack trace that names a call site. The first line of
- * `err.stack` restates the message; the one after it says where.
- */
+/** First "at " line: `err.stack`'s first line only restates the message. */
 export function stackHead(stack: string | undefined): string | undefined {
   if (!stack) return undefined;
   const site = stack

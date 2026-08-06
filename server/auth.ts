@@ -1,9 +1,4 @@
-/**
- * Password hashing (scrypt) and session tokens.
- *
- * There is exactly one account: the owner. Credentials live in
- * var/credential.json, sessions in var/sessions.json.
- */
+/** Password hashing (scrypt) and session tokens for the single owner account. */
 import crypto from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import {
@@ -189,23 +184,13 @@ export function cookieParser(req: Request, _res: Response, next: NextFunction): 
   next();
 }
 
-/**
- * The session token in a raw `Cookie` header, or null.
- *
- * For the WebSocket upgrade path, which never reaches Express and so never
- * runs the middleware above: an admin-only upgrade has to read the same cookie
- * the routes read, from the handshake's own headers.
- */
+/** For the WebSocket upgrade path, which never runs the cookie middleware. */
 export function sessionTokenFromHeader(header: string | undefined): string | null {
   const token = parseCookieHeader(header)[COOKIE_NAME];
   return typeof token === "string" && token ? token : null;
 }
 
-/**
- * `req.secure` already accounts for `X-Forwarded-Proto`, but only when the
- * request came from a trusted proxy (see `server/proxy.ts`). Never read the
- * header directly: any client can send it.
- */
+/** `req.secure` honours X-Forwarded-Proto only from a trusted proxy; never read the header directly. */
 function isSecureRequest(req: Request): boolean {
   return req.secure;
 }

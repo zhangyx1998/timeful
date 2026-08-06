@@ -1,9 +1,6 @@
 /**
- * The one outbound call in the app, and the comparison that decides what to
- * say about its answer.
- *
- * Nothing here touches the network: the registry is a stub, because a test that
- * needed npm to be up would be a test that failed on a train.
+ * Registry lookup and version comparison. Nothing touches the network: the
+ * registry is a stub.
  */
 import { describe, expect, it } from "vitest";
 import {

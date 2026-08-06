@@ -1,9 +1,6 @@
 /**
- * The receiving half of Web Push, for tests only: what a browser (and the push
- * service in front of it) does with what `crypto.ts` produces. Living here
- * rather than in a `.test.ts` file so the route tests can prove the full
- * subscribe → trigger → deliver round-trip decrypts with the subscription's
- * own keys, without importing a test file into another test file.
+ * The browser's half of Web Push, for tests: lives here so route tests can
+ * prove the round-trip without importing a test file into another test file.
  */
 import crypto from "node:crypto";
 import { toBase64Url } from "./crypto.ts";
@@ -39,10 +36,7 @@ function hkdf(salt: Buffer, ikm: Buffer, info: Buffer, length: number): Buffer {
   return Buffer.from(crypto.hkdfSync("sha256", ikm, salt, info, length));
 }
 
-/**
- * Decrypts a complete `aes128gcm` message with the subscription's keys —
- * RFC 8291 § 3 run in reverse, delimiter and padding stripped.
- */
+/** RFC 8291 § 3 run in reverse, delimiter and padding stripped. */
 export function decryptPayload(
   message: Buffer,
   userAgentPrivateKey: Buffer,

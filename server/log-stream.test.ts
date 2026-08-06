@@ -1,16 +1,7 @@
 /**
- * The admin log streams, over a real socket.
- *
- * What has to hold for these to be safe to exist at all:
- *
- * - an upgrade without a valid admin session cookie is **destroyed before the
- *   handshake completes** — no status, no close code, nothing to learn;
- * - a connected viewer gets the buffer replayed and then live entries;
- * - an event-scoped stream serves **only its own event's buffer**;
- * - deleting the event ends the stream in words (`gone`), and the server
- *   reaps the socket on close — there is no reconnect contract;
- * - the streams are served even with the realtime event channel switched
- *   off, and the event channel's own paths stay as closed as they were.
+ * The admin log streams over a real socket: unauthenticated upgrades are
+ * destroyed before the handshake, viewers get replay then live entries, and
+ * the streams stay served with the realtime event channel off.
  */
 import type { Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";

@@ -1,14 +1,4 @@
-/**
- * `timeful.config.json` — the file that makes a directory a webroot.
- *
- * A webroot holds the operator's data, not the application: this file and the
- * data directory — by default the webroot itself — are all there is, and both
- * resolve from the working directory (the built assets never do — see
- * server/paths.ts).
- *
- * Precedence, lowest first: built-in defaults, the config file, the
- * environment, the command line.
- */
+/** The config and data directory resolve from the CWD; built assets never do (server/paths.ts). Precedence, lowest first: defaults, file, environment, command line. */
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -29,16 +19,10 @@ export interface FileConfig {
   host?: string;
   varDir?: string;
   trustedProxy?: string | string[];
-  /**
-   * Server-wide kill switch for live updates. Default true.
-   *
-   * The primary control is per event; this sits above it, and `false` means no
-   * event gets a realtime channel whatever its own setting says.
-   */
+  /** Server-wide kill switch above the per-event setting; false means no event gets realtime. */
   realtime?: boolean;
 }
 
-/** A fully resolved configuration, ready to start a server with. */
 export interface ResolvedConfig {
   port: number;
   host: string;
@@ -52,22 +36,10 @@ export interface ResolvedConfig {
 
 export const DEFAULT_PORT = 3000;
 export const DEFAULT_HOST = "127.0.0.1";
-/**
- * The webroot itself. New webroots used to default to "./var", and existing
- * config files keep whatever they say — nothing migrates. The webroot won:
- * it gives the hardened service one directory to own and one
- * `ReadWritePaths=` line to grant, instead of a writable subdirectory nested
- * inside a read-only parent, and it matches how deployed boxes are actually
- * laid out. (The repo checkout's own dev data stays in `var/` — that default
- * lives in server/storage.ts and is unchanged.)
- */
+// Was "./var"; existing files keep what they say, nothing migrates. The webroot gives the
+// hardened service one directory to own and one ReadWritePaths= line.
 export const DEFAULT_VAR_DIR = "./";
 
-/**
- * Realtime is on unless it is turned off. It degrades to nothing — a page
- * without a socket is the same page, refreshed by hand — so the safe default
- * is the useful one.
- */
 export const DEFAULT_REALTIME = true;
 
 export const configPath = (cwd: string): string => path.join(cwd, CONFIG_FILE);
@@ -82,11 +54,7 @@ export function envOverrides(env: NodeJS.ProcessEnv = process.env): Overrides {
   return overrides;
 }
 
-/**
- * `TIMEFUL_REALTIME` as a boolean. Off is `0`, `false`, `no` or `off`, and on
- * is `1`, `true`, `yes` or `on`; anything else is an error rather than a guess,
- * because an operator who wrote something here meant something by it.
- */
+// Anything unrecognised is an error, not a guess.
 function envFlag(raw: string): boolean {
   const value = raw.trim().toLowerCase();
   if (value === "0" || value === "false" || value === "no" || value === "off")
@@ -113,11 +81,7 @@ function readString(value: unknown, source: string): string {
   return value.trim();
 }
 
-/**
- * Parses the config file. Returns null when the directory is not a webroot;
- * an unreadable or malformed file is an error, never a silent fallback — the
- * operator meant something by it.
- */
+/** Null when the directory is not a webroot; an unreadable or malformed file is an error, never a silent fallback. */
 export async function readConfigFile(cwd: string): Promise<FileConfig | null> {
   const file = configPath(cwd);
   let text: string;
@@ -184,16 +148,8 @@ export function mergeConfig({ cwd, file, env, flags }: MergeInput): ResolvedConf
   };
 }
 
-/**
- * The trusted-proxy value as the CLI accepts it: everything `--trusted-proxy`
- * takes, plus `loopback` as a name for the default pair.
- *
- * The alias lives here rather than in proxy.ts because it is expanded to the
- * two literal addresses before anything sees it. `loopback` is also an Express
- * `trust proxy` keyword with its own, wider meaning (127.0.0.0/8), and the
- * contract is that only IPs and CIDRs ever reach Express — so the flag parser
- * itself keeps rejecting the word.
- */
+// `loopback` is expanded to the two literal addresses here: only IPs and CIDRs ever reach
+// Express, whose own `loopback` keyword means the wider 127.0.0.0/8.
 export function parseTrustedProxyChoice(value: string | string[]): TrustProxySetting {
   const single = typeof value === "string" ? value.trim().toLowerCase() : null;
   if (single === "loopback") return [...DEFAULT_TRUSTED_PROXIES];
@@ -222,7 +178,6 @@ export function serializeConfig(config: ResolvedConfig): string {
   return JSON.stringify(body, null, 2) + "\n";
 }
 
-/** Writes `timeful.config.json` into `cwd`. Returns the path written. */
 export async function writeConfigFile(
   cwd: string,
   config: ResolvedConfig,
@@ -232,7 +187,6 @@ export async function writeConfigFile(
   return file;
 }
 
-/** True when `cwd` is a webroot. */
 export async function isWebroot(cwd: string): Promise<boolean> {
   try {
     await fs.access(configPath(cwd));

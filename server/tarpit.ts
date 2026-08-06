@@ -1,15 +1,6 @@
 /**
- * Anti-scanning tarpit, scoped to MISSES only.
- *
- * A request whose event/slug resolution failed — or a failed auth attempt —
- * joins a serial per-IP queue: it waits `delayMs` before its 4xx, and the next
- * queued miss for that IP only starts waiting once this one is done. Enumerating
- * slugs therefore costs an attacker 100ms per guess per IP, while everyone who
- * hits a real event (or is an authed admin) is never touched. Guests sharing a
- * NAT is the normal case for group scheduling, so hits must never be queued.
- *
- * When an IP already has `cap` misses pending, further misses are refused
- * immediately with a 429 instead of growing the queue.
+ * Anti-scanning tarpit, misses only: a serial per-IP delay queue, 429 over the
+ * cap. Hits must never be queued — guests sharing a NAT is the normal case.
  */
 import type { Request, Response } from "express";
 import { missDelayMs, missQueueCap } from "./config.ts";
@@ -25,11 +16,7 @@ export interface TarpitOptions {
 }
 
 export interface Tarpit {
-  /**
-   * Joins the queue for `ip`. Resolves true once the caller's turn has come
-   * and the delay has elapsed; resolves false immediately when the IP is at
-   * its pending cap (caller should 429).
-   */
+  /** True once the turn and delay elapse; false immediately at the pending cap (caller 429s). */
   enter(ip: string): Promise<boolean>;
   /** Misses currently queued for `ip`. */
   pending(ip: string): number;
@@ -78,8 +65,7 @@ export function createTarpit(options: TarpitOptions = {}): Tarpit {
       await turn;
     } finally {
       entry.pending -= 1;
-      // Nothing left waiting: drop the entry so the map cannot grow without
-      // bound as scanners rotate through addresses.
+      // Drop the drained entry so the map stays bounded as scanners rotate addresses.
       if (entry.pending <= 0 && queues.get(key) === entry) queues.delete(key);
     }
     return true;
@@ -102,18 +88,14 @@ export const missTarpit: Tarpit = createTarpit();
 // express glue
 // ---------------------------------------------------------------------------
 
-/**
- * The client address. With `trust proxy` configured this is already the
- * rightmost untrusted entry of `X-Forwarded-For`.
- */
+/** With `trust proxy` configured, already the rightmost untrusted X-Forwarded-For entry. */
 export function clientIp(req: Request): string {
   return req.ip || req.socket.remoteAddress || "unknown";
 }
 
 function tooManyRequests(req: Request, res: Response): void {
   const ip = clientIp(req);
-  // The address down to a prefix and the pending count — never the path, whose
-  // first segment is whatever slug the caller guessed at.
+  // Address prefix only — never the path, whose first segment is a guessed slug.
   logWarn(
     `Tarpit refused a request from ${redactIp(ip)}: ${missTarpit.pending(ip)} misses already queued`,
   );
@@ -125,11 +107,7 @@ function tooManyRequests(req: Request, res: Response): void {
   res.set("Content-Type", "text/plain; charset=utf-8").end("Too many requests");
 }
 
-/**
- * Delays `send` by the caller's turn in its IP's miss queue, or answers 429
- * when that IP is already at the cap. Call this only after resolution has
- * actually failed — hits must never enter the queue.
- */
+/** Call only after resolution has actually failed — hits must never enter the queue. */
 export async function tarpitMiss(
   req: Request,
   res: Response,

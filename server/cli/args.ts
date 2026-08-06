@@ -1,18 +1,8 @@
-/**
- * Command line parsing for `timeful`.
- *
- * Deliberately hand-rolled: the whole surface is three actions, six service
- * verbs, four settings and a handful of switches, and a dependency-free CLI is
- * the point of the packaging (see the architecture reference, § Packaging &
- * CLI).
- */
+/** Hand-rolled on purpose: a dependency-free CLI is the point of the packaging (architecture reference § Packaging & CLI). */
 import { readPort } from "./config.ts";
 import { CliError } from "./errors.ts";
 
-/**
- * `auto` is bare `timeful`: serve a webroot, or offer to make one. The other
- * two say which of those halves was meant, and never do the other.
- */
+/** `auto` is bare `timeful`: serve a webroot, or offer to make one. */
 export type Command =
   | "auto"
   | "init"
@@ -37,11 +27,7 @@ export interface Overrides {
   varDir?: string;
   /** Raw value; validated with the rest of the config so errors read alike. */
   trustedProxy?: string;
-  /**
-   * Realtime updates. There is no flag for this one — it comes from
-   * `timeful.config.json` or from `TIMEFUL_REALTIME`, and rides the same
-   * precedence chain as the rest.
-   */
+  /** No flag; comes from the config file or TIMEFUL_REALTIME on the same precedence chain. */
   realtime?: boolean;
 }
 
@@ -49,10 +35,7 @@ export interface CliArgs {
   command: Command;
   /** Only set when `command` is "service"; absent means "list what is installed". */
   action?: ServiceAction;
-  /**
-   * A webroot given as a positional — to `timeful service <verb> <path>`, or
-   * to `timeful upgrade <path>`. Both resolve it the same way.
-   */
+  /** Webroot positional to `service <verb>` or `upgrade`. */
   target?: string;
   /** `-A` / `--all`: every installed webroot, not just one. */
   all: boolean;
@@ -85,11 +68,7 @@ const ALL_ACTIONS: readonly ServiceAction[] = [
   "status",
 ];
 
-/**
- * The `Overrides` keys a flag fills with a raw string. `port` parses to a
- * number and `realtime` has no flag at all, so neither belongs here; deriving
- * the set rather than listing it keeps that true as `Overrides` grows.
- */
+/** The `Overrides` keys a flag fills with a raw string; derived so it stays true as `Overrides` grows. */
 type StringOverride = {
   [K in keyof Overrides]-?: string extends Overrides[K] ? K : never;
 }[keyof Overrides];
@@ -145,8 +124,7 @@ export function parseArgs(argv: readonly string[]): CliArgs {
         value = arg.slice(eq + 1);
       } else {
         const next = argv[i + 1];
-        // A value that looks like a flag is far more likely to be a forgotten
-        // argument than a host named "--port".
+        // A flag-shaped value is more likely a forgotten argument than a host named "--port".
         if (next === undefined || next.startsWith("-"))
           throw new CliError(`${name} requires a value.`);
         value = next;
@@ -167,7 +145,6 @@ export function parseArgs(argv: readonly string[]): CliArgs {
   return args;
 }
 
-/** The action, then whatever that action takes. */
 function readPositionals(args: CliArgs, positionals: string[]): void {
   const [command, ...rest] = positionals;
   if (command === undefined) return;
@@ -177,8 +154,7 @@ function readPositionals(args: CliArgs, positionals: string[]): void {
     );
   args.command = command as Command;
 
-  // `upgrade` takes the same positional the service verbs do — a webroot — and
-  // no verb of its own: it does exactly one thing.
+  // `upgrade` takes a webroot positional and no verb of its own.
   if (args.command === "upgrade") {
     const [target, ...extra] = rest;
     if (target !== undefined) args.target = target;

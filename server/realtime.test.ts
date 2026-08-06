@@ -1,25 +1,7 @@
 /**
- * The realtime channel, over a real socket.
- *
- * Everything here runs against a listening HTTP server with the upgrade
- * listener attached, and connects to it with Node's own global `WebSocket` —
- * no client library, and nothing about the transport mocked. The properties
- * under test are the ones the feature is only worth having if it holds:
- *
- * - a mutation reaches everyone watching that event, whichever way it arrived;
- * - **joining is answered with the current snapshot**, ahead of the presence
- *   frame, so a page that missed a broadcast catches up the moment it connects;
- * - **the browse socket is read-only** — a client can send whatever it likes
- *   down `/<slug>/ws` and change nothing;
- * - a **write session** accepts saves and validates them exactly as the REST
- *   `PUT` does, because it runs the same function;
- * - **one session per key**: a second claim is refused, a takeover evicts the
- *   incumbent and tells it so, and neither is ever automatic;
- * - an upgrade naming an event that does not exist is tarpitted exactly like
- *   an HTTP miss, so subscribing is no cheaper to scan than fetching;
- * - with realtime off, nothing is registered at all — no sessions, and so no
- *   exclusivity — and the REST API carries on being the write path;
- * - rooms do not outlive their subscribers.
+ * The realtime channel over a real socket, nothing mocked: broadcasts, the
+ * snapshot-on-join, the read-only browse socket, one write session per key,
+ * tarpitted misses, and the REST fallback with realtime off.
  */
 import http from "node:http";
 import type { IncomingMessage, Server } from "node:http";

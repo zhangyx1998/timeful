@@ -1,11 +1,7 @@
 /**
- * The event page's URL shapes, through the real Express app
- * (ARCHITECTURE.md § Routing / SSR): the three canonical shapes — `/<slug>`,
- * `/<slug>/view`, `/<slug>/edit/<key>` — serve the SSR page with the
- * `<title>` `event-routes.ts` decides; every other page-like path under a
- * resolving slug is a 302 back to the event root with the query preserved;
- * an unknown slug is the tarpitted 404 it always was, whatever the shape;
- * and the served bytes never vary on the query string.
+ * The event page's URL shapes through the real app (ARCHITECTURE.md § Routing
+ * / SSR): canonical shapes serve SSR, other page-like paths under a resolving
+ * slug 302 to the event root, unknown slugs stay the tarpitted 404.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Renderer } from "./app.ts";

@@ -1,9 +1,6 @@
 /**
- * The in-memory log: the ring buffers, the event tagging, the live
- * subscriptions, and — most load-bearing — the redaction helpers, because the
- * rules they encode are the reason the log is safe to exist at all
- * (ARCHITECTURE.md § Security: no slug in the global buffer, no push endpoint
- * anywhere, IPs down to a prefix).
+ * The ring buffers, event tagging, subscriptions, and — most load-bearing —
+ * the redaction helpers (ARCHITECTURE.md § Security).
  */
 import { afterEach, describe, expect, it } from "vitest";
 import {

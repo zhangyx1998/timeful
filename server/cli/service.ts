@@ -1,24 +1,4 @@
-/**
- * Starting Timeful automatically, per platform.
- *
- * Two tiers:
- *  - **user** (every platform, the default): a launchd LaunchAgent, a systemd
- *    *user* unit, or a `schtasks` logon task. No sudo, runs as the invoking
- *    user, starts when that user logs in.
- *  - **system** (Linux + systemd only): a unit in /etc/systemd/system with
- *    `DynamicUser=yes` and the usual sandboxing, so the service runs as an
- *    ephemeral user that owns no account and writes nowhere it was not given.
- *    Needs sudo, starts at boot. See `systemdSystemUnit` for the sandbox shape
- *    (and the production experiments behind it), and `systemTierProblem` for
- *    the install-time traversal check that refuses a webroot the ephemeral
- *    user could never walk to.
- *
- * Everything here is generated from a `ServiceSpec` by pure functions —
- * `unitFor` returns the file to write and the exact commands that would
- * activate, deactivate and query it. Only `installService`/`uninstallService`
- * touch the machine, and every command they run goes through `ServiceHost.run`,
- * which is stubbed in tests and short-circuited by TIMEFUL_SERVICE_DRY_RUN.
- */
+/** Every command goes through ServiceHost.run — stubbed in tests, short-circuited by TIMEFUL_SERVICE_DRY_RUN. */
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -45,16 +25,10 @@ export interface ServiceSpec {
   webroot: string;
   /** Resolved data directory; the service's logs go beside it. */
   varDir: string;
-  /** The node binary to exec. */
   nodePath: string;
-  /** Absolute path of the CLI entry to exec. */
   cliPath: string;
-  /** The invoking user's home directory. */
   home: string;
-  /**
-   * The invoking user's login name. Only used to print a command they can run
-   * (`loginctl enable-linger <user>`), never to decide anything.
-   */
+  /** Login name; only printed (loginctl enable-linger), never used to decide. */
   user?: string;
   /** `XDG_CONFIG_HOME`, when set. */
   configHome?: string;
@@ -71,30 +45,17 @@ export interface ServiceCommand {
   tolerant?: boolean;
 }
 
-/**
- * The argument the unit passes to the CLI. Explicit, so a service can never
- * fall into the wizard: `timeful serve` refuses a directory that is not a
- * webroot instead of asking a question nobody is there to answer.
- *
- * Units written before this existed exec the CLI with no argument at all. They
- * keep working — bare `timeful` in a webroot serves it — and uninstall and
- * status find them by path, not by content.
- */
+/** Explicit so a service can never fall into the wizard; older units exec no argument and still work. */
 const SERVE_ARG = "serve";
 
 export interface ServiceUnit {
   spec: ServiceSpec;
   /** Identifier shared by the file name and every command below. */
   id: string;
-  /** Where the generated file lives once installed. */
   file: string;
-  /**
-   * Where to write it before installing, when the destination needs sudo.
-   * Undefined means write straight to `file`.
-   */
+  /** Pre-install write location when the destination needs sudo. */
   staging?: string;
   contents: string;
-  /** True when activation needs elevated privileges. */
   privileged: boolean;
   activate: ServiceCommand[];
   deactivate: ServiceCommand[];
@@ -108,8 +69,7 @@ export function webrootHash(webroot: string): string {
 
 export function serviceId(spec: ServiceSpec): string {
   const hash = webrootHash(spec.webroot);
-  // Unknown platforms read as linux, as they always have; unitFor refuses
-  // them before an id could ever name a real unit.
+  // Unknown platforms read as linux; unitFor refuses them before an id names a real unit.
   return `${(platformNaming(spec.platform) ?? PLATFORMS.linux).idPrefix}${hash}`;
 }
 
@@ -126,7 +86,6 @@ function quoteArg(arg: string): string {
 // unit generation
 // ---------------------------------------------------------------------------
 
-/** The generated artifact and commands for `spec`. */
 export function unitFor(spec: ServiceSpec): ServiceUnit {
   if (spec.platform === "darwin") return launchdUnit(spec);
   if (spec.platform === "win32") return schtasksUnit(spec);
@@ -137,7 +96,6 @@ export function unitFor(spec: ServiceSpec): ServiceUnit {
   );
 }
 
-/** The tiers `platform` can offer. */
 export function availableTiers(platform: NodeJS.Platform): ServiceTier[] {
   const places = platformNaming(platform)?.places;
   return places ? (Object.keys(places) as ServiceTier[]) : ["user"];
@@ -228,26 +186,9 @@ WantedBy=default.target
   };
 }
 
-/**
- * The static group the hardened tier's data directory belongs to.
- *
- * A *group*, deliberately, and not a user: the service runs under
- * `DynamicUser=yes`, whose UID systemd allocates per start (by hashing the unit
- * name, so stable in practice but never promised). A file owned by last boot's
- * UID would be unreadable to this boot's. Group ownership is the part that
- * survives, so `var/` is chowned to this group, the group is handed to the
- * service with `SupplementaryGroups=`, and `UMask=0002` keeps everything the
- * service creates group-writable.
- *
- * One group per machine. Several webroots share it happily — each one's data
- * directory is still only reachable through that unit's own bind mount.
- */
+/** A group, not a user: DynamicUser UIDs are per-start, so group ownership is what survives; one group per machine. */
 export const SERVICE_GROUP = "timeful";
 
-/**
- * The directories `ProtectHome=` covers, and therefore the ones a path has to
- * be reached through a bind mount to be usable at all.
- */
 const PROTECTED_HOMES = ["/home", "/root", "/run/user"];
 
 /** True when `child` is `parent` or sits underneath it. Posix paths only. */
@@ -256,12 +197,7 @@ function isUnder(child: string, parent: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !path.posix.isAbsolute(rel));
 }
 
-/**
- * The home-ish roots for one spec: what `ProtectHome=` hides, plus the invoking
- * user's own home when it lives somewhere else entirely. The second is not a
- * systemd concern but a permissions one — a home directory anywhere is
- * typically 0700 or 0750, which no other account may traverse.
- */
+/** PROTECTED_HOMES plus an out-of-place home, which is typically 0700/0750. */
 function homeRoots(spec: ServiceSpec): string[] {
   const roots = [...PROTECTED_HOMES];
   const home = spec.home?.trim();
@@ -269,67 +205,12 @@ function homeRoots(spec: ServiceSpec): string[] {
   return roots;
 }
 
-/**
- * The hardened tier.
- *
- * `DynamicUser=yes` means systemd allocates a throwaway UID for each start, so
- * the service owns no account and no files outside the paths it is granted.
- * `ProtectSystem=strict` makes the entire filesystem read-only, and
- * `ReadWritePaths=<varDir>` is the single writable exception carved out of it.
- *
- * ::: Why `ProtectHome=off`: three shapes, one verified
- * This shape is the survivor of live experiments on a production box (systemd
- * 255, Ubuntu 24.04). In order:
- *
- * 1. `ProtectHome=tmpfs` + `BindPaths=<varDir>` (what this unit shipped
- *    with): the data directory is *visible* through the tmpfs and reads work,
- *    but every write fails with EROFS. The bind surfaces the path; nothing
- *    exempts it from `ProtectSystem=strict`'s read-only remount. The service
- *    looks healthy until somebody saves.
- * 2. The same plus `ReadWritePaths=<varDir>` — the fix the documentation
- *    suggests: `systemctl show` confirms all four settings applied together,
- *    and writes **still** fail with EROFS. On real systemd 255,
- *    `ReadWritePaths=` does not deliver write access to a path surfaced
- *    through the `ProtectHome=tmpfs` by `BindPaths=`; the read-only
- *    application wins regardless.
- * 3. `ProtectHome=off` + `ProtectSystem=strict` + `ReadWritePaths=<varDir>`,
- *    no binds at all: writes succeed. This function emits exactly that.
- *
- * Shapes 1 and 2 both read as if they should work. Do not re-derive a
- * tmpfs-plus-binds design from the manual: these tests are dry-run by design
- * and can never boot a unit, so mount semantics are only ever proven on a
- * real machine.
- * :::
- *
- * ::: What `off` costs, and what still holds
- * With no tmpfs there is no synthetic parent to walk: the ephemeral UID
- * reaches the webroot, the data directory, node and the CLI by ordinary
- * permission checks, so every home-directory ancestor of those paths needs
- * `o+x` (traverse-only — no `o+r` required, nobody gets to list anything).
- * `systemTierProblem` stats exactly those directories at install time and
- * refuses with the `chmod o+x` cure attached rather than installing a crash
- * loop; the post-start watch in `installService` is the backstop for
- * permissions that change later. Other people's homes are no longer shadowed
- * by a tmpfs — they are protected by their own modes, exactly as they are
- * from any other unprivileged account, and `ProtectSystem=strict` keeps every
- * path on the machine read-only to the service anyway.
- *
- * Read-write is `varDir` alone, not the whole webroot: `timeful.config.json`
- * is only ever read, and the unit logs to the journal rather than to the
- * `timeful.*.log` files the LaunchAgent writes. A `varDir` that *is* the
- * webroot needs no special case — the same single line grants it. No
- * `ReadOnlyPaths=<webroot>` is emitted: `ProtectSystem=strict` already makes
- * it read-only, and stacking an unverified directive onto the write path is
- * the exact class of mistake shapes 1 and 2 were. systemd silently ignores a
- * `ReadWritePaths=` path that does not exist when the unit starts — the
- * carve-out simply never happens — which is why activation `mkdir -p`s the
- * data directory before anything else.
- * :::
- */
+// ProtectHome=off + ProtectSystem=strict + ReadWritePaths= is the only shape verified to write
+// on real systemd 255; the documented tmpfs/BindPaths variants fail with EROFS. Do not re-derive
+// from the manual — dry-run tests can never prove mount semantics.
 function systemdSystemUnit(spec: ServiceSpec): ServiceUnit {
   const id = `${serviceId(spec)}${PLATFORMS.linux.ext}`;
-  // posix on purpose: the path names a location on the unit's own machine, so
-  // generating it from a Windows host must not hand it backslashes.
+  // posix on purpose: names a path on the unit's own machine, never backslashes.
   const file = path.posix.join(SYSTEMD_SYSTEM_DIR, id);
   const staging = path.join(os.tmpdir(), id);
 
@@ -373,26 +254,17 @@ WantedBy=multi-user.target
         "-c",
         `getent group ${SERVICE_GROUP} >/dev/null || groupadd --system ${SERVICE_GROUP}`,
       ),
-      // systemd ignores a ReadWritePaths= path that does not exist at start —
-      // the writable carve-out silently never happens — and a webroot
-      // initialized with --dry-run may not have a data directory yet.
+      // systemd silently ignores a ReadWritePaths= path that does not exist at start.
       sudo("mkdir", "-p", spec.varDir),
-      // Group ownership is what outlives a dynamic UID; setgid on the
-      // directories keeps it true for everything written from here on, and
-      // UMask=0002 in the unit makes those files group-writable.
+      // Group ownership + setgid is what outlives the per-start dynamic UID.
       sudo("chown", "-R", `:${SERVICE_GROUP}`, spec.varDir),
       sudo("chmod", "-R", "g+rwX", spec.varDir),
       sudo("find", spec.varDir, "-type", "d", "-exec", "chmod", "g+s", "{}", "+"),
       sudo("install", "-m", "0644", staging, file),
       sudo("systemctl", "daemon-reload"),
-      // Installing over a unit that crash-looped itself into `failed` — the
-      // shape this tier shipped with — would otherwise leave the failure
-      // latched. Tolerant: a unit that never failed makes this a no-op, and
-      // systemd versions differ on what they exit with for one it never saw.
+      // Clears a latched failure from an older crash-looped unit; exit codes vary, hence tolerant.
       { ...sudo("systemctl", "reset-failed", id), tolerant: true },
-      // `enable --now` does not bounce a unit that is already running, so it
-      // would leave an old unit's process alive under the old settings. Enable
-      // and restart say both halves out loud, and restart starts a stopped one.
+      // `enable --now` would not bounce an already-running unit; restart does.
       sudo("systemctl", "enable", id),
       sudo("systemctl", "restart", id),
     ],
@@ -405,17 +277,9 @@ WantedBy=multi-user.target
   };
 }
 
-/**
- * The ancestors of `target` that sit inside a home directory — the ones
- * nothing on a stock machine guarantees are traversable by another account.
- * From the home itself down to `target` inclusive; the containers above it
- * (/home, /run/user, the parent of an unusual home) are root-owned 0755 and
- * not worth a stat.
- */
+/** Ancestors of `target` inside a home, home itself down to target; containers above are root 0755. */
 function homeAncestors(spec: ServiceSpec, target: string): string[] {
   const roots = homeRoots(spec);
-  // /home and /run/user hold homes and are root:0755 themselves; /root *is* a
-  // home, so the walk includes it rather than stopping above it.
   const containers = ["/home", "/run/user"];
   const chain: string[] = [];
   let dir = target;
@@ -428,22 +292,7 @@ function homeAncestors(spec: ServiceSpec, target: string): string[] {
   return chain;
 }
 
-/**
- * Why this spec cannot be a system unit, or null when it can.
- *
- * With `ProtectHome=off` there is nothing a home directory hides — but there
- * is still what it *denies*. The ephemeral UID belongs to no group but
- * `timeful`, so it reaches the webroot, the data directory, node and the CLI
- * by ordinary DAC: every home-directory ancestor of those paths needs `o+x`,
- * and a 0700 or 0750 home stops the walk cold. That failure is
- * `status=200/CHDIR` (or 203/EXEC) in a crash loop, so it is refused here,
- * before anything is written, with the one-bit cure attached.
- *
- * The data directory itself (and below) is exempt from the check: activation
- * chowns it to the `timeful` group, which grants the service its own way in.
- * A directory that cannot be statted is let through rather than refused — the
- * check is a courtesy, and the post-start watch is the backstop.
- */
+/** Why this spec cannot be a system unit (home ancestor without o+x → 200/CHDIR crash loop), or null. */
 export async function systemTierProblem(
   spec: ServiceSpec,
   host: ServiceHost,
@@ -470,8 +319,6 @@ export async function systemTierProblem(
   if (blocked.length === 0) return null;
 
   const who = spec.user || (spec.home ? path.posix.basename(spec.home) : "") || "<user>";
-  // Two commands, one comment column: the second line is the longer one only
-  // for a very short login name, so pad whichever needs it.
   const install = "  timeful service install";
   const linger = `  sudo loginctl enable-linger ${who}`;
   const column = Math.max(install.length, linger.length) + 2;
@@ -513,8 +360,7 @@ export async function systemTierProblem(
 function schtasksUnit(spec: ServiceSpec): ServiceUnit {
   const id = serviceId(spec);
   const file = path.join(windowsLaunchersDir(spec), `${id}${PLATFORMS.win32.ext}`);
-  // schtasks has no working-directory option, so the task runs a launcher that
-  // changes into the webroot first.
+  // schtasks has no working-directory option; the launcher cds into the webroot.
   const contents = `@echo off\r\ncd /d "${spec.webroot}"\r\n"${spec.nodePath}" "${spec.cliPath}" ${SERVE_ARG}\r\n`;
 
   return {
@@ -546,21 +392,11 @@ export interface ServiceHost {
   /** True when nothing is actually done; the reporting says so. */
   readonly dryRun?: boolean;
   writeFile(file: string, contents: string): Promise<void>;
-  /**
-   * The file's contents, or null when it cannot be read.
-   *
-   * Reading changes nothing, so unlike the writes this one is honoured in a
-   * dry run too — `timeful upgrade --dry-run` has to be able to say which CLI
-   * the installed unit currently execs.
-   */
+  /** Contents or null. Honoured in a dry run too — a read is not a change. */
   readFile(file: string): Promise<string | null>;
   removeFile(file: string): Promise<void>;
   exists(file: string): Promise<boolean>;
-  /**
-   * The permission bits of `file` (`st_mode & 0o7777`), or null when it cannot
-   * be statted. Like `readFile`, honoured in a dry run — a stat is not a
-   * change, and the traversal check has to be able to refuse a dry run too.
-   */
+  /** Permission bits (`st_mode & 0o7777`) or null; honoured in a dry run like readFile. */
   mode(file: string): Promise<number | null>;
   run(cmd: ServiceCommand): Promise<RunResult>;
   /** Whether an executable is on PATH. */
@@ -582,20 +418,12 @@ const run = (cmd: ServiceCommand): Promise<RunResult> =>
   });
 
 export interface NodeHostOptions {
-  /** Where the running commentary goes. */
   log?: (line?: string) => void;
-  /** `--dry-run`. The environment variable is an alias for the same thing. */
+  /** `--dry-run`; TIMEFUL_SERVICE_DRY_RUN is an alias. */
   dryRun?: boolean;
 }
 
-/**
- * The real host. In a dry run every command is printed instead of executed and
- * no file is touched — the gate that lets the install path be exercised without
- * ever loading a service into a developer's machine.
- *
- * `TIMEFUL_SERVICE_DRY_RUN` predates the `--dry-run` flag and still works;
- * either one turns the whole host into a narrator.
- */
+/** The real host. A dry run prints every command instead of executing it and touches no file. */
 export function nodeHost(options: NodeHostOptions = {}): ServiceHost {
   const log = options.log ?? console.log;
   const dryRun = options.dryRun || Boolean(process.env.TIMEFUL_SERVICE_DRY_RUN);
@@ -653,7 +481,6 @@ export function nodeHost(options: NodeHostOptions = {}): ServiceHost {
   };
 }
 
-/** What a Linux box can actually offer. */
 export interface SystemdSupport {
   systemctl: boolean;
   /** A per-user manager to talk to (`systemctl --user` needs one). */
@@ -668,11 +495,7 @@ export async function detectSystemd(
   return { systemctl, userManager: systemctl && Boolean(env.XDG_RUNTIME_DIR) };
 }
 
-/**
- * The invoking user's login name, for printing a command they can paste.
- * `os.userInfo()` throws when the uid has no passwd entry — a container, some
- * CI images — so the environment is the fallback and nothing depends on it.
- */
+// os.userInfo() throws when the uid has no passwd entry (containers, some CI images).
 function loginName(env: NodeJS.ProcessEnv): string | undefined {
   try {
     return os.userInfo().username || undefined;
@@ -681,7 +504,6 @@ function loginName(env: NodeJS.ProcessEnv): string | undefined {
   }
 }
 
-/** A spec for the current process, in `webroot`. */
 export function specFor(options: {
   webroot: string;
   varDir: string;
@@ -724,27 +546,19 @@ export function describeUnit(unit: ServiceUnit, host: ServiceHost): void {
 }
 
 export interface InstallOptions {
-  /**
-   * Asked before anything privileged runs. Returning false leaves the machine
-   * untouched and the commands are printed for manual execution instead.
-   */
+  /** Asked before anything privileged runs; false prints the commands instead. */
   confirmPrivileged?: () => Promise<boolean>;
   /** Pacing for the post-start watch; tests hand in a sleep that does not. */
   verify?: VerifyOptions;
 }
 
-/**
- * Writes the unit and activates it. Returns false when the privileged half
- * was skipped (declined, or no sudo) — the file is still written to staging
- * and the commands are printed.
- */
+/** Writes the unit and activates it; false when the privileged half was skipped. */
 export async function installService(
   unit: ServiceUnit,
   host: ServiceHost,
   options: InstallOptions = {},
 ): Promise<boolean> {
-  // Before anything is printed: a unit that could never start is not something
-  // to describe and then fail at, it is something to refuse with the cure.
+  // Refuse a unit that could never start, before describing it.
   const problem = await systemTierProblem(unit.spec, host, {
     installed: await host.exists(unit.file),
   });
@@ -793,15 +607,8 @@ export async function installService(
     );
   }
 
-  // The lesson of the read-only data directory: `systemctl restart` exiting 0
-  // only proves the process forked. Watch the hardened tier for a few seconds
-  // and report a service that did not stay up *now*, at install time, rather
-  // than when an operator eventually asks for status. System tier only: its
-  // activation always ends in an unconditional restart preceded by
-  // `reset-failed`, so the state and restart count the watch reads belong to
-  // this install and to nothing older. (The user tier's `enable --now` may not
-  // have restarted an already-running unit at all.) Skipped in a dry run,
-  // where nothing was started and a probe would answer nothing.
+  // restart exiting 0 only proves the fork; system tier only, because reset-failed +
+  // restart made the state and counters this install's own.
   if (unit.spec.platform === "linux" && unit.spec.tier === "system" && !host.dryRun) {
     const report = await watchAfterStart(refFor(unit), host, options.verify);
     if (report.state === "failed" || (report.restarts ?? 0) > 0) {
@@ -843,8 +650,7 @@ function printUndo(unit: ServiceUnit, host: ServiceHost): void {
   for (const cmd of unit.deactivate) host.log(`  ${formatCommand(cmd)}`);
   if (!unit.privileged) host.log(`  rm ${unit.file}`);
   if (unit.spec.tier === "system") {
-    // Another webroot's unit may be using both, and neither is expensive to
-    // leave behind: an empty group owns nothing, and the data is the point.
+    // Another webroot's unit may still be using both.
     host.log();
     host.log(
       `The '${SERVICE_GROUP}' group and the contents of ${unit.spec.varDir} are left alone.`,
@@ -859,8 +665,7 @@ export async function uninstallService(unit: ServiceUnit, host: ServiceHost): Pr
     // Deactivating something that was never active is not a failure.
     if (result.code !== 0) host.log(`  (ignored) ${formatCommand(cmd)} exited ${result.code}`);
   }
-  // A privileged unit is removed by its own `sudo rm` command above; only the
-  // unprivileged file (and any staging copy) is ours to delete.
+  // A privileged unit is removed by its own `sudo rm` above.
   if (!unit.privileged) {
     if (host.dryRun) host.log(`  would remove ${unit.file}`);
     await host.removeFile(unit.file);
@@ -896,14 +701,7 @@ const PAST: Record<ControlVerb, string> = {
   restart: "Restarted",
 };
 
-/**
- * The little that controlling an installed service needs to know about it.
- *
- * Deliberately less than a `ServiceSpec`: a unit found by scanning the
- * platform's unit directories has a file, an id and a tier, but its data
- * directory and node binary are only recoverable if its webroot could be read
- * back. Starting and stopping must work either way.
- */
+/** Deliberately less than a ServiceSpec: a scanned unit has file, id and tier even when its webroot is unreadable. */
 export interface ServiceRef {
   platform: NodeJS.Platform;
   tier: ServiceTier;
@@ -925,7 +723,6 @@ export function refFor(unit: ServiceUnit): ServiceRef {
   };
 }
 
-/** True when the system tier's commands still need `sudo` in front of them. */
 const needsSudo = (ref: ServiceRef): boolean => ref.tier === "system" && ref.uid !== 0;
 
 function systemctl(ref: ServiceRef, ...args: string[]): ServiceCommand {
@@ -936,13 +733,7 @@ function systemctl(ref: ServiceRef, ...args: string[]): ServiceCommand {
   return { command: "systemctl", args: ["--user", ...args] };
 }
 
-/**
- * The commands that carry out `verb`, in order.
- *
- * launchd has no restart: an agent with `KeepAlive` comes back by itself, so
- * "stop" has to mean *unload* and "start" *load*, and a restart is the two in
- * sequence — the unload tolerating an agent that was not loaded to begin with.
- */
+/** launchd has no restart: stop unloads, start loads, restart is both with the unload tolerant. */
 export function controlFor(ref: ServiceRef, verb: ControlVerb): ServiceCommand[] {
   if (ref.platform === "darwin") {
     const domain = `gui/${ref.uid ?? 0}`;
@@ -974,19 +765,8 @@ export function controlFor(ref: ServiceRef, verb: ControlVerb): ServiceCommand[]
   );
 }
 
-/**
- * The cheapest question the platform answers about a running service.
- *
- * Linux asks `show` rather than `is-active`, because `is-active` answers a
- * crash loop with the single word `activating` — indistinguishable from a
- * service that is genuinely coming up, and the reason this CLI once printed
- * "running" over a unit that had never started once. `SubState` is what tells
- * the two apart, and `NRestarts` is what says how long it has been going on.
- *
- * Keyed output rather than `--value`: reading values positionally would depend
- * on systemctl emitting properties in the order they were asked for, and
- * `Key=value` lines need no such promise.
- */
+// `show`, not `is-active`: is-active calls a crash loop "activating"; keyed output
+// avoids depending on systemctl's property order.
 export function probeFor(ref: ServiceRef): ServiceCommand {
   if (ref.platform === "darwin") return { command: "launchctl", args: ["list", ref.id] };
   if (ref.platform === "win32")
@@ -1009,30 +789,11 @@ export interface RunReport {
   restarts?: number;
 }
 
-/** One `Key=value` line out of `systemctl show`. */
 function property(stdout: string, key: string): string | undefined {
   return new RegExp(`^${key}=(.*)$`, "m").exec(stdout)?.[1].trim();
 }
 
-/**
- * Turns a probe's output into a state, and whatever else it happened to say.
- *
- * The systemd half is the interesting one. `activating` is **not** running: a
- * unit that fails at exec and is waiting out `RestartSec` before trying again
- * spends nearly all of its life there, and calling that "running" is how a
- * crash loop hid behind `timeful service status`. So:
- *
- * - `active`                       → running
- * - `activating` + `auto-restart`  → failed; systemd is counting down to
- *                                    another attempt, which only happens after
- *                                    one went wrong
- * - `activating` / `reloading`     → starting; a real start, caught in the act
- * - `failed`                       → failed
- * - `inactive` / `deactivating`    → stopped
- *
- * A bare word is still understood, so a probe run by hand — or by an older
- * unit of this CLI — reads the same way.
- */
+// `activating` + `auto-restart` is a crash loop counting down RestartSec, not running.
 export function readRunReport(platform: NodeJS.Platform, result: RunResult): RunReport {
   if (platform === "darwin") {
     // A loaded agent is a running one: the plist carries RunAtLoad + KeepAlive.
@@ -1070,7 +831,6 @@ export function readRunReport(platform: NodeJS.Platform, result: RunResult): Run
   return { state: "unknown" };
 }
 
-/** Just the word, for callers that have nowhere to put the rest. */
 export function readRunState(platform: NodeJS.Platform, result: RunResult): RunState {
   return readRunReport(platform, result).state;
 }
@@ -1085,10 +845,6 @@ export async function probeRunState(ref: ServiceRef, host: ServiceHost): Promise
   return (await probeRun(ref, host)).state;
 }
 
-/**
- * The state as a status line prints it. The restart count is the part that
- * makes a crash loop unmistakable even when the probe caught it mid-attempt.
- */
 export function describeRunState(report: RunReport): string {
   if (!report.restarts) return report.state;
   const times = report.restarts === 1 ? "1 automatic restart" : `${report.restarts} automatic restarts`;
@@ -1103,19 +859,8 @@ export interface VerifyOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
-/**
- * Watches a just-(re)started service long enough to see a crash loop.
- *
- * A start command exiting 0 proves only that the process forked; a unit that
- * dies moments later spends its life in `activating (auto-restart)`, and one
- * with a read-only data directory shipped as "Installed and started" exactly
- * that way. So the watch keeps probing across a short window rather than
- * trusting the first answer: a `failed` probe — or any probe that counted an
- * automatic restart — is the verdict the moment it shows, and only a service
- * still up at the *end* of the window is called good. The window (~3s at the
- * defaults) is deliberately shorter than the unit's RestartSec=5, so a unit
- * that died is caught in `auto-restart` rather than mid-relaunch.
- */
+// The ~3s window is deliberately shorter than RestartSec=5, so a died unit is caught
+// in auto-restart; a failed probe or any counted restart is the verdict.
 export async function watchAfterStart(
   ref: ServiceRef,
   host: ServiceHost,
@@ -1134,18 +879,13 @@ export async function watchAfterStart(
   return report;
 }
 
-/**
- * Runs a verb against an installed service. Every command is printed before it
- * runs, the same rule the install path follows.
- */
 export async function controlService(
   ref: ServiceRef,
   verb: ControlVerb,
   host: ServiceHost,
 ): Promise<void> {
   const commands = controlFor(ref, verb);
-  // A dry run narrates each command as it declines to run it; a real one says
-  // what it is about to do before it does it.
+  // The dry-run host narrates each command itself.
   if (!host.dryRun) for (const cmd of commands) host.log(`  ${formatCommand(cmd)}`);
   for (const cmd of commands) {
     const result = await host.run(cmd);

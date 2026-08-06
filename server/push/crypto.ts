@@ -1,18 +1,7 @@
 /**
- * Web Push payload encryption — RFC 8291 (`aes128gcm`), on `node:crypto` and
- * nothing else.
- *
- * A push message is end-to-end encrypted to one browser: the payload is
- * readable only by the subscription that carries the matching key pair, never
- * by the push service relaying it. The scheme is ECDH on P-256 against the
- * browser's `p256dh` key, mixed with the 16-byte `auth` secret through HKDF
- * (RFC 8188 § 2.2 / RFC 8291 § 3), then a single AES-128-GCM record in the
- * `aes128gcm` framing (RFC 8188 § 2.1).
- *
- * Hand-rolled because the published package bundles everything and depends on
- * nothing (docs § Packaging), so it is pinned to the RFC 8291 Appendix A test
- * vectors in `crypto.test.ts` — the appendix exists precisely so an
- * implementation like this one can prove itself.
+ * Web Push payload encryption — RFC 8291 `aes128gcm` on `node:crypto` alone.
+ * Hand-rolled because the package depends on nothing (docs § Packaging);
+ * pinned to the RFC 8291 Appendix A vectors in `crypto.test.ts`.
  */
 import crypto from "node:crypto";
 
@@ -44,12 +33,7 @@ export function isP256Point(data: Buffer): boolean {
 /** The `auth` secret is always 16 bytes (RFC 8291 § 2). */
 export const AUTH_SECRET_LENGTH = 16;
 
-/**
- * The record size written into the `aes128gcm` header. One record holds
- * `rs - 17` bytes of plaintext; our payloads are a short JSON sentence, so a
- * single 4096-byte record always suffices — and 4096 is what every push
- * service accepts (RFC 8291 § 4 requires the message to fit one record).
- */
+/** One 4096-byte record always suffices; RFC 8291 § 4 requires the message to fit one record. */
 export const RECORD_SIZE = 4096;
 
 /** The plaintext ceiling one record leaves: rs − 16 (tag) − 1 (delimiter). */
@@ -62,14 +46,7 @@ export interface EncryptOverrides {
   ephemeralPrivateKey?: Buffer;
 }
 
-/**
- * Encrypts `plaintext` to a subscription's keys, returning the complete
- * `aes128gcm` body: header (salt, rs, keyid = our ephemeral public key) then
- * the one encrypted record.
- *
- * @param userAgentPublicKey the subscription's `p256dh`, a 65-byte point
- * @param authSecret the subscription's `auth`, 16 bytes
- */
+/** The complete `aes128gcm` body: header (salt, rs, keyid = our ephemeral public key) then one record. */
 export function encryptPayload(
   plaintext: Buffer,
   userAgentPublicKey: Buffer,
@@ -90,8 +67,7 @@ export function encryptPayload(
   const appServerPublicKey = ecdh.getPublicKey();
   const sharedSecret = ecdh.computeSecret(userAgentPublicKey);
 
-  // RFC 8291 § 3.3–3.4: auth secret and both public keys bind the IKM, then
-  // the RFC 8188 schedule derives the content key and nonce from the salt.
+  // RFC 8291 § 3.3–3.4, then the RFC 8188 schedule for content key and nonce.
   const keyInfo = Buffer.concat([
     Buffer.from("WebPush: info\0", "ascii"),
     userAgentPublicKey,

@@ -1,10 +1,4 @@
-/**
- * `timeful upgrade`, without a machine.
- *
- * Everything that would touch one goes through a stubbed `ServiceHost`, so
- * these tests can assert the whole of the verb — which unit is rewritten, what
- * it now execs, which commands would run — without ever loading a service.
- */
+/** `timeful upgrade` through a stubbed ServiceHost — the whole verb is asserted without ever loading a service. */
 import { describe, expect, it } from "vitest";
 import {
   formatCommand,
@@ -235,12 +229,7 @@ describe("upgradeWebroot", () => {
     expect(commands.some((cmd) => cmd.startsWith("sudo systemctl restart"))).toBe(true);
   });
 
-  /**
-   * The migration path for the boxes the old hardened tiers are broken on.
-   * Re-pinning goes through `unitFor`, so the unit comes back in the current
-   * shape whatever shape it was in — nobody has to hand-edit
-   * /etc/systemd/system to get the fix.
-   */
+  // Re-pinning goes through unitFor, so a legacy unit comes back in the current shape — no hand-editing.
   it("regenerates a ProtectHome=yes legacy unit into the shape that works", async () => {
     const next = installedUnit(NEW_CLI, { tier: "system" });
     // Exactly what this CLI first wrote: an inaccessible /home, the whole
@@ -290,13 +279,8 @@ WantedBy=multi-user.target
     expect(commands).toContain(`sudo systemctl restart ${next.id}`);
   });
 
-  /**
-   * The 0.0.2 generation: ProtectHome=tmpfs with the data directory reached
-   * through BindPaths=, which systemd 255 surfaces *read-only* — reads work,
-   * every save dies with EROFS. Upgrading must converge the unit on the
-   * shape a production box proved out (ProtectHome=off + ReadWritePaths=),
-   * so the operator's stop-gap drop-in can be deleted afterwards.
-   */
+  // The 0.0.2 generation: ProtectHome=tmpfs + BindPaths=, which systemd 255 surfaces read-only
+  // (EROFS on save); upgrading must converge the unit on the shape that works.
   it("regenerates a 0.0.2 tmpfs unit whose data directory was read-only", async () => {
     const next = installedUnit(NEW_CLI, { tier: "system" });
     const erofs = `[Unit]

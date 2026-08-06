@@ -1,15 +1,4 @@
-/**
- * Where the built assets live.
- *
- * One codebase has to find them in two shapes:
- *  - packaged: `dist/cli.js` sits beside `dist/client/` and `dist/server/`
- *  - repo: an entry under `server/` (or `server/cli/`) with builds in `<repo>/dist`
- *
- * Both resolve from the running module's own URL, never from the working
- * directory. For a packaged install the CWD is the operator's webroot — it
- * holds `timeful.config.json` and `var/`, and has no reason to contain the
- * application's assets.
- */
+/** Asset roots resolve from the running module's URL, never the CWD — a packaged install's CWD is the operator's webroot. */
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,10 +23,7 @@ export function assetPathsIn(root: string): AssetPaths {
   };
 }
 
-/**
- * Places an entry module in `entryDir` may find the asset root, nearest first.
- * The list covers the packaged layout and every depth a repo entry lives at.
- */
+/** Candidate asset roots, nearest first: the packaged layout plus every repo entry depth. */
 export function assetRootCandidates(entryDir: string): string[] {
   return [
     entryDir, // packaged: dist/cli.js
@@ -47,11 +33,7 @@ export function assetRootCandidates(entryDir: string): string[] {
   ].map((dir) => path.normalize(dir));
 }
 
-/**
- * The first candidate that actually holds a client build. Falls back to the
- * nearest candidate so a "missing build" message points at the packaged
- * location rather than at whichever directory happened to be checked last.
- */
+/** Falls back to the nearest candidate so a "missing build" message points at the packaged location. */
 export function findAssetRoot(
   entryUrl: string,
   exists: (file: string) => boolean = existsSync,

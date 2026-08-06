@@ -29,31 +29,15 @@ import type {
   LastEdit,
   StoredEvent,
 } from "../types.ts";
-// Runtime: what a link-holder may see is one rule, and the page the server
-// renders has to apply exactly the same one the JSON route does.
+// Runtime imports: one strip rule and one key rule, shared with the client.
 import { publicEvent, publicResponse } from "../../src/lib/event.ts";
-// Runtime, like the slug rules: the identity dialog has to reject exactly what
-// this rejects, in the same words (src/lib/user-key.ts).
 import { guestNameProblem, userKey, userKeyFromParam } from "../../src/lib/user-key.ts";
 import { RESERVED_SUBPATHS } from "../../src/lib/slug-rules.ts";
 
-/**
- * The global half: `/api/events` list and create, and nothing else.
- *
- * Anything addressed *to one event* lives on the event's own path instead
- * (`eventScopedRouter`), because the event's URL is the capability and hanging
- * its endpoints off `/api` only ever hid that.
- */
+/** The global half: `/api/events` list and create, and nothing else. */
 export const eventsRouter = Router();
 
-/**
- * The event-scoped half, mounted at the site root rather than under `/api`.
- *
- * `/<slug>` is the page; `/<slug>/data`, `/<slug>/settings` and
- * `/<slug>/users/<userKey>` are what you can do to it. `users`, `ws`, `data`
- * and `settings` are therefore reserved *sub*-segments — slugs themselves are
- * still single segments and unaffected.
- */
+/** The event-scoped half, mounted at the site root; `users`, `ws`, `data`, `settings` are reserved sub-segments. */
 export const eventScopedRouter = Router();
 
 const MAX_NAME_LENGTH = 200;
@@ -128,40 +112,20 @@ function requireTimeIncrement(value: unknown): number {
   return increment;
 }
 
-/**
- * The live-updates switch. Strict where `startOnMonday` coerces, on purpose:
- * this one decides whether a channel is served, and `Boolean("false")` being
- * true is not a mistake worth making about that.
- */
+/** Strict where `startOnMonday` coerces, on purpose: `Boolean("false")` is true. */
 function requireRealtime(value: unknown): boolean {
   if (typeof value !== "boolean") throw new BadRequest("realtime must be true or false");
   return value;
 }
 
-/**
- * The key a `/<slug>/users/<userKey>` path segment addresses.
- *
- * Re-normalized rather than taken as given, so `Ada%20Lovelace` and
- * `ada-lovelace` are the same record and nobody can invent a second spelling
- * of one person by hand-writing a URL.
- */
+/** Re-normalized so nobody can invent a second spelling of one person by hand-writing a URL. */
 function requireUserKey(raw: unknown): string {
   const key = userKeyFromParam(String(raw ?? ""));
   if (!key) throw new BadRequest("A guest key is required");
   return key;
 }
 
-/**
- * The name to show for a record, checked against the key it is being filed
- * under.
- *
- * The two must agree or the document stops meaning anything: display names are
- * what the page renders and keys are what it matches on, and a record whose
- * name does not normalize to its own key would appear twice or not at all.
- * That is also what stops a legacy display name containing a dash from being
- * written back — the grandfathered spelling is readable, not writable, and
- * saving under that key needs a legal name that maps to it.
- */
+/** The name must normalize to the key it is filed under, or the record would appear twice or not at all. */
 function requireDisplayName(value: unknown, key: string): string {
   if (typeof value !== "string") throw new BadRequest("A name is required");
   const problem = guestNameProblem(value);
@@ -218,14 +182,7 @@ type EventHandler = (
   event: StoredEvent,
 ) => Promise<void>;
 
-/**
- * A public event route: mark it JSON, resolve `/:slug`, tarpit the miss.
- *
- * `jsonRoute` is the outermost layer on purpose, so `res.locals.jsonRoute` is
- * set synchronously on entry: a throw out of `resolveEvent` (a corrupt
- * `links.json`, say) must still answer JSON, not plain text — the error
- * middleware in app.ts reads that mark.
- */
+/** Mark JSON, resolve `/:slug`, tarpit the miss. `jsonRoute` outermost, on purpose: a throw out of `resolveEvent` must still answer JSON. */
 function publicEventRoute(handler: EventHandler) {
   return jsonRoute(async (req: Request, res: Response): Promise<void> => {
     const event = await resolveEvent(param(req.params.slug));
@@ -233,21 +190,16 @@ function publicEventRoute(handler: EventHandler) {
       await eventMiss(req, res);
       return;
     }
-    // For the error middleware: a failure past this point belongs to this
-    // event, and the uuid is what tags its entry in the owner's log.
+    // For the error middleware: the uuid tags this event's log entry.
     res.locals.eventId = event.id;
     await handler(req, res, event);
   });
 }
 
 /**
- * An admin event route: the same resolution, but a miss answers immediately.
- *
- * Never tarpitted, for the reason no admin route ever is: the caller has
- * already authenticated, so a stale tab asking about a deleted event is a
- * mistake rather than a scan. `requireAdmin` stays a separate entry in the
- * route table, so an unauthenticated call on a known slug still answers 401
- * without revealing whether the event exists.
+ * Never tarpitted — the caller already authenticated. `requireAdmin` stays a
+ * separate route-table entry so an unauthenticated call on a known slug
+ * answers 401 without revealing whether the event exists.
  */
 function adminEventRoute(handler: EventHandler) {
   return jsonRoute(async (req: Request, res: Response): Promise<void> => {
@@ -261,15 +213,7 @@ function adminEventRoute(handler: EventHandler) {
   });
 }
 
-/**
- * A public route addressed to one guest record: `/:slug/users/:userKey`.
- *
- * The key validates BEFORE the slug resolves, and that order is load-bearing:
- * an illegal key is a fast 400 on the request's own merits. Resolve first and
- * an illegal key under an unknown slug turns into a tarpitted 404, while one
- * under a valid slug costs a links and event read before being refused.
- * Pinned by `user-key-order.test.ts`.
- */
+/** The key validates BEFORE the slug resolves — load-bearing order, pinned by `user-key-order.test.ts`. */
 function publicUserRoute(
   handler: (
     req: Request,
@@ -313,8 +257,7 @@ async function createEvent(req: Request, res: Response): Promise<void> {
   const duration = requireDuration(body.duration);
   const timeIncrement = requireTimeIncrement(body.timeIncrement);
   const startOnMonday = Boolean(body.startOnMonday);
-  // Written out even though it matches the default, so the file says what it
-  // does; an older file that omits it still reads as on.
+  // Written out even though it matches the default; an older file that omits it reads as on.
   const realtime = body.realtime === undefined ? true : requireRealtime(body.realtime);
 
   const explicitSlug =
@@ -382,9 +325,7 @@ async function patchEvent(
     if (problem) throw new BadRequest(problem);
   }
 
-  // Only when the slug actually changes: a PATCH that merely flips a setting
-  // must not take the links lock, rewrite links.json through the serialised
-  // atomic write, or consume a lease on its own unchanged slug.
+  // Only when the slug actually changes: a plain PATCH must not take the links lock or consume a lease.
   if (nextSlug !== existing.slug) {
     await claimSlug(nextSlug, existing.id, existing.slug);
     patch.slug = nextSlug;
@@ -399,27 +340,18 @@ async function patchEvent(
     res.status(404).json({ error: "Event not found" });
     return;
   }
-  // Respondents subscribed to hear when the plan itself moves: the name, the
-  // days, the window, the slot size — or the URL, which invalidates the link
-  // they saved. A PATCH that only touched `realtime`, or restated what was
-  // already there, moved nothing and says nothing.
+  // A PATCH that only touched `realtime`, or restated what was there, says nothing.
   const meaningful = (Object.keys(patch) as (keyof StoredEvent)[]).some(
     (field) =>
       field !== "realtime" &&
       JSON.stringify(patch[field]) !== JSON.stringify(existing[field]),
   );
   if (meaningful) notifyEventChanged(existing.id);
-  // Subscribers get the whole new document, the renamed slug included: a page
-  // watching this event corrects its own address bar off the snapshot. A no-op
-  // when this same PATCH just switched live updates off.
+  // The snapshot includes a renamed slug; a watching page corrects its own address bar.
   broadcastEvent(updated);
-  // Switched off: hang up on whoever is still watching. Not `gone` — the event
-  // is very much still there, and still answerable over REST. They will try to
-  // reconnect, be refused, and give up.
+  // Not `gone` — the event still exists and still answers over REST.
   if (!updated.realtime) closeRoom(updated.id);
-  // Stripped even though the caller is the owner: the page feeds this straight
-  // back into the document it is rendering from, and there is exactly one way
-  // to read an origin — the details route.
+  // Stripped even for the owner: the page feeds this back into the document it renders.
   res.json(publicEvent(updated));
 }
 
@@ -433,11 +365,7 @@ async function deleteEventRoute(
   await deleteEvent(existing.id);
   // Only once it is actually gone from disk; the room is closed with it.
   broadcastGone(existing.id);
-  // And so is its log buffer: a log for a document that no longer exists is
-  // not history, and any open log viewer is told the stream is over.
   dropEventLog(existing.id);
-  // Told immediately — there is nothing left to coalesce with — and the
-  // event's subscriptions are dropped once the notice has gone out.
   notifyEventDeleted(existing);
   res.json({ ok: true });
 }
@@ -446,12 +374,7 @@ async function deleteEventRoute(
 // public routes
 // ---------------------------------------------------------------------------
 
-/**
- * GET /<slug>/data — public: the whole event document.
- *
- * This is what the event page reads, and what a realtime snapshot is a copy
- * of. The segment may be the uuid or the slug.
- */
+/** GET /<slug>/data — public: the whole event document (uuid or slug). */
 async function getEventData(
   _req: Request,
   res: Response,
@@ -460,19 +383,7 @@ async function getEventData(
   res.json(publicEvent(event));
 }
 
-/**
- * GET /<slug>/details — admin: where each answer was last written from.
- *
- * The login wall, and the only route that serves `lastEdit`. Everything else
- * about an event is public to whoever holds the link, so this route exists for
- * exactly the one field that is not — which is also why it answers `401`
- * rather than pretending the sub-path is unknown: an owner who is signed out
- * should be told to sign in, not told the event is missing.
- *
- * Not tarpitted, for the reason no admin route ever is: the caller has already
- * authenticated, so a stale tab asking about a deleted event is a mistake
- * rather than a scan.
- */
+/** GET /<slug>/details — admin, the only route serving `lastEdit`; answers 401 rather than hiding the sub-path. */
 async function getEventDetails(
   _req: Request,
   res: Response,
@@ -482,23 +393,14 @@ async function getEventDetails(
     .map(([key, response]) => ({
       key,
       displayName: response?.displayName || key,
-      // Explicitly null rather than absent: a record written before tracking
-      // existed has no origin, and the panel has to say so rather than
-      // rendering an empty row that looks like a failure to load.
+      // Explicitly null: a pre-tracking record has no origin, and the panel must say so.
       lastEdit: response?.lastEdit ?? null,
     }))
     .sort((a, b) => a.displayName.localeCompare(b.displayName) || a.key.localeCompare(b.key));
   res.json({ users });
 }
 
-/**
- * Removes a guest's record from an event, under the event's file lock.
- * Resolves to false when the event vanished mid-request; a key that was not
- * there is a successful no-op.
- *
- * `event` is the document as it stands afterwards — unchanged when nothing was
- * removed — which is what the caller broadcasts to the event's subscribers.
- */
+/** Removes under the file lock; `ok` false when the event vanished; a missing key is a successful no-op. */
 async function dropResponse(
   id: string,
   key: string,
@@ -521,15 +423,7 @@ export interface ResponseInput {
   ifNeeded?: unknown;
 }
 
-/**
- * Where a save came from, as the transport that carried it saw it.
- *
- * Supplied by the caller rather than derived here, because the two callers see
- * it differently: the `PUT` reads `req.ip` and the request's own headers, while
- * a write session has no request at all by the time a frame arrives and uses
- * what was captured when the socket was upgraded. Neither is trusted for
- * anything — it is a note in the owner's log, not an identity.
- */
+/** Supplied by the caller: the PUT reads the request, a socket frame uses what the upgrade captured. A log note, not an identity. */
 export interface EditOrigin {
   ip: string;
   userAgent: string;
@@ -542,9 +436,7 @@ function lastEditFrom(origin: EditOrigin | null, at: string): LastEdit | undefin
   if (!origin) return undefined;
   return {
     ip: origin.ip,
-    // The same cap a session record puts on a user agent: a header is whatever
-    // the client felt like sending, and an event file is not a place to keep
-    // several kilobytes of it.
+    // The same cap a session record puts on a user agent.
     userAgent: origin.userAgent.slice(0, MAX_USER_AGENT_LENGTH),
     at,
   };
@@ -568,15 +460,7 @@ export interface ResponseWrite {
   changed: boolean;
 }
 
-/**
- * Validates and applies one guest's answer. **The only write path there is.**
- *
- * Both the REST `PUT` and a `save` frame on a named write session come through
- * here, which is what makes "validated exactly like the REST PUT" a fact about
- * the code rather than a promise about it: there is one validator, one
- * zero-record rule and one place the document is touched. Throws `BadRequest`
- * on anything malformed — the callers differ only in what they do with that.
- */
+/** The only write path: the REST `PUT` and a realtime save share this one validator and zero-record rule. Throws `BadRequest`. */
 export async function writeResponse(
   eventId: string,
   key: string,
@@ -594,24 +478,16 @@ export async function writeResponse(
   const available = new Set(availability);
   const ifNeeded = ifNeededRaw.filter((iso) => !available.has(iso));
 
-  // Zero-record invariant (ARCHITECTURE.md § API): an answer with nothing in
-  // it is not an answer. Clearing the grid takes the guest off the event
-  // instead of leaving a hollow record behind for the respondents list and the
-  // heatmap to count. Autosave sends the whole state on every edit, so this is
-  // the path a guest's "Clear" takes — and it has to be a no-op when they were
-  // never on the list.
+  // Zero-record invariant (ARCHITECTURE.md § API): clearing the grid removes the guest; a no-op when they were never on the list.
   if (availability.length === 0 && ifNeeded.length === 0) {
     const { ok, removed, event } = await dropResponse(eventId, key);
-    // Clearing an answer is a change the owner asked to hear about; a clear
-    // that cleared nothing is not. Fire-and-forget, like the broadcast.
+    // A clear that cleared nothing is not a change the owner hears about.
     if (removed) notifyResponsesChanged(eventId, displayName);
     return { ok, response: null, event, changed: removed };
   }
 
   const now = new Date().toISOString();
-  // Overwritten on every write, never merged with what was there: the field
-  // says where this answer was last edited from, and a stale half of it would
-  // be a worse answer than none.
+  // Overwritten, never merged: a stale half would be worse than none.
   const lastEdit = lastEditFrom(origin, now);
   const response: EventResponse = {
     displayName,
@@ -626,11 +502,7 @@ export async function writeResponse(
     current.updatedAt = now;
     return current;
   });
-  // In here rather than in the routes, for the same reason the validator is:
-  // this is the only write path, so the REST PUT and a realtime save frame
-  // trigger the owner's notification identically. Scheduling only — delivery
-  // is coalesced and queued in push/deliver.ts and can neither block nor fail
-  // this request.
+  // In the one write path so both callers notify identically; scheduling only — delivery can neither block nor fail this request.
   if (updated) notifyResponsesChanged(eventId, displayName);
   return {
     ok: updated !== null,
@@ -640,12 +512,7 @@ export async function writeResponse(
   };
 }
 
-/**
- * PUT /<slug>/users/<userKey> — public guest autosave.
- *
- * Public by contract (ARCHITECTURE.md § API): the capability URL is the auth
- * boundary, so anyone who can read the event can already answer it.
- */
+/** PUT /<slug>/users/<userKey> — public by contract (ARCHITECTURE.md § API): the URL is the auth boundary. */
 async function putResponse(
   req: Request,
   res: Response,
@@ -654,8 +521,7 @@ async function putResponse(
 ): Promise<void> {
   const body = asRecord(req.body);
   const { ok, response, event, changed } = await writeResponse(existing.id, key, body, {
-    // Trust-proxy-aware by construction: `req.ip` is the rightmost forwarded
-    // entry no trusted peer vouched for (ARCHITECTURE.md § Trusted proxies).
+    // Trust-proxy-aware by construction (ARCHITECTURE.md § Trusted proxies).
     ip: req.ip ?? "",
     userAgent: userAgentOf(req.headers),
   });
@@ -665,17 +531,11 @@ async function putResponse(
   }
   // A room should only ever be woken for something that actually happened.
   if (changed && event) broadcastEvent(event);
-  // The record goes back to the guest who just wrote it, and this route is
-  // public: the origin it was just stamped with is not theirs to read back.
+  // Public route: the origin just stamped is not the guest's to read back.
   res.json({ ok: true, key, response: response && publicResponse(response) });
 }
 
-/**
- * DELETE /<slug>/users/<userKey> — public.
- *
- * The admin's per-respondent delete on the event page uses this same endpoint;
- * gating it would only hide a door already open to everyone holding the link.
- */
+/** DELETE /<slug>/users/<userKey> — public: gating would only hide a door already open to link-holders. */
 async function deleteResponse(
   req: Request,
   res: Response,
@@ -701,24 +561,9 @@ async function deleteResponse(
 }
 
 /**
- * Anything else under `/<slug>/…`, any method.
- *
- * Only the reserved **API** sub-segments are this router's to answer: those
- * callers are API clients and get JSON — an unresolvable first segment is a
- * scan and is [tarpitted](../tarpit.ts) first, while a *resolvable* one has
- * proven it holds the capability URL and gets its 404 at once. That includes
- * a reserved segment with extra path on it (`/<slug>/data/x`): it stays an
- * API miss, deliberately, rather than becoming a page.
- *
- * Every other multi-segment path is **page territory** and falls through to
- * the SSR handler behind this router, which serves the canonical shapes,
- * 302-redirects everything else under a resolving slug to the event root, and
- * tarpits unknown slugs exactly as the bare `/<slug>` always was
- * (`event-routes.ts` owns the classification).
- *
- * Registered last, so the real sub-paths always win. A plain `GET /<slug>/ws`
- * or `GET /<slug>/users/<key>` lands here too: those are WebSocket upgrades,
- * they never reach Express, and a non-upgrade request for them is not a route.
+ * Reserved API sub-segments answer JSON here (tarpitted when the slug misses);
+ * every other multi-segment path is page territory and falls through to SSR.
+ * Registered last, so the real sub-paths always win.
  */
 async function eventScopedCatchAll(
   req: Request,
@@ -748,16 +593,13 @@ async function eventScopedCatchAll(
 eventsRouter.get("/events", requireAdmin, listEvents);
 eventsRouter.post("/events", requireAdmin, createEvent);
 
-// Event-scoped, mounted at the root. `/<slug>` itself is the page and is not
-// here: it belongs to the SSR handler in app.ts. The wrapper names say who a
-// miss answers to: `publicEventRoute`/`publicUserRoute` tarpit it,
-// `adminEventRoute` (always behind `requireAdmin`) answers at once.
+// `/<slug>` itself belongs to the SSR handler in app.ts. The public* wrappers
+// tarpit a miss; `adminEventRoute` (always behind `requireAdmin`) answers at once.
 eventScopedRouter.get("/:slug/data", publicEventRoute(getEventData));
 eventScopedRouter.get("/:slug/details", requireAdmin, adminEventRoute(getEventDetails));
 eventScopedRouter.patch("/:slug/settings", requireAdmin, adminEventRoute(patchEvent));
 eventScopedRouter.delete("/:slug/settings", requireAdmin, adminEventRoute(deleteEventRoute));
 eventScopedRouter.put("/:slug/users/:userKey", publicUserRoute(putResponse));
 eventScopedRouter.delete("/:slug/users/:userKey", publicUserRoute(deleteResponse));
-// Not wrapped in `jsonRoute`: it decides for itself, because most of what
-// reaches it is a browser rather than an API client.
+// Not wrapped in `jsonRoute`: it decides for itself.
 eventScopedRouter.all("/:slug/{*rest}", eventScopedCatchAll);
