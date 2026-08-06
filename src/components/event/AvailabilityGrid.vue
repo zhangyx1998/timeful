@@ -1,75 +1,8 @@
 <script setup lang="ts">
 /**
- * The scheduling grid.
- *
- * Interaction is one delegated pointer handler on the grid body: positions are
- * hit-tested to (row, col) against measured geometry.
- *
- * Two hands, two gestures
- * -----------------------
- * A mouse paints by dragging: press, sweep, release, and the rectangle between
- * the two cells is committed in one go. Nothing else on a desktop wants that
- * drag, so it can have it.
- *
- * A finger cannot. The same drag is the only way to scroll a chart taller and
- * wider than the screen, and for as long as the body held `touch-action: none`
- * every swipe over the cells was a negotiation: the pane refused to move and a
- * sweep meant to look around painted instead. So on touch the drag goes back to
- * the platform — both axes, native momentum and all — and selecting is done in
- * two beats instead of one. A tap marks the cell it landed on and puts a pair of
- * round handles on the opposite corners of it; dragging a handle grows the
- * rectangle, and the cells it crosses are painted as they arrive and put back as
- * they leave, so what is on screen is always what is saved. Only the handles
- * take `touch-action: none` — 44px of it each — because they are the only place a
- * drag still means something other than scrolling.
- *
- * The two paths meet at the same commit, the same floating options and the same
- * undo: a resize keeps growing one record of what every cell it has ever touched
- * used to be (`selectionStep`), so the undo in the options strip still restores
- * the state the tap interrupted, however far the handles travelled since. The
- * strip's other way out is the cross beside it, which is the dismissal — the
- * marks stand, the handles go, and a press anywhere else on the chart means
- * exactly that and nothing more.
- *
- * Scrolling
- * ---------
- * Every column of the event is rendered once, in a track inside a **native
- * scroll container**, and the track may rest anywhere on it. Native rather than
- * a transform, because everything a hand-rolled version would have to
- * reimplement badly comes free: momentum and rubber-banding on touch, shift +
- * wheel on the desktop, keyboard scrolling for a focused region, and — the part
- * that matters most here — `getBoundingClientRect()` already carries the scroll
- * offset, so pixel hit-testing needs no arithmetic about where the track is and
- * stays correct mid-momentum, mid-glide and mid-smooth-scroll alike.
- *
- * The time gutter and the day headers live *inside* that container, pinned with
- * `position: sticky` on their own axis. One scrollport rather than three
- * elements kept in sync, and it is what lets the chart become a spreadsheet on a
- * phone: bounded height, both axes scrolling, headings that stay.
- *
- * The controls are knobs laid *over* the chart at its clipped edges, centred on
- * the body, rather than rails beside it: the chart is the widest thing on the
- * page and every pixel spent on a gutter is a pixel of column. Only the knob
- * itself takes the pointer — the fade it sits in does not — so a cell under the
- * fade is painted like any other, and while a paint drag is running the knobs go
- * inert entirely, so a sweep that crosses one paints straight through it instead
- * of scrolling. The columns run under the fade with the next one peeking past
- * it: together they say the grid continues that way.
- *
- * Two ways to move it by hand. A mouse drag anywhere the drag does not already
- * mean something — the whole chart in the group view, the headings and the
- * gutter while editing — grabs the track and pans it, and a movement threshold
- * separates that from the click that pins a slot. Touch is left entirely to the
- * platform, everywhere and in both modes.
- *
- * A paint drag held at either clipped edge pulls the track along with it, so a
- * selection can run past the columns that happen to be on screen. It glides
- * continuously now that a resting position need not be aligned to anything;
- * under `prefers-reduced-motion` the same travel is quantised to whole columns,
- * so the track steps rather than drifts. Either way the container clamps itself
- * at its own ends, and every scroll — glide, momentum or chevron — re-hit-tests
- * the held pointer, so the rectangle picks up each column as it arrives rather
- * than jumping when the movement stops.
+ * The scheduling grid: one delegated pointer handler on the body, hit-tested
+ * against measured geometry. Gestures, scrolling and the selection model are
+ * documented in ARCHITECTURE.md § Client model.
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
@@ -130,30 +63,16 @@ const emit = defineEmits<{
   paint: [change: { type: "add" | "remove"; slots: number[] }];
   /** The just-painted rectangle, told what it means. */
   flip: [change: { type: AvailabilityType; slots: number[] }];
-  /**
-   * What the emits just above amounted to, and which gesture they belong to.
-   * Sent after them, so the page reading it sees the change already applied and
-   * can pair what the slots were with what they now are (`lib/history.ts`).
-   */
+  /** Sent after the emits above, so the page pairs what the slots were with what they now are (`lib/history.ts`). */
   commit: [action: HistoryCommit];
-  /**
-   * Take the last action back. The chart no longer owns the way out of a
-   * selection it has just committed: the arrow on the options strip asks for the
-   * same undo the keyboard does, off the same stack, so there is one history and
-   * not two ideas of what "back" means.
-   */
+  /** The arrow asks for the same undo the keyboard does, off the same stack. */
   undo: [];
   hover: [slot: number | null];
   pin: [slot: number | null];
 }>();
 
 defineSlots<{
-  /**
-   * A row under the chart, laid out to the chart body's exact box: it starts
-   * where the day columns start (past the time gutter) and ends where the last
-   * column ends. Anything that annotates the chart — the legend, the control
-   * that wipes it — belongs to that box rather than to the page's width.
-   */
+  /** A row under the chart, laid out to the chart body's exact box. */
   foot?: () => unknown;
 }>();
 
@@ -167,29 +86,15 @@ const HEADER_HEIGHT = 42;
 const TOOLTIP_MAX_WIDTH = 180;
 /** How long it waits to be used before it takes itself away. */
 const MENU_LINGER_MS = 5000;
-/**
- * Longer for a selection with handles on it. A drag's options are read and either
- * used or ignored within a second or two; a tap's are the start of the gesture
- * rather than the end of it, and the handles they arrive with have to be found
- * and aimed at before they can be dragged.
- */
+/** Longer for a selection with handles: a tap's options start the gesture rather than end it. */
 const MENU_LINGER_TOUCH_MS = 12000;
-/**
- * How far a finger may travel and still have been a tap. Generous, because it is
- * only a second line of defence: the browser cancels the pointer outright the
- * moment it decides the gesture is a scroll, and that is what usually settles it.
- */
+/** How far a finger may travel and still be a tap; the browser's pointercancel usually settles it first. */
 const TAP_SLOP = 12;
 /** How much of the neighbouring column shows past the clipped edge. */
 const PEEK = 15;
 /** How far a mouse has to travel before it is panning rather than clicking. */
 const PAN_THRESHOLD = 5;
-/**
- * How deep into the chart a drag has to reach for the track to start coming by
- * itself. Roughly the fade's own width, so the zone is the part of the chart
- * that already reads as "the edge" — wider for a finger, which covers more than
- * it points at.
- */
+/** How deep a drag reaches before the track comes by itself: roughly the fade's width, wider for a finger. */
 const EDGE_ZONE = 30;
 const EDGE_ZONE_TOUCH = 44;
 /** Extra depth the engaged zone keeps, so its boundary cannot flutter. */
@@ -296,12 +201,7 @@ function readScroll() {
   scrollWidth.value = element.scrollWidth;
 }
 
-/**
- * The scroll container is what the columns have to fit, less whatever the
- * pinned gutter takes off the front of it. Both are read back rather than
- * assumed, so a change to either cannot silently put the columns and the
- * hit-testing out of step.
- */
+/** Read back rather than assumed, so the columns and the hit-testing cannot drift apart. */
 function measure() {
   const element = viewport.value;
   if (!element) return;
@@ -313,23 +213,14 @@ function measure() {
   readScroll();
 }
 
-/**
- * Every scroll re-hit-tests a held pointer. That one line is what keeps a paint
- * drag correct through momentum, a chevron's smooth scroll and the edge glide
- * alike, without any of them having to know about the drag.
- */
 function onScroll() {
   const wasLeft = scrollLeft.value;
   const wasTop = scrollTop.value;
   readScroll();
   if (gesturing.value) retrack();
-  // The options are placed over the pane, but what they are about is a
-  // rectangle in the track — so when the track moves they move with it, and the
-  // ring and the strip that names it never come apart. Only once it is a
-  // control: while the drag runs it is following the pointer instead, which is
-  // a stronger claim on where it should be. The summary card needs none of
-  // this: it is placed against the region's own box, which is read out of the
-  // track and has therefore already moved.
+  // A live menu is about a rectangle in the track, so it moves with it; a
+  // preview follows the pointer instead. The summary card is placed against the
+  // region's box, which has already moved.
   const state = menuState.value;
   if (state?.live) {
     state.x -= scrollLeft.value - wasLeft;
@@ -358,17 +249,13 @@ onBeforeUnmount(() => {
   window.removeEventListener("pointerup", endDrag);
 });
 
-// A narrower column means a shorter track, which may leave the resting position
-// past its own end; the container corrects itself, and this reads it back.
+// A shorter track may leave the resting position past its end; the container
+// corrects itself, and this reads it back.
 watch([colWidth, () => columns.value.length], () => void nextTick(readScroll));
 
 // --- chevrons -------------------------------------------------------------
 
-/**
- * One viewport per press, smoothly, clamped by the container itself. Instant
- * under `prefers-reduced-motion`: the destination is the point, the travel is
- * not.
- */
+/** Instant under `prefers-reduced-motion`: the destination is the point, the travel is not. */
 function scrollByStep(direction: -1 | 1) {
   const element = viewport.value;
   if (!element) return;
@@ -380,12 +267,6 @@ function scrollByStep(direction: -1 | 1) {
 }
 
 // --- panning by mouse ------------------------------------------------------
-//
-// Touch is the platform's: native scrolling already has the momentum and the
-// rubber-banding, and no hand-rolled version of either would be as good. A
-// mouse has no such gesture, so it gets one — but only where a drag does not
-// already mean something else. In the group view that is the whole chart; while
-// editing it is the headings and the gutter, and the body keeps painting.
 
 const panning = ref(false);
 let panFrom: { x: number; scroll: number } | null = null;
@@ -425,21 +306,13 @@ function endPan() {
 function onViewportPointerDown(event: PointerEvent) {
   if (event.button !== 0 && event.pointerType === "mouse") return;
   if (!event.isPrimary) return;
-  // Over the cells the drag belongs to the cells, in either mode. It used to be
-  // the pan's everywhere in the group view, back when a drag there meant
-  // nothing; it now draws the region the summary card reads, and a gesture
-  // cannot be both. What is left for the pan is what it has while editing: the
-  // headings and the gutter, which say nothing about any one cell.
+  // Over the cells the drag belongs to the cells, in either mode; the pan gets
+  // the headings and the gutter.
   if (body.value?.contains(event.target as Node)) return;
   startPan(event);
 }
 
-/**
- * Shift + wheel is horizontal scrolling everywhere else, and Chromium gives it
- * to a scroll container for free. Firefox does not deliver it to a container
- * that only overflows on one axis, so it is translated here — and only when
- * there is somewhere to go, leaving the page's own scroll alone otherwise.
- */
+/** Firefox does not deliver shift+wheel to a container overflowing on one axis; translated here, only when there is somewhere to go. */
 function onWheel(event: WheelEvent) {
   const element = viewport.value;
   if (!element || !event.shiftKey || event.deltaX !== 0 || event.deltaY === 0) return;
@@ -459,19 +332,10 @@ const pressCell = ref<Cell | null>(null);
 const hoverCell = ref<Cell | null>(null);
 /** Which handle is being dragged, while one is. */
 const resizing = ref<"from" | "to" | null>(null);
-/**
- * A touch press that has not yet turned out to be either a tap or a scroll. It
- * paints nothing while it is undecided: a release settles it as a tap, and a
- * `pointercancel` — which the browser sends the instant it takes the gesture over
- * for scrolling — or enough travel settles it the other way.
- */
+/** A touch press still undecided between tap and scroll; it paints nothing until a release settles it. */
 let touchPress: { cell: Cell; x: number; y: number } | null = null;
 
-/**
- * Whether a gesture owns the chart: a mouse painting, or a handle being dragged.
- * Both want the knobs inert, the edge glide running and every scroll re-read
- * against the pointer that is still down.
- */
+/** A gesture owns the chart: knobs inert, edge glide running, every scroll re-read against the held pointer. */
 const gesturing = computed(() => dragging.value || resizing.value !== null);
 
 function slotFor(cell: Cell | null): number | null {
@@ -479,21 +343,12 @@ function slotFor(cell: Cell | null): number | null {
   return slotAt(props.model, cell.row, cell.col);
 }
 
-/**
- * What a rectangle of slots currently means, read off the answer itself rather
- * than remembered anywhere: a flip is applied by the parent, and this follows
- * it. The options strip and a handle's resize both ask, and they must get the
- * same answer.
- */
+/** Read off the marks themselves, so the options strip and a handle's resize get the same answer. */
 function currentType(slots: number[]): AvailabilityType {
   return slots.some((slot) => props.ifNeeded.has(slot)) ? "if_needed" : "available";
 }
 
-/**
- * The body's client rect already includes the scroll offset, so pointer
- * coordinates translate into track space without knowing where the track is —
- * mid-glide and mid-momentum as well as at rest.
- */
+/** The body's client rect already carries the scroll offset, so this stays correct mid-glide and mid-momentum. */
 function cellFromPoint(clientX: number, clientY: number): Cell | null {
   const element = body.value;
   if (!element) return null;
@@ -532,11 +387,7 @@ function stopEdgeScroll() {
   edgeCarry = 0;
 }
 
-/**
- * Re-reads the cell under a pointer that is still down. The one line that keeps
- * both gestures correct through momentum, a chevron's smooth scroll and the edge
- * glide alike, without any of them having to know which gesture is running.
- */
+/** Re-reads the cell under a held pointer: what keeps both gestures correct through momentum, smooth scroll and glide. */
 function retrack() {
   if (!lastPointer) return;
   const cell = cellFromPoint(lastPointer.x, lastPointer.y);
@@ -562,8 +413,7 @@ function glide(now: number) {
   if (step.delta !== 0) element.scrollLeft += step.delta;
 
   readScroll();
-  // A frame that moved nothing still has to re-hit-test: `onScroll` only fires
-  // when the position actually changed, and a held finger sends no moves.
+  // A frame that moved nothing still re-hit-tests: a held finger sends no moves.
   retrack();
 
   const done = edgeDir.value < 0 ? edges.value.atStart : edges.value.atEnd;
@@ -588,8 +438,7 @@ function updateEdgeScroll(event: PointerEvent) {
     return;
   }
   const rect = element.getBoundingClientRect();
-  // Measured from where the columns begin: the gutter is pinned over the track
-  // and is not part of the field a drag scrolls.
+  // Measured from where the columns begin; the pinned gutter is not part of the field.
   const direction = edgeScrollDirection(
     event.clientX - rect.left - gutterWidth.value,
     chartWidth.value,
@@ -612,20 +461,15 @@ function updateEdgeScroll(event: PointerEvent) {
 }
 
 function onPointerDown(event: PointerEvent) {
-  // Ignore secondary buttons, and the extra contacts of a multi-touch gesture
-  // (a two-finger pinch must not start painting).
+  // Secondary buttons and the extra contacts of a pinch must not paint.
   if (event.button !== 0 && event.pointerType === "mouse") return;
   if (!event.isPrimary) return;
   const touch = event.pointerType !== "mouse";
-  // A press on the cells is not a pan, whatever the last press was. The flag
-  // belongs to the pan gesture and only `startPan` clears it, and the pan can
-  // no longer start from here — so without this a single drag of the headings
-  // would leave every later press on the cells looking like the tail of it.
+  // Only `startPan` clears the pan flag; reset it so a headings drag does not
+  // taint later presses on the cells.
   panMoved = false;
-  // Whatever the last paint was about, this press is about something else.
-  // Except on touch, where a press may still turn out to be a scroll, and
-  // scrolling past a selection is not a reason to lose it — `onScroll` takes it
-  // away if the chart actually moves, and a tap replaces it outright.
+  // On touch the press may yet be a scroll, and scrolling past a selection is
+  // not a reason to lose it.
   if (!touch) closeMenu();
   const cell = cellFromEvent(event);
   if (!cell) return;
@@ -636,19 +480,14 @@ function onPointerDown(event: PointerEvent) {
   if (slot === null) return;
 
   if (touch) {
-    // Undecided: the platform owns this gesture until it turns out not to want
-    // it. Nothing is captured and nothing is prevented, so a swipe scrolls the
-    // pane as it does anywhere else on the phone.
+    // Nothing captured, nothing prevented: a swipe scrolls the pane as usual.
     touchPress = { cell, x: event.clientX, y: event.clientY };
     return;
   }
 
   if (!props.editable) {
-    // A mouse drag over the group's answers draws a region to read, the way one
-    // over your own draws a region to paint. Nothing is decided yet: the ring
-    // follows the pointer, and only a release on a *different* cell makes a
-    // region of it — a press and release on one cell is the click that has
-    // always pinned a slot, and it still is.
+    // Only a release on a different cell makes a region; press and release on
+    // one cell is still the click that pins a slot.
     dragging.value = true;
     dragStart.value = cell;
     dragCur.value = cell;
@@ -659,8 +498,7 @@ function onPointerDown(event: PointerEvent) {
     return;
   }
 
-  // Marked is marked, whichever of the two it is: pressing a cell you have
-  // already claimed gives it back, and pressing an unclaimed one takes it.
+  // Pressing a claimed cell gives it back; pressing an unclaimed one takes it.
   const marked = props.availability.has(slot) || props.ifNeeded.has(slot);
   dragType.value = marked ? "remove" : "add";
   dragging.value = true;
@@ -689,9 +527,7 @@ function onPointerMove(event: PointerEvent) {
     return;
   }
   if (event.pointerType !== "mouse" || panning.value) return;
-  // A region is the reading the chart is currently offering, and the card
-  // beside it says so in full. A bubble following the cursor across it would be
-  // a second, smaller answer to a question already answered.
+  // No hover bubble over a live region — the card already answers.
   if (viewSelection.value) return;
   setHover(cell);
 }
@@ -706,11 +542,7 @@ function onPointerLeave() {
   setHover(null);
 }
 
-/**
- * A tap on a cell, which is what a touch selection begins as: it marks that one
- * cell exactly as a single-cell drag would, and hands back a rectangle with
- * handles on it to be made bigger.
- */
+/** A tap marks one cell as a single-cell drag would, and hands back a rectangle with handles. */
 function commitTap(press: { cell: Cell }, event: PointerEvent): boolean {
   const { cell } = press;
   const slot = slotFor(cell);
@@ -719,8 +551,7 @@ function commitTap(press: { cell: Cell }, event: PointerEvent): boolean {
   const marked = props.availability.has(slot) || props.ifNeeded.has(slot);
   dragType.value = marked ? "remove" : "add";
   const slots = [slot];
-  // Read before the emit, so the record is the state the tap interrupted — the
-  // same order the drag path takes, for the same reason.
+  // Read before the emit, so the record is the state the tap interrupted.
   const snapshot = snapshotSlots(slots, props.availability, props.ifNeeded);
   openMenu(cell, marked ? "erase" : "create", event, true);
   emit("paint", { type: dragType.value, slots });
@@ -741,8 +572,7 @@ function endDrag(event?: PointerEvent) {
   } else if (props.editable && dragging.value && dragStart.value && dragCur.value) {
     const slots = rectangleSlots(props.model, dragStart.value, dragCur.value);
     if (slots.length > 0) {
-      // Read before the emit, and so the state the press started from: nothing
-      // the guest owns moves until the parent applies this change.
+      // Read before the emit: the state the press started from.
       const snapshot = snapshotSlots(slots, props.availability, props.ifNeeded);
       emit("paint", { type: dragType.value, slots });
       commitMenu(dragStart.value, dragCur.value, slots, snapshot);
@@ -751,8 +581,7 @@ function endDrag(event?: PointerEvent) {
   } else if (!props.editable && dragging.value && dragStart.value && dragCur.value) {
     committed = commitViewDrag(dragStart.value, dragCur.value, event);
   }
-  // A drag that landed on nothing leaves no rectangle behind, and so nothing
-  // for the preview that followed it to become.
+  // A drag that landed on nothing leaves nothing for the preview to become.
   if (!committed) closeMenu();
 
   dragging.value = false;
@@ -761,12 +590,7 @@ function endDrag(event?: PointerEvent) {
   pressCell.value = null;
 }
 
-/**
- * The pointer was taken away. On touch that is the platform saying it wants the
- * gesture for a scroll, which is the ordinary case rather than an error — so the
- * undecided press is simply dropped, and a selection already on screen is left
- * for `onScroll` to deal with if the chart really moves.
- */
+/** On touch, cancel is the platform taking the gesture for a scroll — the ordinary case, not an error. */
 function onPointerCancel(event?: PointerEvent) {
   window.removeEventListener("pointerup", endDrag);
   stopEdgeScroll();
@@ -790,47 +614,13 @@ watch(
 );
 
 // --- what the rectangle means ---------------------------------------------
-//
-// A paint used to be committed in a mode chosen beforehand, from a switch that
-// sat above the chart for the whole session to be read once. The choice belongs
-// to the rectangle, not to the session: it arrives with one, attached to it, and
-// leaves with it. Every drag paints an available time — the answer nine times in
-// ten — and the menu is the tenth.
-//
-// It rides the drag rather than waiting for it. Appearing only on release meant
-// the options arrived somewhere the hand had already left, announced by nothing;
-// carried along beside the pointer from the press onwards they are simply
-// already there when the finger lifts, in the place the finger lifted from. For
-// as long as the drag runs the menu is a preview — a label on what is being
-// drawn, taking no pointer at all, because the one pointer in play belongs to
-// the drag and nothing floating under it may be allowed to intercept it. The
-// release is what turns it into a control, at the position it had reached.
-//
-// An erase gets one too. It has no meaning to choose, but it has the same thing
-// to take back, and a rectangle wiped by accident used to be unrecoverable
-// except by painting it again from memory.
-//
-// Either strip ends with a cross. Undo and dismiss are two different answers —
-// one moves the marks back, the other only closes the strip — and while the
-// cross stood for the first of them there was no button for the second at all,
-// only the two things a visitor has to be told: wait, or press elsewhere.
 
-/**
- * What a selection on the chart is for. Two of them paint — a rectangle being
- * marked, a rectangle being wiped — and the third does not: `view` is a region
- * drawn over the group's answers to read them, and it carries no options strip,
- * no countdown and no record, because there is nothing it changed.
- */
+/** `view` is a region drawn over the group's answers to read them: no options strip, no countdown, no record. */
 type MenuKind = "create" | "erase" | "view";
 
 interface MenuState {
   kind: MenuKind;
-  /**
-   * Which gesture this is, for the page's history. A selection commits over and
-   * over — a tap, then every step of a handle drag, then whatever the strip is
-   * told the rectangle means — and all of it is one thing to take back, so every
-   * commit it makes carries the same id.
-   */
+  /** One gesture, one history entry: every commit this selection makes carries the same id. */
   action: number;
   /** Corners of the rectangle, so the outline outlives the drag with the menu. */
   start: Cell;
@@ -842,11 +632,7 @@ interface MenuState {
   touch: boolean;
   /** False while the drag runs — a preview cannot be clicked, or aimed at. */
   live: boolean;
-  /**
-   * Whether the rectangle carries handles: true for the touch path, where the
-   * tap is the start of the selection rather than the whole of it. A drag has
-   * already been aimed by hand and needs none.
-   */
+  /** True for the touch path, where the tap starts the selection rather than ends it. */
   handles: boolean;
   slots: number[];
   /** What those slots were before the drag; null until the drag commits. */
@@ -856,17 +642,12 @@ interface MenuState {
 const menuState = ref<MenuState | null>(null);
 /** Counts gestures, so each selection's commits are told apart from the last's. */
 let actions = 0;
-/**
- * The strip and the handle layer, so a press can be told from an outside one.
- * The strip is a child component now, so what the press test needs — a real
- * element to ask `contains()` of — is the root it exposes, not the instance.
- */
+/** The strip's exposed root element, for `contains()` press tests. */
 const menuComp = ref<InstanceType<typeof SelectionMenu> | null>(null);
 const gripsEl = ref<HTMLElement | null>(null);
 let menuTimer: ReturnType<typeof setTimeout> | undefined;
 
-/** Takes away whatever is on the chart: the strip, the ring, and the card with
- *  them, since the card is only ever a reading of a region. */
+/** Takes away whatever is on the chart: the strip, the ring, and the card with them. */
 function closeMenu() {
   clearTimeout(menuTimer);
   menuTimer = undefined;
@@ -880,9 +661,7 @@ function holdMenu() {
   menuTimer = setTimeout(closeMenu, linger);
 }
 
-// A pointer resting on the menu is attention, not inattention: the countdown
-// pauses for as long as it hovers and starts over when it leaves. Touch gets
-// no enter/leave pairing worth trusting, so only hovering pointers pause it.
+// Hover pauses the countdown; touch has no enter/leave pairing worth trusting.
 function pauseMenu(event: PointerEvent) {
   if (event.pointerType === "touch") return;
   clearTimeout(menuTimer);
@@ -894,12 +673,7 @@ function resumeMenu(event: PointerEvent) {
   holdMenu();
 }
 
-/**
- * A client point in the coordinates the overlays are positioned in — the wrap
- * the menu and the tooltip are absolutely placed inside. The scrollport's own
- * rect carries the scroll already, so nothing here has to know where the track
- * has got to.
- */
+/** A client point in the wrap's coordinates; the scrollport's rect already carries the scroll. */
 function anchorFromPoint(clientX: number, clientY: number): { x: number; y: number } | null {
   const element = viewport.value;
   if (!element) return null;
@@ -941,13 +715,7 @@ function followMenu(event: PointerEvent) {
   state.y = anchor.y;
 }
 
-/**
- * The release: the preview becomes the control, without moving.
- *
- * And the one place a rectangle lands, so the one place the page is told an
- * action happened. The record goes up *after* the emits that moved the marks,
- * because the page pairs it with what the slots hold once they have landed.
- */
+/** The release: the preview becomes the control. The record goes up after the emits that moved the marks. */
 function commitMenu(start: Cell, end: Cell, slots: number[], snapshot: SlotSnapshot) {
   const state = menuState.value;
   if (!state) return;
@@ -964,63 +732,30 @@ function chooseType(type: AvailabilityType) {
   const state = menuState.value;
   if (!state?.live) return;
   emit("flip", { type, slots: state.slots });
-  // Still the same action. Saying what the rectangle you just drew means is the
-  // last beat of drawing it, not a second thing done to it — so the way back
-  // from both is the state before the rectangle, and one press of undo, rather
-  // than one press to un-say it and another to un-draw it.
+  // Still the same action: saying what the rectangle means is the last beat of drawing it.
   if (state.snapshot) emit("commit", { id: state.action, before: state.snapshot });
-  // It stays: having just changed their mind once, the visitor may change it
-  // back, and the menu that let them do it should not vanish for having worked.
+  // It stays: the visitor may change their mind back.
   holdMenu();
 }
 
-/**
- * Undo, asked for rather than performed.
- *
- * It used to replay this selection's own record straight back through the
- * emits. It no longer has to: every commit the selection made was reported
- * upwards, so the top of the page's history *is* this rectangle, and asking for
- * "the last action" and asking for "this one" are the same request. Routing it
- * through the stack is what makes the arrow and cmd+Z one history — press the
- * arrow and cmd+shift+Z brings the rectangle back, dismiss the strip and cmd+Z
- * still takes it away.
- *
- * The menu goes with it. Unlike a flip, which invites being flipped back, this
- * has put things exactly as they were — there is nothing left for it to offer.
- */
+/** Routed through the page's stack, so the arrow and cmd+Z are one history; the menu goes with it. */
 function undoSelection() {
   if (!menuState.value?.live) return;
   closeMenu();
   emit("undo");
 }
 
-/**
- * Put the options away and leave the marks alone — what a press outside the
- * selection does, and what the countdown does on its own, said as a button.
- *
- * Worth a control of its own because the other two ways of reaching it are both
- * things you have to know: that the strip goes by itself if left, and that
- * anywhere else on the chart dismisses it. A cross in the corner is neither.
- * It takes the handles with it, because the selection and its options are one
- * thing on screen and dismissing half of it would leave a rectangle nothing
- * explains.
- */
+/** Puts the options away and leaves the marks alone; takes the handles with it. */
 function dismissMenu() {
   if (!menuState.value?.live) return;
   closeMenu();
 }
 
-/**
- * The strip the chart is showing, if any: what it is about, where it is
- * anchored, and whether it is live yet. The strip itself measures its own box
- * and works its placement out from this — the chart owns the gesture, the
- * countdown and the anchor, and nothing about the strip's dimensions.
- */
+/** The chart owns the gesture, the countdown and the anchor; the strip measures its own box. */
 const menu = computed(() => {
   const state = menuState.value;
   if (!state || !props.editable) return null;
-  // A region over the group's answers has no options: it changed nothing, so
-  // there is nothing to tell it it meant and nothing to take back.
+  // A region over the group's answers changed nothing, so it gets no options.
   if (state.kind === "view") return null;
 
   return {
@@ -1031,10 +766,7 @@ const menu = computed(() => {
   };
 });
 
-/**
- * A rectangle's box in the track's own pixels, which is where it is drawn — and
- * so also where anything placed against it has to be worked out from.
- */
+/** A rectangle's box in the track's own pixels. */
 function regionBox(start: Cell, end: Cell) {
   const minCol = Math.min(start.col, end.col);
   const maxCol = Math.max(start.col, end.col);
@@ -1050,13 +782,7 @@ function regionBox(start: Cell, end: Cell) {
   };
 }
 
-/**
- * The rectangle the selection is about, ringed so there is no doubt which cells
- * it means: the ones being painted, or the ones being read. Drawn from the drag
- * while the drag runs and from the selection's own corners afterwards, so the
- * ring and whatever names it appear and vanish together. Inside the track, so
- * it travels with the columns.
- */
+/** The ringed rectangle: drawn from the drag while it runs, from the selection's corners afterwards. */
 const region = computed(() => {
   const state = menuState.value;
   if (!state) return null;
@@ -1067,16 +793,6 @@ const region = computed(() => {
 });
 
 // --- the handles ----------------------------------------------------------
-//
-// What a finger drags instead of the cells. Two of them, on opposite corners of
-// the rectangle, and everything they do is a resize of a selection that has
-// already been committed — so every step has to leave the grid, the options and
-// the record of how to undo it all agreeing with each other.
-//
-// They live outside `.body`, in a layer over the track, for one reason: the body
-// clips, and a handle centred on a corner of the first row or the first column
-// would be sliced in half along with the 44 pixels a finger has to find it by.
-// They still scroll with the columns, because the layer is in the track.
 
 /** The two ends a handle can hold, for the template's pair of discs. */
 const GRIP_ENDS = ["from", "to"] as const;
@@ -1098,21 +814,13 @@ const handles = computed(() => {
   };
 });
 
-/**
- * Grows or shrinks the committed rectangle to reach `cell`.
- *
- * The corner being dragged is kept in `start` and the one it is pinned to in
- * `end`, which is why a handle dragged clean past its anchor keeps working: a
- * rectangle is a span, and `selectionCorners` sorts them out again next time
- * either handle is picked up.
- */
+/** Resizes to reach `cell`. The dragged corner lives in `start`, its anchor in `end`; `selectionCorners` re-sorts on the next pickup. */
 function applyResize(cell: Cell) {
   const state = menuState.value;
   if (!state?.live) return;
   if (state.start.row === cell.row && state.start.col === cell.col) return;
 
-  // A region on the group's answers has nothing to paint and nothing to
-  // remember: growing it only changes which cells the card is reading.
+  // A view region only changes which cells the card is reading.
   if (state.kind === "view") {
     state.start = cell;
     state.slots = rectangleSlots(props.model, state.start, state.end);
@@ -1147,8 +855,7 @@ function applyResize(cell: Cell) {
 
   state.snapshot = step.snapshot;
   state.slots = step.slots;
-  // The record has grown, so the entry it is filed under grows with it: still
-  // one action, still the state the tap interrupted, however far this has gone.
+  // The record grew, so the entry grows with it: still one action.
   emit("commit", { id: state.action, before: step.snapshot });
 }
 
@@ -1185,16 +892,7 @@ function onResizeMove(event: PointerEvent) {
   event.preventDefault();
 }
 
-/**
- * The release of a mouse drag over the group's answers.
- *
- * Two gestures share the press, and the release is what tells them apart. One
- * cell is the click the group view has always answered with a pin — the
- * respondents list beside the chart is the reading of a single slot, and it has
- * not stopped being one. More than one cell is a region, which asks a question
- * a pin cannot: not who is free at a time, but who is free through a span of
- * them.
- */
+/** The release of a mouse drag over the group's answers: one cell is the pinning click, more is a region. */
 function commitViewDrag(start: Cell, end: Cell, event?: PointerEvent): boolean {
   if (!event || panMoved) return false;
   if (start.row === end.row && start.col === end.col) {
@@ -1206,24 +904,14 @@ function commitViewDrag(start: Cell, end: Cell, event?: PointerEvent): boolean {
 
   const slots = rectangleSlots(props.model, start, end);
   if (slots.length === 0) return false;
-  // A pin names one cell, and the question is no longer about one cell. The
-  // hover goes with it: a bubble chasing the cursor over the region would be a
-  // second answer to a question already answered beside it.
+  // A pin names one cell, and the question is no longer about one cell.
   emit("pin", null);
   hoverCell.value = null;
   commitRegion(start, end, slots);
   return true;
 }
 
-/**
- * A tap on the group's answers, which is where a phone's region begins: one
- * cell, with handles to grow it by, exactly as a tap on your own answer marks
- * one cell and leaves handles on it.
- *
- * Tapping the single cell the region already is takes it away again, because
- * that is what tapping a pinned cell has always done and the card is the pin
- * read a second way.
- */
+/** Where a phone's region begins: one cell with handles. Tapping the one-cell region it already is takes it away. */
 function commitViewTap(press: { cell: Cell }, event: PointerEvent): boolean {
   const { cell } = press;
   const slot = slotFor(cell);
@@ -1243,15 +931,7 @@ function commitViewTap(press: { cell: Cell }, event: PointerEvent): boolean {
   return true;
 }
 
-/**
- * A region has landed: the ring stays on the cells and the card opens over
- * them.
- *
- * Deliberately not `commitMenu`. That one starts a countdown and reports the
- * action to the page's history, and a region is neither — nothing was painted,
- * so there is nothing to undo, and nothing was asked, so there is nothing to
- * time out. It goes when it is dismissed or replaced, and not before.
- */
+/** Deliberately not `commitMenu`: nothing was painted, so no history entry and no countdown. */
 function commitRegion(start: Cell, end: Cell, slots: number[]) {
   const state = menuState.value;
   if (!state) return;
@@ -1261,8 +941,6 @@ function commitRegion(start: Cell, end: Cell, slots: number[]) {
   state.live = true;
   clearTimeout(menuTimer);
   menuTimer = undefined;
-  // The card follows from the region existing; the watcher below measures and
-  // places it.
 }
 
 function endResize() {
@@ -1271,30 +949,12 @@ function endResize() {
   window.removeEventListener("pointercancel", endResize);
   resizing.value = null;
   stopEdgeScroll();
-  // The countdown starts again from the end of the work, not from the tap —
-  // for a paint's options, which are a question waiting to be answered. A
-  // region is not on one at all, and finishing a resize must not start it.
+  // The countdown restarts from the end of the work; a view region has none to start.
   const state = menuState.value;
   if (state?.live && state.kind !== "view") holdMenu();
 }
 
-/**
- * A press anywhere that is not the selection puts it away, and does nothing
- * else.
- *
- * Only for the touch path, and only because that path has something a drag's
- * options do not: handles, which are a thing left on the chart to be used later
- * rather than a label on something just done. A press on the options or on a
- * handle is the selection being used, and a press inside the rectangle is the
- * ordinary tap it has always been. Everything else — the cells around it
- * included — is the dismissal, and only the dismissal.
- *
- * That last part is why this runs in the capture phase and stops the press where
- * it stands: reaching the body it would paint a cell and raise a fresh selection
- * in the same movement that was meant to put one away, and there would be no
- * gesture left that only put one away. The tap after it, with the chart clear,
- * draws as usual. `selectionPress` is the whole rule; this only carries it out.
- */
+/** Capture-phase: a dismissal press must not reach the body and paint. `selectionPress` is the whole rule; this only carries it out. */
 function onChartPress(event: PointerEvent) {
   const state = menuState.value;
   const target = event.target as Node;
@@ -1312,22 +972,11 @@ function onChartPress(event: PointerEvent) {
   if (verdict !== "deselect") return;
   if (state?.kind === "view") dismissRegion();
   else closeMenu();
-  // Spent. Nothing downstream may read it as the start of anything — not the
-  // paint, not the pan, not the pin. Propagation only: a `preventDefault` here
-  // would also take away the scroll this press may yet turn out to be.
+  // Propagation only: `preventDefault` would take away the scroll this press may yet be.
   if (onCells) event.stopPropagation();
 }
 
-/**
- * Whether there is a selection on the chart that a press elsewhere should put
- * away rather than paint through.
- *
- * While editing that means a selection with handles: a drag's options are a
- * label on something just done and go by themselves, but handles are a thing
- * left on the chart to be used later. A region in the group view is the same
- * kind of thing whether or not it has handles — a mouse drew it and a mouse has
- * to be able to be rid of it.
- */
+/** A selection a press elsewhere should put away rather than paint through: handles while editing, any region in the group view. */
 const armed = computed(() => {
   const state = menuState.value;
   if (!state?.live) return false;
@@ -1349,17 +998,11 @@ onBeforeUnmount(() => {
 });
 
 // --- who is free here -----------------------------------------------------
-//
-// A region drawn over the group's answers is read by `RegionSummary`, the card
-// composed over the chart beside the cells it is about. The chart's half of
-// that is here: which region is live, what its span is called, and where its
-// box sits — the card reads the answers and places itself.
 
 /** Clearance between the card and the region it is about. */
 const SUMMARY_CLEARANCE = 12;
 
-/** The card, so a press on it can be told from an outside one — via the root
- *  element it exposes, a component instance answering no `contains()`. */
+/** The card's exposed root element, for `contains()` press tests. */
 const summaryComp = ref<InstanceType<typeof RegionSummary> | null>(null);
 
 /** The live region the card is about, or null when the chart carries none. */
@@ -1369,22 +1012,14 @@ const viewSelection = computed(() => {
   return state;
 });
 
-/**
- * The options `formatSlotRange` reads, built once: the tooltip and the region's
- * label must describe a slot in exactly the same words, and two copies of this
- * bag is how they would come to differ.
- */
+/** Built once, so the tooltip and the region's label describe a slot in the same words. */
 const rangeOptions = computed(() => ({
   withDate: props.model.showDates,
   dowDates: props.event.type === "dow" ? props.event.dates : undefined,
   startOnMonday: props.event.startOnMonday,
 }));
 
-/**
- * What a region is called: the cells' own span, in the two readings a rectangle
- * has. A single cell keeps the wording the tooltip and the respondents list use
- * for it, since it is the same slot said the same way.
- */
+/** The region's span; a single cell keeps the tooltip's wording for the same slot. */
 function regionLabel(start: Cell, end: Cell): string {
   const minRow = Math.min(start.row, end.row);
   const maxRow = Math.max(start.row, end.row);
@@ -1403,9 +1038,7 @@ function regionLabel(start: Cell, end: Cell): string {
     );
   }
 
-  // The columns' own headings, so the card names the days in the words the
-  // chart above it is already using — dates where it shows dates, weekdays on a
-  // day-of-week event where there are none to show.
+  // The columns' own headings: dates where the chart shows dates, weekdays otherwise.
   const nameOf = (index: number) => {
     const column = props.model.columns[index];
     if (!column) return "";
@@ -1426,16 +1059,8 @@ const summary = computed(() => {
   const selection = viewSelection.value;
   if (!selection) return null;
 
-  /**
-   * Placed against the region rather than against the point it was drawn from.
-   *
-   * A card anchored on the release lands *on* the rectangle, over the cells it
-   * is describing and — on a phone — over the handles the rectangle is grown
-   * by. Anchoring it on the region's centre with the region's own half-height
-   * as the clearance puts it clear of the whole rectangle on whichever side has
-   * room, and it follows the columns under a scroll for free, the box being
-   * recomputed from where they now are.
-   */
+  // Anchored on the region's centre with its half-height as clearance: clear of
+  // the rectangle and its handles, and it follows the columns under a scroll.
   const box = regionBox(selection.start, selection.end);
   return {
     slotIds: selection.slots,
@@ -1448,10 +1073,7 @@ const summary = computed(() => {
   };
 });
 
-/**
- * Dismissal takes the region with it, and the pin with that: they went up
- * together and a rectangle with nothing on screen explaining it is a trap.
- */
+/** Takes the region and the pin together: a rectangle nothing explains is a trap. */
 function dismissRegion() {
   closeMenu();
   emit("pin", null);
@@ -1469,11 +1091,7 @@ interface PaintedCell {
 /** Heatmap base for the current theme; flipping the theme repaints the grid. */
 const slotBase = useSlotBaseColor();
 
-/**
- * The whole event, not just what is on screen — scrolling must not have to
- * rebuild it. The active slot is deliberately not part of this: it changes on
- * every pointer move, and it is a class on one cell, not a repaint.
- */
+/** The whole event, so scrolling never rebuilds it; the active slot is a class on one cell, not a repaint. */
 const cells = computed<PaintedCell[][]>(() => {
   const {
     model,
@@ -1504,8 +1122,7 @@ const cells = computed<PaintedCell[][]>(() => {
           if (dragType.value === "remove") {
             return { row: rowIndex, slot, color: null, kind: "erasing" };
           }
-          // A drag paints an available time; what it turns out to mean is asked
-          // once it lands, not while it is being drawn.
+          // A drag paints an available time; its meaning is asked once it lands.
           return { row: rowIndex, slot, color: null, kind: "available" };
         }
         if (availability.has(slot)) {
@@ -1564,9 +1181,7 @@ const tooltip = computed(() => {
   if (!cell || dragging.value || panning.value) return null;
   const slot = slotFor(cell);
   if (slot === null) return null;
-  // Keep the bubble inside the chart: centred on the cell it describes, but
-  // nudged in at the edges so it cannot spill off a narrow screen. Both axes
-  // subtract the scroll, since the cell it points at moves with the track.
+  // Both axes subtract the scroll: the cell it points at moves with the track.
   const centre =
     chartLeft.value + offsets.value[cell.col] + colWidth.value / 2 - scrollLeft.value;
   return {
@@ -1582,14 +1197,7 @@ const tooltip = computed(() => {
   };
 });
 
-/**
- * Puts away whatever is on the chart, and changes nothing.
- *
- * For the page above, which has one reason to need it: an undo or a redo taken
- * from the keyboard or the drawer moves the marks a live selection is drawn
- * around, and a ring left standing over cells that no longer hold what it said
- * they hold is a lie about them.
- */
+/** For the page: an undo moves the marks a live ring is drawn around, and a stale ring lies about them. */
 function clearSelection() {
   closeMenu();
   endResize();
@@ -1602,8 +1210,7 @@ defineExpose({ measure, clearSelection });
   <div class="grid" :class="{ scrollable }">
     <div class="wrap">
       <div class="stage" :class="{ dragging: gesturing }">
-        <!-- One scrollport for the whole chart. The gutter and the headings are
-             inside it, pinned on their own axis, rather than beside it. -->
+        <!-- One scrollport; the gutter and headings are pinned inside it. -->
         <div
           ref="viewport"
           class="viewport"
@@ -1617,8 +1224,7 @@ defineExpose({ measure, clearSelection });
         >
           <div ref="sheet" class="sheet">
             <div ref="gutter" class="gutter">
-              <!-- On the gutter, so the rubber-band moves them as one
-                   (ARCHITECTURE.md § Client model). -->
+              <!-- On the gutter, so the rubber-band moves them as one (ARCHITECTURE.md § Client model). -->
               <div v-if="moreBefore" class="gutter-fade" aria-hidden="true" />
               <div class="gutter-head" :style="{ height: `${HEADER_HEIGHT}px` }" />
               <template v-for="(row, index) in model.rows" :key="`label-${index}`">
@@ -1652,9 +1258,7 @@ defineExpose({ measure, clearSelection });
                 </template>
               </div>
 
-              <!-- No `touch-action` of its own in either mode: a finger's drag
-                   belongs to the platform, and selecting is done by tapping and
-                   then dragging a handle. -->
+              <!-- No `touch-action` of its own: a finger's drag belongs to the platform (ARCHITECTURE.md § Client model). -->
               <div
                 ref="body"
                 class="body"
@@ -1697,9 +1301,7 @@ defineExpose({ measure, clearSelection });
                   </div>
                 </template>
 
-                <!-- What the floating options apply to, ringed for as long as
-                     they are on screen. Inert, and inside the track so it
-                     stays on its cells while the chart scrolls under it. -->
+                <!-- The ring. Inert, inside the track so it stays on its cells. -->
                 <div
                   v-if="region"
                   class="region"
@@ -1714,10 +1316,8 @@ defineExpose({ measure, clearSelection });
                 />
               </div>
 
-              <!-- Over the track rather than inside the body, so a handle on the
-                   first row or the first column is not sliced in half by the
-                   body's own clipping — and its 44px with it. The layer is a
-                   hole; only the two discs take the pointer. -->
+              <!-- Over the track, not in the body: the body's clipping would
+                   slice a corner handle and its 44px. Only the discs take the pointer. -->
               <div v-if="handles" ref="gripsEl" class="grips" aria-hidden="true">
                 <div
                   v-for="end in GRIP_ENDS"
@@ -1735,9 +1335,7 @@ defineExpose({ measure, clearSelection });
           </div>
         </div>
 
-        <!-- Over the chart, not beside it: the end fade and the knobs live
-             outside the scrollport so they stay put while the track runs under
-             them. The start fade rides the gutter instead (see above). -->
+        <!-- Outside the scrollport so they stay put; the start fade rides the gutter instead. -->
         <div v-if="moreAfter" class="edge edge--end" aria-hidden="true" />
 
         <button
@@ -1787,9 +1385,7 @@ defineExpose({ measure, clearSelection });
         {{ tooltip.text }}
       </div>
 
-      <!-- Who is free across the region that was just drawn, over the chart and
-           beside it. A direct child of the wrap, not teleported: its clamp and
-           its coordinates are the wrap's own. -->
+      <!-- A direct child of the wrap, not teleported: its clamp and coordinates are the wrap's own. -->
       <RegionSummary
         v-if="summary"
         ref="summaryComp"
@@ -1801,12 +1397,9 @@ defineExpose({ measure, clearSelection });
         @dismiss="dismissRegion"
       />
 
-      <!-- What the rectangle being drawn means. Carried beside the pointer for
-           the length of the drag as a preview that takes no pointer at all, and
-           left where the drag ended as a working control. Even then only its
-           buttons take the pointer, so the cells it floats above can still be
-           painted straight through. A direct child of the wrap, not teleported:
-           its coordinates are the wrap's own. -->
+      <!-- A preview beside the pointer during the drag, a control where it
+           ended; only its buttons take the pointer. Not teleported: its
+           coordinates are the wrap's own. -->
       <SelectionMenu
         v-if="menu"
         ref="menuComp"
@@ -1830,11 +1423,9 @@ defineExpose({ measure, clearSelection });
 .grid {
   /* How wide the dissolved edge is; the knob sits inside it. */
   --fade: 2rem;
-  /* Mirrors HEADER_HEIGHT in the script: the gutter's spacer matches it and the
-     knobs skip past it so they centre on the body rather than on the headings. */
+  /* Mirrors HEADER_HEIGHT in the script. */
   --head: 42px;
-  /* The time gutter's width, referred to by everything that has to start where
-     the columns do: the fades, the prev knob, the foot. */
+  /* The time gutter's width; the fades, prev knob and foot start where the columns do. */
   --gutter: 3.5rem;
 
   user-select: none;
@@ -1853,18 +1444,10 @@ defineExpose({ measure, clearSelection });
   align-items: stretch;
 }
 
-/* The one scrollport. Horizontal only here: the chart stands at its full
-   natural height and the page scrolls past it. On a phone the chart is given a
-   bounded height instead and this scrolls both ways, like a spreadsheet.
-
-   Containment is per axis, and deliberately so. On the horizontal one it keeps
-   a swipe that runs off the end of the track from turning into the browser's
-   back gesture, while leaving the rubber-band alone (ARCHITECTURE.md § Client
-   model). Applied to both, it would also swallow a vertical wheel:
-   `overflow-y: hidden` still makes this a scroll container on that axis, and a
-   contained one refuses to hand the scroll on to the page — so a wheel over the
-   chart would do nothing at all. Vertical chains to the page, which is whose
-   gesture it is. */
+/* Containment is per axis: horizontal `contain` stops the back gesture but keeps
+   the rubber-band (ARCHITECTURE.md § Client model); on the vertical axis it would
+   swallow a wheel over the chart — `overflow-y: hidden` still makes a scroll
+   container, and a contained one refuses to chain the scroll to the page. */
 .viewport {
   --focus-ring-inset: calc(var(--focus-ring-offset) * -1);
 
@@ -1877,8 +1460,7 @@ defineExpose({ measure, clearSelection });
   scrollbar-width: none;
 }
 
-/* The chart carries its own continuation cues — the fades, the peeked column
-   and the chevrons — so the bar underneath would only cost a strip of grid. */
+/* The chart carries its own continuation cues; a bar would only cost a strip of grid. */
 .viewport::-webkit-scrollbar {
   display: none;
 }
@@ -1892,9 +1474,7 @@ defineExpose({ measure, clearSelection });
   cursor: grabbing;
 }
 
-/* Gutter and track side by side, as wide as they need to be. The gutter is
-   stretched rather than left at its content height because it is what the
-   columns pass behind: a gutter even a pixel short of the track lets the body's
+/* The gutter is stretched: even a pixel short of the track lets the body's
    bottom border show under it as the track scrolls by. */
 .sheet {
   display: flex;
@@ -1903,9 +1483,7 @@ defineExpose({ measure, clearSelection });
   min-width: 100%;
 }
 
-/* Pinned across the horizontal scroll: the hours stay readable however far
-   along the dates you are. Opaque, so the columns pass behind rather than
-   through. */
+/* Pinned across the horizontal scroll; opaque, so the columns pass behind. */
 .gutter {
   position: sticky;
   left: 0;
@@ -1928,8 +1506,7 @@ defineExpose({ measure, clearSelection });
   background: var(--color-bg);
 }
 
-/* The corner. Pinned on the other axis too, so a vertical scroll cannot slide
-   the hour labels up into the headings' band. */
+/* The corner: pinned on the other axis too, so labels cannot slide into the headings' band. */
 .gutter-head {
   position: sticky;
   top: 0;
@@ -1952,16 +1529,12 @@ defineExpose({ measure, clearSelection });
   white-space: nowrap;
 }
 
-/* Every label straddles its own gridline except the first, which would have to
-   straddle the top of the chart — and would be sliced in half by the pinned
-   headings' band the moment the chart scrolled under them. It hangs below its
-   line instead. */
+/* The first label hangs below its line; straddling it would be sliced by the pinned headings. */
 .gutter-label.hour.first span {
   transform: none;
 }
 
-/* Positioned, because the handle layer is placed against it: the handles have to
-   travel with the columns, and this is what the columns are laid out in. */
+/* Positioned: the handle layer is placed against it. */
 .track {
   position: relative;
   flex: none;
@@ -1969,10 +1542,7 @@ defineExpose({ measure, clearSelection });
 
 /* --- scroll controls ----------------------------------------------------- */
 
-/* Laid over the chart's own edges: the columns run under them and continue past
-   them, so the button is where the thing it does is, and the chart keeps the
-   full width of the page. Positioned past the header so it centres on the body,
-   and no wider than it needs to be — everything around it stays paintable. */
+/* Laid over the chart's edges, past the header so it centres on the body. */
 .knob {
   position: absolute;
   top: calc(var(--head) + (100% - var(--head)) / 2);
@@ -1989,8 +1559,7 @@ defineExpose({ measure, clearSelection });
   transition: opacity var(--transition-fast);
 }
 
-/* `--dir` is the way each knob takes the grid: every lean below multiplies it,
-   so the two mirrored variants share one transform rule per state. */
+/* `--dir` lets the two mirrored knobs share one transform rule per state. */
 .knob--prev {
   --dir: -1;
 
@@ -2003,9 +1572,7 @@ defineExpose({ measure, clearSelection });
   right: 0.15rem;
 }
 
-/* Translucent over its own backdrop, so the cells it covers still read as grid
-   rather than as a hole punched in it — in either theme, since both the fill
-   and the blur come off the surface token. */
+/* Translucent over its backdrop, so the cells it covers still read as grid. */
 .knob__glyph {
   display: grid;
   place-items: center;
@@ -2026,8 +1593,7 @@ defineExpose({ measure, clearSelection });
   height: 0.85rem;
 }
 
-/* Only where a pointer can actually hover: a tap must not leave the knob stuck
-   in its hover state on a phone. */
+/* A tap must not leave the knob stuck in its hover state on a phone. */
 @media (hover: hover) {
   .knob:hover:not(:disabled) .knob__glyph {
     color: var(--color-accent-contrast);
@@ -2047,18 +1613,13 @@ defineExpose({ measure, clearSelection });
   opacity: 0;
 }
 
-/* A paint drag owns the whole surface. The knobs stop taking the pointer for
-   its duration, so a sweep that crosses one — or ends on it — paints through
-   and cannot scroll; they fade to say so. */
+/* Inert during a paint drag, so a sweep across one paints through instead of scrolling. */
 .stage.dragging .knob {
   pointer-events: none;
   opacity: 0.3;
 }
 
-/* Except the one the drag is leaning on: the track is about to come by itself,
-   and what brings it is the thing this button does, so it is this button that
-   says so — lit as though pressed, and leaning the way it is taking the grid.
-   Still inert; it is reporting, not offering. */
+/* The knob the drag leans on stays lit — reporting, not offering. */
 .stage.dragging .knob.armed {
   opacity: 1;
 }
@@ -2075,9 +1636,7 @@ defineExpose({ measure, clearSelection });
   border-radius: var(--radius-pill);
 }
 
-/* The clipped end edge, dissolved rather than cut: with the peeked column
-   showing through it, the grid reads as continuing under the knob instead of
-   ending. Inert — the cells beneath it take the pointer. */
+/* The clipped end edge, dissolved rather than cut. Inert — the cells beneath take the pointer. */
 .edge {
   position: absolute;
   top: 0;
@@ -2092,8 +1651,7 @@ defineExpose({ measure, clearSelection });
   background: linear-gradient(to left, var(--color-bg), transparent);
 }
 
-/* The clipped start edge, on the gutter it borders so the rubber-band cannot
-   shear them apart (ARCHITECTURE.md § Client model). Inert, like the end fade. */
+/* On the gutter it borders, so the rubber-band cannot shear them apart (ARCHITECTURE.md § Client model). */
 .gutter-fade {
   position: absolute;
   top: 0;
@@ -2106,8 +1664,7 @@ defineExpose({ measure, clearSelection });
 
 /* --- chart --------------------------------------------------------------- */
 
-/* Pinned across the vertical scroll, so the dates stay overhead however far
-   down the day you are. Opaque for the same reason the gutter is. */
+/* Pinned across the vertical scroll; opaque for the same reason the gutter is. */
 .header {
   position: sticky;
   top: 0;
@@ -2123,11 +1680,8 @@ defineExpose({ measure, clearSelection });
   cursor: grab;
 }
 
-/* The header's height is fixed (`HEADER_HEIGHT`), so a label that wraps does
-   not make room for itself — it pushes the weekday above it out of the box and
-   out of sight. `perViewFor` sizes the columns so that cannot happen; the
-   `nowrap` is what keeps a stray long label a truncation rather than a
-   disappearing row. */
+/* The height is fixed, so a wrapped label pushes the weekday out of sight;
+   `nowrap` keeps a stray long label a truncation instead. */
 .head-cell {
   display: flex;
   flex-direction: column;
@@ -2221,11 +1775,7 @@ defineExpose({ measure, clearSelection });
   background-color: var(--color-danger-soft);
 }
 
-/* The ring round the rectangle the options apply to. It has to read over an
-   empty cell, a green one, an amber one and the erase wash alike, in both
-   themes, so it is not a hairline: two solid pixels, held off the surrounding
-   fills by a thin sheath of the page colour on both sides of the stroke, and a
-   soft halo of its own colour so the shape carries at a glance. */
+/* Two solid pixels with a page-colour sheath, so the ring reads over every fill in both themes. */
 .region {
   position: absolute;
   z-index: 1;
@@ -2239,15 +1789,9 @@ defineExpose({ measure, clearSelection });
     0 0 10px color-mix(in srgb, var(--color-selection-create) 55%, transparent);
 }
 
-/* A region over the group's answers keeps the same blue a selection has while
-   editing, and deliberately: it is the same idea — these cells, and this is
-   what they are about — and giving reading its own colour would say the two
-   were different kinds of thing. Nothing paints in the group view, so the blue
-   cannot be read as a pending change there; what it is not is the green of the
-   heatmap under it or the red of an erase. */
+/* The same blue as an editing selection: the same idea, and nothing paints in the group view. */
 .region--view {
-  /* The glow says "just done" on a paint. This was not done to anything, so it
-     keeps the ring and drops the halo. */
+  /* No halo: nothing was done to anything. */
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--color-bg) 75%, transparent),
     0 0 0 1px color-mix(in srgb, var(--color-bg) 75%, transparent);
@@ -2263,8 +1807,7 @@ defineExpose({ measure, clearSelection });
 
 /* --- the handles ---------------------------------------------------------- */
 
-/* A hole over the whole track: the cells under it stay tappable and a swipe
-   across it still scrolls the pane. Only the discs are solid. */
+/* A hole over the whole track; only the discs are solid. */
 .grips {
   position: absolute;
   inset: 0;
@@ -2272,11 +1815,8 @@ defineExpose({ measure, clearSelection });
   pointer-events: none;
 }
 
-/* Centred on the corner it moves. The target is the 44px floor while the disc
-   drawn inside it is small, so what a finger can hit is much bigger than what a
-   finger covers — the same trade the scroll knobs make. `touch-action: none` is
-   here and nowhere else on the chart: this is the one place a finger's drag means
-   something other than scrolling. */
+/* A 44px target round a small disc. `touch-action: none` is here and nowhere
+   else on the chart (ARCHITECTURE.md § Client model). */
 .grip {
   /* The selection's own colour; the erase variant only swaps this. */
   --sel: var(--color-selection-create);
@@ -2292,9 +1832,7 @@ defineExpose({ measure, clearSelection });
   touch-action: none;
 }
 
-/* The disc itself, in the selection's own colour with a sheath of the page
-   between it and whatever it is sitting on — so it reads over an empty cell, a
-   green one, an amber one and the erase wash alike, in both themes. */
+/* A page-colour sheath, so the disc reads over any fill in both themes. */
 .grip::after {
   content: "";
   width: 0.95rem;
@@ -2310,8 +1848,7 @@ defineExpose({ measure, clearSelection });
   --sel: var(--color-selection-delete);
 }
 
-/* Under the finger. Grown rather than recoloured: the colour is what it means,
-   and it has not stopped meaning that. */
+/* Grown rather than recoloured: the colour is what it means. */
 .grip:active::after {
   transform: scale(1.25);
 }
@@ -2324,19 +1861,14 @@ defineExpose({ measure, clearSelection });
   pointer-events: none;
 }
 
-/* Same box as the chart body, so whatever the parent puts here lines up with
-   the columns above rather than with the page. While the chart scrolls that box
-   is the viewport, since that is where the chart now starts and ends. */
+/* Same box as the chart body, so the foot lines up with the columns above. */
 .foot {
   max-width: 100%;
   margin-top: 0.45rem;
   margin-left: var(--gutter);
 }
 
-/* The one line a time range is. `TOOLTIP_MAX_WIDTH` in the script is this
-   max-width, and the clamp that keeps the bubble on screen is worked out from
-   it — so the bubble may be cut short at that width but must never grow past
-   it, and must never grow downwards either. */
+/* `TOOLTIP_MAX_WIDTH` in the script is this max-width; the bubble may be cut short but never grow past it. */
 .tooltip {
   position: absolute;
   z-index: 20;
@@ -2354,8 +1886,7 @@ defineExpose({ measure, clearSelection });
   pointer-events: none;
 }
 
-/* Touch: the knob's target grows to the 44px floor while the disc it draws
-   stays small, so what a finger can hit is bigger than what a finger covers. */
+/* Touch: 44px targets round the same small discs. */
 @media (pointer: coarse) {
   .grid {
     --fade: 2.75rem;
@@ -2377,10 +1908,7 @@ defineExpose({ measure, clearSelection });
   }
 }
 
-/* The app-like layout: the chart is handed a fixed box between the header bar
-   and the identity bar, and scrolls inside it on both axes. The pinned gutter
-   and headings are what make that legible — without them a scroll down the day
-   would lose the dates and a scroll along the dates would lose the hours. */
+/* The app-like layout: a fixed box between the bars, scrolling on both axes (ARCHITECTURE.md § Client model). */
 @media (max-width: 820px) {
   .grid {
     --gutter: 2.75rem;
@@ -2398,9 +1926,7 @@ defineExpose({ measure, clearSelection });
     min-height: 0;
   }
 
-  /* Here the pane is the thing that scrolls vertically — the page behind it
-     does not — so the vertical axis is contained too: a swipe that reaches the
-     first or last row stops there rather than bouncing the whole shell. */
+  /* The pane owns the vertical scroll here, so that axis is contained too. */
   .viewport {
     overflow-y: auto;
     overscroll-behavior-y: contain;
@@ -2412,11 +1938,7 @@ defineExpose({ measure, clearSelection });
     font-size: 0.625rem;
   }
 
-  /* The column heading is what decides how many columns fit — `perViewFor`
-     divides the width by a shade over the width of "Aug 30" — so the size it
-     is set at is load-bearing rather than cosmetic. Set here, at the phone's
-     own scale, both parts read at a glance in a column narrow enough that a
-     fortnight is two swipes rather than five. */
+  /* Load-bearing size: `perViewFor` divides the width by a shade over this heading's width. */
   .weekday,
   .date {
     font-size: 0.6875rem;

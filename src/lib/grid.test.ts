@@ -762,10 +762,8 @@ describe("selectionPress", () => {
     ).toBe("deselect");
   });
 
-  // The group view draws regions of its own now, and the rule that says what
-  // the next press means does not change for them: they are read rather than
-  // painted, but they are still something on the chart that a press elsewhere
-  // has to be able to put away without also starting something new.
+  // Regions in the group view are read rather than painted, but the press rule
+  // is the same.
   describe("a region in the group view", () => {
     it("gives a press on the summary card to the selection", () => {
       // The card is the region's control the way the strip is a paint's: it
@@ -1342,11 +1340,7 @@ describe("scrolling", () => {
     });
   });
 
-  /**
-   * How many columns a viewport holds. On a desktop it is a week and a fact
-   * about the layout; on a phone it is a question about the screen, answered
-   * by dividing the width by what a column heading needs.
-   */
+  /** A week on a desktop; on a phone, the width divided by what a column heading needs. */
   describe("perViewFor", () => {
     it("shows a week on the desktop, whatever the width", () => {
       expect(perViewFor(1400, false)).toBe(DESKTOP_PER_VIEW);

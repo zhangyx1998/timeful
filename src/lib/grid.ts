@@ -1,27 +1,4 @@
-/**
- * The availability grid model: turning an event document into columns, rows and
- * slot instants, and back again from pixels.
- *
- * Layout, in legacy terms
- * -----------------------
- * Each event date defines a window of `duration` hours starting at that
- * instant. Rendered in the viewer's timezone, a window may spill past local
- * midnight, so the grid is drawn as two stacked blocks separated by a gap:
- *
- *   top block    — the *tail* of the previous day's window (00:00 -> local end)
- *   bottom block — the *head* of this day's window (local start -> 24:00)
- *
- * Every column is one local calendar day. A column's top block resolves against
- * the event date of the day before; its bottom block against its own day. So the
- * first column has a dead top block, and one extra spillover column is appended
- * after each date whose window crosses midnight. When the window does not cross
- * midnight there is a single block and no gap.
- *
- * Instead of legacy's whole-hour iteration plus a `-0.5` fudge for half-hour
- * timezones, rows here are laid out directly in `timeIncrement` steps: the block
- * boundary is the first slot boundary at or after local midnight, so the split
- * stays aligned to the slot grid in every timezone.
- */
+/** The availability grid model: turning an event document into columns, rows and slot instants, and back from pixels. */
 import {
   MS_PER_DAY,
   MS_PER_HOUR,
@@ -120,8 +97,7 @@ export function buildGrid(event: EventDoc, options: BuildGridOptions): GridModel
   const startTimeUtc = dateToTimeNum(dates[0], true);
   const localStart = utcTimeToLocalTime(startTimeUtc, timezoneOffset);
 
-  // The window crosses local midnight when it runs past 24:00. Ending exactly at
-  // midnight does not count as a crossing.
+  // Ending exactly at midnight does not count as a crossing.
   const crossesMidnight = localStart + durationHours > 24 + 1e-9;
 
   const totalRows = Math.round((durationHours * 60) / slotMinutes);
@@ -201,11 +177,7 @@ export function buildGrid(event: EventDoc, options: BuildGridOptions): GridModel
   };
 }
 
-/**
- * The absolute instant of a cell, or null when the cell is outside the event
- * (the dead top block of the first column, or the dead bottom block of a
- * trailing spillover column).
- */
+/** The absolute instant of a cell, or null when the cell is outside the event. */
 export function slotAt(model: GridModel, row: number, col: number): number | null {
   const gridRow = model.rows[row];
   const column = model.columns[col];
@@ -249,11 +221,7 @@ export interface Cell {
   col: number;
 }
 
-/**
- * Geometry for the whole track: every column of the event is laid out and
- * scrolled through, so this is handed all of them. The first column never draws
- * a leading gap — there is nothing before it to be separated from.
- */
+/** Geometry for the whole track; the first column never draws a leading gap. */
 export function geometryFor(
   model: Pick<GridModel, "topRowCount" | "bottomRowCount">,
   columns: GridColumn[],
@@ -296,11 +264,7 @@ function clamp(value: number, lower: number, upper: number): number {
   return value;
 }
 
-/**
- * Pixel position (relative to the grid body's top-left) to a cell. Always
- * returns a cell: coordinates outside the body clamp to the nearest one, which
- * is what makes dragging past the edge behave.
- */
+/** Pixel position to a cell; coordinates outside the body clamp to the nearest one, so dragging past the edge works. */
 export function hitTest(x: number, y: number, geometry: GridGeometry): Cell | null {
   const columnCount = geometry.columnGaps.length;
   const rowCount = geometry.topRowCount + geometry.bottomRowCount;
@@ -319,8 +283,7 @@ export function hitTest(x: number, y: number, geometry: GridGeometry): Cell | nu
   if (geometry.bottomRowCount === 0 || y < topHeight) {
     row = clamp(Math.floor(y / geometry.rowHeight), 0, geometry.topRowCount - 1);
   } else {
-    // Anything at or past the top block — including the gap itself — belongs to
-    // the bottom block, never back up to a lesser row.
+    // The gap belongs to the bottom block, never back up to a lesser row.
     const offsetY = y - topHeight - geometry.gapHeight;
     row = clamp(
       geometry.topRowCount + Math.floor(offsetY / geometry.rowHeight),
@@ -358,18 +321,6 @@ export function rectangleSlots(model: GridModel, start: Cell, end: Cell): number
 // ---------------------------------------------------------------------------
 // undoing a drag
 // ---------------------------------------------------------------------------
-//
-// A drag is committed the instant it lands, so the way back is not a mode the
-// grid stays in but a record of what the slots it touched used to be. The
-// rectangle is only known once the drag ends, and nothing the guest owns changes
-// while it runs — the marks move when the commit is emitted, not before — so the
-// record is taken at commit time, immediately before the emit, and describes the
-// state the press started from.
-//
-// Three buckets, because a mark is one of exactly three things: available,
-// if-needed, or nothing. A mixed rectangle is the case that matters — erasing
-// across cells that were some of each has to put each one back as it was, not
-// blanket-restore the majority.
 
 export interface SlotSnapshot {
   /** Slots that were marked available before the drag. */
@@ -388,8 +339,7 @@ export function snapshotSlots(
 ): SlotSnapshot {
   const snapshot: SlotSnapshot = { available: [], ifNeeded: [], empty: [] };
   for (const slot of new Set(slots)) {
-    // Available wins a slot that somehow sits in both sets, the same way the
-    // grid itself paints one: the two marks are exclusive by construction.
+    // Available wins a slot in both sets; the two marks are exclusive by construction.
     if (availability.has(slot)) snapshot.available.push(slot);
     else if (ifNeeded.has(slot)) snapshot.ifNeeded.push(slot);
     else snapshot.empty.push(slot);
@@ -402,16 +352,7 @@ export function snapshotSlotList(snapshot: SlotSnapshot): number[] {
   return [...snapshot.available, ...snapshot.ifNeeded, ...snapshot.empty];
 }
 
-/**
- * A revert expressed in the grid's own two emits, rather than as a private
- * channel back to the parent. `paint` clears, `flip` marks, and the parent's
- * handler for either already queues the autosave — so undoing a drag travels the
- * path a drag travels and reaches the server the same way, with nothing on
- * either side that exists only for undo.
- *
- * Buckets that would move nothing are dropped, so a revert of an untouched
- * rectangle emits nothing at all.
- */
+/** A revert in the grid's own two emits: `paint` clears, `flip` marks. Empty buckets are dropped. */
 export type RevertOp =
   | { emit: "paint"; type: "remove"; slots: number[] }
   | { emit: "flip"; type: AvailabilityType; slots: number[] };
@@ -433,17 +374,6 @@ export function revertOperations(snapshot: SlotSnapshot): RevertOp[] {
 // ---------------------------------------------------------------------------
 // resizing a selection that has already landed
 // ---------------------------------------------------------------------------
-//
-// A drag commits once, on release, and the record above is enough to undo it. A
-// selection with handles on it commits over and over: every cell the handle
-// crosses has to be painted as it arrives and put back as it leaves, and the way
-// back has to remain the state before the *first* of those steps rather than the
-// state before the last one.
-//
-// So the record grows instead of being retaken. A cell entering the rectangle is
-// recorded the first time it is seen and never again — by then what it holds is
-// this selection's own doing, and remembering that would make the undo undo only
-// half of itself.
 
 /** Which slots a rectangle has taken in, and which it has let go of. */
 export function selectionDelta(
@@ -469,14 +399,7 @@ function pickSnapshot(snapshot: SlotSnapshot, slots: Iterable<number>): SlotSnap
   };
 }
 
-/**
- * Adds slots the record has not seen before, reading what they hold now.
- *
- * Slots already in it are left exactly as they are. A cell that was taken in,
- * let go of and taken in again has already been put back to what this remembers,
- * so re-reading it would record the selection's own paint as the state to
- * restore — and the undo would stop halfway.
- */
+/** Adds slots the record has not seen, reading what they hold now; slots already in it are never re-read. */
 function growSnapshot(
   snapshot: SlotSnapshot,
   slots: Iterable<number>,
@@ -505,13 +428,7 @@ export interface SelectionStep {
   slots: number[];
 }
 
-/**
- * One step of a resize: what to put back, what to paint, and what to remember.
- *
- * The caller decides what "paint" means — a creation's chosen type, or a
- * deletion's clearing — because that is the one thing the rectangle's geometry
- * cannot say.
- */
+/** One step of a resize: what to put back, what to paint, and what to remember. */
 export function selectionStep(options: {
   previous: Iterable<number>;
   next: Iterable<number>;
@@ -529,15 +446,7 @@ export function selectionStep(options: {
   };
 }
 
-/**
- * The rectangle's two opposite corners, as the pair a resize works in: the one
- * being dragged, and the one it is pinned to.
- *
- * A rectangle is a span, so which corner is stored where means nothing to it —
- * which is exactly what lets a handle dragged past its anchor keep working
- * rather than collapsing. `moving` is the corner the named handle sits on: the
- * top-left one, or the bottom-right.
- */
+/** `moving` is the corner the named handle sits on, `anchor` its opposite; order-insensitive, so a handle dragged past its anchor keeps working. */
 export function selectionCorners(
   a: Cell,
   b: Cell,
@@ -555,27 +464,8 @@ export function selectionCorners(
 // ---------------------------------------------------------------------------
 // what a press means while a selection is on the chart
 // ---------------------------------------------------------------------------
-//
-// A selection with handles is not the end of a gesture but the middle of one: it
-// sits on the chart waiting to be resized, relabelled or taken back. That makes
-// the next press ambiguous in a way a drag's is not, and the ambiguity is worth
-// one rule stated in one place.
-//
-// The rule is that a press outside the selection is spent on putting it away.
-// Only that: the marks it left stand, and the press itself paints nothing. A
-// selection is something a tap raised, and a tap that both dismissed one thing
-// and created another would leave the visitor unable to dismiss without also
-// drawing — so the second tap, on an empty chart, is the one that draws.
 
-/**
- * The three things a press can be while a selection is live.
- *
- * - `use` — it landed on the options strip or a handle: the selection's own
- *   controls, which mean what they say.
- * - `select` — an ordinary press on the cells, free to paint: either there is no
- *   selection to protect, or the press landed inside the one there is.
- * - `deselect` — anywhere else: it puts the selection away and does nothing.
- */
+/** `use` — the selection's own controls; `select` — an ordinary press, free to paint; `deselect` — puts the selection away and does nothing else. */
 export type SelectionPress = "use" | "select" | "deselect";
 
 export function selectionPress(press: {
@@ -600,11 +490,6 @@ export function selectionPress(press: {
 // ---------------------------------------------------------------------------
 // placing something over the chart
 // ---------------------------------------------------------------------------
-//
-// Two things float above the grid and both want the same arithmetic: be beside
-// the point you are about, and never off the chart. The chart is the widest
-// thing on the page and on a phone it is nearly the tallest, so "off the chart"
-// is a real risk in both directions rather than a theoretical one.
 
 /** Where a floating box may go: the columns' box, and the scrollport's. */
 export interface OverlayField {
@@ -624,23 +509,11 @@ export interface OverlayAnchor {
   clearance: number;
   /** How close the box may come to the field's own edges. */
   gap: number;
-  /**
-   * Whether the box prefers the space *above* the point. A finger covers what
-   * it touches and a few millimetres round it, so touch wants above; a cursor
-   * hides almost nothing, so a mouse wants below.
-   */
+  /** Whether the box prefers the space above the point: touch wants above (a finger covers what it touches), a mouse below. */
   above: boolean;
 }
 
-/**
- * Centred on the anchor horizontally and clamped into the columns; above or
- * below it vertically, taking the other side when the preferred one would fall
- * outside the scrollport and clamping when neither fits.
- *
- * `left` is the box's centre — callers translate by -50% — and `top` its top
- * edge. A field narrower than the box has no room to clamp in, so the box is
- * centred on the field and left to overhang symmetrically.
- */
+/** Centred on the anchor and clamped into the field; `left` is the box's centre (callers translate by -50%). */
 export function placeOverlay(
   size: { width: number; height: number },
   field: OverlayField,
@@ -664,12 +537,7 @@ export function placeOverlay(
   return { left, top };
 }
 
-/**
- * The horizontal half of `placeOverlay`, on its own for boxes whose width is a
- * known constant rather than a measurement — the tooltip, whose `max-width` is
- * the number this is called with. One rule for "centred but on the chart",
- * however the caller learned the width.
- */
+/** The horizontal half of `placeOverlay`, for boxes whose width is a known constant (the tooltip's max-width). */
 export function overlayCenterX(
   width: number,
   field: Pick<OverlayField, "left" | "width">,
@@ -685,15 +553,7 @@ export function overlayCenterX(
 // responses and heatmap
 // ---------------------------------------------------------------------------
 
-/**
- * The event's answers, inverted.
- *
- * Everything in here is by **user key**, never by the name a guest typed:
- * matching one person across a response, a presence entry and the visitor's own
- * identity is exactly what a key is for. `labels` is the other half — the
- * spelling each key is rendered as — and nothing outside this module should be
- * deriving one from the other.
- */
+/** The event's answers, inverted. Everything here is by user key, never by the name a guest typed. */
 export interface ResponseIndex {
   /** Everyone with a stored answer, ordered by the name they are shown under. */
   keys: string[];
@@ -712,16 +572,7 @@ export interface ResponseOverride {
   ifNeeded: Set<number>;
 }
 
-/**
- * Inverts the event's responses into slot -> respondents maps.
- *
- * `override` swaps in the current guest's unsaved edits so their own drags show
- * up in the group view immediately. An override with nothing marked is not a
- * response at all — the same zero-record invariant the server enforces
- * (ARCHITECTURE.md § API) — so the guest drops out of the respondents list the
- * moment they clear, rather than lingering as a phantom with no availability
- * until the next refresh.
- */
+/** Inverts responses into slot -> respondents maps. `override` swaps in the guest's unsaved edits; an empty override is no response at all (ARCHITECTURE.md § API). */
 export function buildResponseIndex(
   event: Pick<EventDoc, "responses">,
   override?: ResponseOverride | null,
@@ -776,23 +627,10 @@ export function buildResponseIndex(
 // ---------------------------------------------------------------------------
 // one region, per person
 // ---------------------------------------------------------------------------
-//
-// The respondents list answers "who is free here?" beside the chart. On a phone
-// it is behind a drawer, which is the wrong place for the answer to the question
-// a tap on a cell *is* — so the same reading is composed here and shown over the
-// chart, and this is the part of it that is not markup.
-//
-// A cell is the small case of a region, and the question a region asks is the
-// same one in the plural: not "who is free at some point in here" but "who can
-// make the whole of it". So a person's stance over a region is the *worst* thing
-// they said anywhere inside it — one clash rules them out however free they are
-// either side of it, and an if-needed anywhere makes the whole span an if-needed
-// for them. Only somebody available in every cell is available for the region.
 
 export type SlotStance = "available" | "if_needed" | "unavailable";
 
-/** What each stance glyph says, for anyone who is not looking at it — one
- *  spelling and one wording wherever a stance is printed. */
+/** One spelling and one wording wherever a stance is printed. */
 export const STANCE_LABELS: Record<SlotStance, string> = {
   available: "Available",
   if_needed: "If needed",
@@ -808,25 +646,16 @@ export interface SlotOpinion {
 }
 
 export interface SlotDigest {
-  /**
-   * The people the digest names, ordered by what they said — available, then
-   * if-needed, then unavailable — and alphabetically inside each group, because
-   * that is the order the names arrive in.
-   */
+  /** Ordered available, then if-needed, then unavailable; alphabetical inside each group. */
   people: SlotOpinion[];
   /** How many respondents it did not name. */
   hidden: number;
-  /** How many are counted as free: available and if-needed together, as the
-   *  heatmap counts them. */
+  /** Available and if-needed together, as the heatmap counts them. */
   free: number;
   total: number;
 }
 
-/**
- * What every respondent said about one slot, in as many names as will fit. The
- * one-cell case of `regionDigest`, and the whole of what a tooltip or a pinned
- * cell reports.
- */
+/** What every respondent said about one slot: the one-cell case of `regionDigest`. */
 export function slotDigest(
   slot: number,
   index: ResponseIndex,
@@ -835,33 +664,7 @@ export function slotDigest(
   return regionDigest([slot], index, options);
 }
 
-/**
- * What every respondent said about a whole rectangle of cells, aggregated to one
- * stance each.
- *
- * The aggregation is a floor, not a vote: `unavailable` the moment a person
- * misses a single cell, `if_needed` when they are free throughout but qualified
- * it somewhere, and `available` only when every cell is an unqualified yes. The
- * count beside the names reads the same way, so "4 of 9 free" over a two-hour
- * block means four people can make *all* of it rather than some of it.
- *
- * A one-cell region is the ordinary slot reading, which is why `slotDigest` is
- * this function with one slot in it: there is one definition of what a chip
- * says, and the card cannot drift from the tooltip as the selection grows. A
- * region with no live cells in it at all asks nothing of anybody, so everyone
- * clears it vacuously — the same answer the loop below gives for free.
- *
- * The cap is not a truncation of one list but a choice between two readings.
- * Under it, the digest names everybody — and "who cannot make it" is worth
- * reading when it is three people. Over it, naming an arbitrary six of sixteen
- * crosses says nothing at all, so it names only the people who *can* make it and
- * counts the rest: that is the question the selection asks, and the fraction
- * beside the names already reports the other side of it.
- *
- * Presence never enters this. Somebody who is merely on the page has marked
- * nothing, and "unavailable" would be a lie about them — the same rule the
- * respondents list follows.
- */
+/** One stance per person: the worst thing they said anywhere in the region. Over the cap only the people who can make it are named; presence never enters this. */
 export function regionDigest(
   slots: Iterable<number>,
   index: ResponseIndex,
@@ -902,13 +705,7 @@ export function regionDigest(
   };
 }
 
-/**
- * How a fraction of free people reads at a glance: everyone free is the answer
- * you are looking for, nobody free rules the span out, and anything between is
- * a compromise to weigh. The respondents list's header and the region card
- * print the same fraction, so the decision lives once, beside the digest they
- * are both a reading of.
- */
+/** How a fraction of free people reads at a glance; the respondents header and the region card share it. */
 export function toneFor(free: number, total: number): "all" | "some" | "none" {
   return free === 0 ? "none" : free === total ? "all" : "some";
 }
@@ -923,11 +720,7 @@ export function maxRespondents(model: GridModel, index: ResponseIndex): number {
   return max;
 }
 
-/**
- * Legacy alpha curve: the count is scaled across 225 of the 255 alpha steps so
- * even a single respondent is visible, and a slot everyone answered goes fully
- * opaque.
- */
+/** Legacy alpha curve: scaled across 225 of 255 steps so one respondent is visible; a slot everyone answered goes opaque. */
 export function heatmapAlpha255(count: number, max: number, totalRespondents: number): number {
   if (count <= 0 || max <= 0) return 0;
   const fraction = Math.min(count / max, 1);
@@ -935,13 +728,7 @@ export function heatmapAlpha255(count: number, max: number, totalRespondents: nu
   return Math.floor(fraction * 225);
 }
 
-/**
- * The fill for a slot, or null when nobody is available.
- *
- * `base` is the theme's `--color-slot-available`, resolved from the DOM by
- * lib/colors.ts — never a hardcoded hex, so the heatmap re-tints when the theme
- * flips (ARCHITECTURE.md § Theming).
- */
+/** The fill for a slot, or null. `base` is the theme's `--color-slot-available`, so the heatmap re-tints on a theme flip (ARCHITECTURE.md § Theming). */
 export function heatmapColor(
   count: number,
   max: number,
@@ -961,13 +748,6 @@ export function isBestTime(count: number, max: number): boolean {
 // ---------------------------------------------------------------------------
 // scrolling
 // ---------------------------------------------------------------------------
-//
-// Every column of the event is laid out in one track inside a scroll container,
-// and the track can rest anywhere on it. There are no pages: what used to be a
-// page is now just the width of the viewport, used to size the columns and to
-// step the chevrons. The helpers here are the arithmetic around that — how wide
-// a column is, how far a chevron moves, which ends are clipped, and how fast a
-// drag held at an edge drags the track along with it.
 
 export interface ColumnWidthOptions {
   /** Inner width of the scroll viewport, past the time gutter. */
@@ -983,63 +763,29 @@ export interface ColumnWidthOptions {
   minWidth: number;
 }
 
-/**
- * The width below which the event page stops being a document and becomes an
- * app: the page itself no longer scrolls, and the respondents and the view
- * settings move into drawers.
- */
+/** The width below which the event page stops being a document and becomes an app. */
 export const COMPACT_MAX_WIDTH = 820;
 
 /** Columns a desktop viewport holds: a week, which is what the layout is for. */
 export const DESKTOP_PER_VIEW = 7;
 
-/**
- * How wide a column wants to be on a phone.
- *
- * Measured against the widest thing a column has to carry: "Aug 30" at the
- * compact heading size is 38 pixels, so this is that plus room to breathe. The
- * heading is what sets the floor rather than an arbitrary count — a column
- * narrow enough to fold its own date in half is not one worth showing, and the
- * header's height is fixed, so folding it hides the weekday above it. The
- * breathing room is generous rather than snug: at 44 the division landed
- * columns at ~43px on common phone widths, and a heading with 2px of air on
- * each side read as cramped in practice.
- */
+/** What the widest column heading needs — "Aug 30" at the compact size is 38px — plus room to breathe. */
 export const TARGET_COL_WIDTH = 48;
 
-/**
- * What the chart never gets: the pinned time gutter, and the page's padding
- * either side of it. The peek is deliberately *not* in here — it is the sliver
- * of the next column, so it belongs to the columns rather than to the chrome.
- */
+/** The pinned time gutter and the page's padding; the peek belongs to the columns, not the chrome. */
 const COMPACT_CHROME = 76;
 
 /** Columns a viewport holds, which on a phone is a question about its width. */
 export function perViewFor(viewportWidth: number, compact: boolean): number {
   if (!compact) return DESKTOP_PER_VIEW;
-  // Three is the floor rather than a step: at any width a phone actually has,
-  // the division wins — this is for the fold-open-sideways cases and for a
-  // viewport nobody has reported yet.
+  // Three is a floor for viewports narrower than any real phone.
   return Math.max(
     3,
     Math.floor((viewportWidth - COMPACT_CHROME) / TARGET_COL_WIDTH),
   );
 }
 
-/**
- * One width for every column, whatever the scroll position.
- *
- * An event small enough to fit spends the whole viewport on its columns and
- * shows no peek: there is nothing past the last column to hint at. Anything
- * larger is sized against `perView`, less the peek — so a column and a sliver of
- * its neighbour fill the viewport exactly.
- *
- * The scrolling case ignores the gap spacers on purpose. Under paging they had
- * to be budgeted for, because a page that straddled a break in the dates would
- * otherwise squeeze its columns narrower than the rest; free scrolling has no
- * pages to keep in step, so a gap simply makes the track a little longer and
- * every column keeps the same width regardless of where the breaks fall.
- */
+/** A fitting event spends the whole viewport; an overflowing one is sized against `perView` less the peek, ignoring gap spacers — a gap lengthens the track, not the columns. */
 export function columnWidthFor(options: ColumnWidthOptions): number {
   const { availableWidth, columnCount, perView, gapCount, gapWidth, peek, minWidth } = options;
   if (columnCount <= 0) return 0;
@@ -1049,12 +795,7 @@ export function columnWidthFor(options: ColumnWidthOptions): number {
   return Math.max(minWidth, Math.floor((availableWidth - peek) / Math.max(perView, 1)));
 }
 
-/**
- * How far one chevron press moves the track: a viewport, less the peek, so the
- * column that was half-showing at the edge lands fully in view rather than
- * being stepped straight over. Never less than a single column, so the button
- * still does something on a viewport barely wider than one.
- */
+/** One chevron press: a viewport less the peek, so the half-shown column lands fully in view; never less than a column. */
 export function scrollStepFor(viewportWidth: number, colWidth: number, peek: number): number {
   return Math.max(1, colWidth, viewportWidth - peek);
 }
@@ -1067,11 +808,7 @@ export interface ScrollEdges {
   overflowing: boolean;
 }
 
-/**
- * Which ends of the track are clipped — what the fades draw and what the
- * chevrons' disabled state reports. The tolerance absorbs both sub-pixel
- * layout and the overscroll a touch platform allows past either end.
- */
+/** Which ends are clipped; the tolerance absorbs sub-pixel layout and touch overscroll past either end. */
 export function scrollEdges(
   scrollLeft: number,
   scrollWidth: number,
@@ -1102,21 +839,7 @@ export interface EdgeScrollOptions {
   hysteresis?: number;
 }
 
-/**
- * Whether a pointer at `x` (relative to the viewport's left edge) is asking the
- * track to keep coming — the drag-to-the-edge scroll.
- *
- * Three things keep it from firing when it is not wanted. It reports nothing at
- * an end of the track, so a drag pinned against the last column does not sit
- * there straining. The engaged direction gets a deeper zone, so a pointer
- * resting on the boundary cannot flicker between scrolling and not. And the two
- * zones never meet: on a viewport narrower than two zones each gets half, so
- * there is always somewhere to paint that stands still.
- *
- * Past the edge counts as inside it — dragging clean off the chart is the
- * strongest possible way of asking for more of it, and it matches the way
- * `hitTest` clamps rather than gives up out there.
- */
+/** The drag-to-the-edge scroll: silent at the track's ends, a deeper zone while engaged (hysteresis), zones capped at half the viewport, and past the edge counts as inside it. */
 export function edgeScrollDirection(
   x: number,
   viewportWidth: number,
@@ -1139,22 +862,13 @@ export interface EdgeGlideOptions {
   speed: number;
   /** Distance left over from the last frame, too small to have been applied. */
   carry: number;
-  /**
-   * Quantise the travel to this step instead of gliding. Set to the column
-   * width under `prefers-reduced-motion`, where continuous drift is exactly the
-   * kind of motion being asked for less of: the track jumps a column at a time.
-   */
+  /** Quantise the travel to this step: the column width under `prefers-reduced-motion`. */
   snap?: number;
   /** Longest frame the glide will honour, so a stalled tab cannot lurch. */
   maxFrameMs?: number;
 }
 
-/**
- * How far the auto-scroll moves this frame, and what is left to carry into the
- * next one. Time-based rather than per-frame, so the speed is the same on a
- * 60Hz and a 120Hz display; the caller clamps the result to the track by
- * handing it to `scrollLeft`, which cannot go past its own ends.
- */
+/** This frame's travel and the remainder to carry. Time-based, so the speed matches on 60Hz and 120Hz displays. */
 export function edgeGlideStep(
   direction: EdgeDirection,
   elapsedMs: number,
