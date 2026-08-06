@@ -217,7 +217,12 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
   app.use(async (req: Request, res: Response, next: NextFunction) => {
     const isRead = req.method === "GET" || req.method === "HEAD";
     const sendHtml = (status: number, html: string) =>
-      res.status(status).set("Content-Type", "text/html; charset=utf-8").end(html);
+      res
+        .status(status)
+        .set("Content-Type", "text/html; charset=utf-8")
+        // Pages are dynamic; only the hashed assets they link to are cacheable.
+        .set("Cache-Control", "no-cache")
+        .end(html);
 
     try {
       // '/' is CSR only — the admin app boots from the bare shell. It resolves

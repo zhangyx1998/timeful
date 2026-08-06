@@ -1283,6 +1283,32 @@ Injected meta: `robots=noindex`, a description, `og:type`, `og:site_name`,
 The interactive grid mounts client-side only, which sidesteps server/client
 timezone hydration mismatches.
 
+### Styles and caching
+
+Styles ship the standard way: the built template carries one blocking
+`<link rel="stylesheet">` to the content-hashed asset in `client/assets/`, and
+every served page — the `'/'` shell and the SSR event pages — keeps it. A
+blocking link in the head precludes a flash of unstyled content by
+construction: the browser does not paint until the stylesheet has arrived.
+
+The split of caching duties follows from the hashing. Served HTML goes out
+`Cache-Control: no-cache` — it is dynamic, and revalidating it is what picks
+up a new deploy. Everything under `/assets/` goes out
+`public, max-age=31536000, immutable`: a content-hashed filename never changes
+meaning, so a year-long cache is safe, and old assets remain valid across a
+deploy for pages loaded just before it.
+
+Inlining the full stylesheet into every served page was tried and rejected: it
+removed the one fetch that could fail independently of the document, but at
+the cost of the standard caching shape, and the blocking link already
+guarantees a styled first paint.
+
+In dev there is no built asset — Vite injects styles from JS modules after
+first paint — so the dev renderer softens that flash by inlining
+`src/styles/tokens.css` into the template head (`server/dev.ts`); the copy
+Vite injects later wins by document order, so HMR still applies. This is a
+dev-only artifact; production never takes that path.
+
 ### Static assets
 
 Mounted after `/api` and before the page handler:
@@ -1372,6 +1398,32 @@ muted monospace line under the generic message.
   a `viewBox` has no intrinsic size, so a missed CSS rule would size it to a
   default box wide enough to shove the rest of the strip out of the chart.
   :::
+- **The strip's dismissal is a checkmark labelled Done.** It keeps the marks —
+  closing is what waiting or pressing elsewhere does — and beside an undo, a
+  cross read as "throw my change away". Crosses stay on the closings that
+  accept nothing: the region digest card and the mode pills.
+- **The chart's start boundary is one translating assembly.** The time gutter
+  is `position: sticky` inside the one scrollport, and during the platform's
+  horizontal rubber-band the compositor translates the scrollport's contents
+  wholesale — sticky gutter included — while rounding each layer to device
+  pixels on its own. Two rules follow. The start-edge fade **rides the
+  gutter's right border** rather than sitting stationary over the stage: a
+  stationary fade held still while the boundary it decorated moved, and
+  columns slid visibly past it; attached, gutter, fade and columns move as one
+  and a bounce exposes plain page background — the native look, which is the
+  boundary cue itself. And the gutter's opaque background **bleeds two pixels
+  past its own left edge**: at a fractional device-pixel offset (non-integer
+  DPR, pinch zoom) the scrollport's clip edge and the gutter's painted box can
+  round apart, and the sliver in between showed the column passing underneath.
+  Horizontal overscroll stays `contain` — it stops the browser's back gesture
+  and deliberately keeps the bounce. The end fade stays stationary on purpose:
+  content sliding beneath a fade is the ordinary look of scrolling, with no
+  opaque boundary to violate.
+- **Opening a dialog must not move the page.** The scroll lock hides the root
+  scrollbar, and where that bar takes layout space the viewport would widen
+  and nudge centred content sideways — so the lock measures the bar and holds
+  its width as body padding for as long as it lasts. Overlay scrollbars
+  measure zero and nothing changes.
 - A resize commits on every step, so its undo is a record that **grows** rather
   than a snapshot taken once (`selectionStep` in `src/lib/grid.ts`): a cell is
   recorded the first time the rectangle takes it in and never again, since after
@@ -1558,7 +1610,14 @@ muted monospace line under the generic message.
    an empty name, one over 100 characters, or one containing a **dash** shows
    the message the server would have returned and disables Continue.
 4. "Just browsing" drops the identity and deletes the stored name, so the next
-   visit asks again. It never claims a write session.
+   visit asks again. It never claims a write session. The withdrawal reaches
+   **stale page instances** too: a page that has adopted nobody re-resolves its
+   arrival when the `storage` event reports another document's write, and on a
+   bfcache restore (`pageshow` with `persisted`) — so a second tab left
+   sitting on its welcome prompt cannot keep offering, or write back, a name
+   this device has purged. An *adopted* identity is deliberately left alone:
+   it is live state with a server-side answer behind it, not a stale
+   suggestion.
 5. After confirming there is **no Save button**. Every grid mutation autosaves
    after a short debounce, with a status indicator: syncing (spinner), saved
    (green), or failed (red, with Retry). Which pipe the save took — the write
