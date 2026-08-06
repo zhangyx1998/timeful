@@ -1,17 +1,20 @@
 <script setup lang="ts">
 /**
- * The welcome prompt behind a personalized link (`?name=`, see
- * `lib/entry-identity.ts`). It greets the person the link named and asks for
- * one thing only: confirmation. Continue means exactly what the identity
- * dialog's confirm means — snapped to the key, the event's spelling adopted,
- * load-then-overwrite — because the session runs it through the same path.
+ * The landing's welcome prompt (`lib/entry-identity.ts`): the page believes it
+ * knows who arrived — a personalized link named them, the device remembers
+ * them, or the URL is their own edit path — and asks for one tap of
+ * confirmation rather than acting on it. Continue means exactly what the
+ * identity dialog's confirm means — snapped to the key, the event's spelling
+ * adopted, load-then-overwrite — because the session runs it through the same
+ * path.
  *
- * Two choices, deliberately. "Just browsing" belongs to the generic dialog:
- * this prompt is a yes-or-not-me question about one named person, and the way
- * to every other answer is "Not <name>?", which opens that dialog — blank, per
- * its never-prefill contract. Closing (Escape, the backdrop, the X) declines
- * nothing and confirms nothing; the page falls back to whatever it would have
- * been without the query.
+ * Its other two answers are quiet by design. "Not <name>?" is the wrong-person
+ * hatch: it opens the generic dialog — blank, per its never-prefill contract,
+ * and with its full mid-page semantics. "View only" declines the whole
+ * question and goes to the group view; it is this prompt's version of the
+ * generic dialog's browsing escape, without the purge. Closing (Escape, the
+ * backdrop, the X) confirms and declines nothing — the page shows the group
+ * and the remembered name survives to be asked about next time.
  */
 import Button from "../ui/Button.vue";
 import Dialog from "../ui/Dialog.vue";
@@ -30,6 +33,7 @@ defineProps<{
 const emit = defineEmits<{
   confirm: [];
   decline: [];
+  view: [];
   close: [];
 }>();
 </script>
@@ -39,7 +43,7 @@ const emit = defineEmits<{
     <div v-if="person" class="body">
       <p class="greeting">
         Hi <strong class="greeting__name">{{ person.displayName }}</strong> —
-        this link was made for you.
+        ready to fill in your times?
       </p>
 
       <!-- The same one-line consequence the identity dialog spells out, in the
@@ -50,9 +54,10 @@ const emit = defineEmits<{
       </p>
 
       <div class="actions">
-        <!-- Quiet on purpose: the wrong-person escape hatch, not a peer of
-             Continue. The name is the only part that can be any length, so it
-             is the only part that gives way. -->
+        <!-- Both hatches quiet on purpose: neither is a peer of Continue. The
+             name is the only part that can be any length, so it is the only
+             part that gives way. -->
+        <Button variant="ghost" @click="emit('view')">View only</Button>
         <Button variant="ghost" @click="emit('decline')">
           <span class="not">Not <span class="not__name">{{ person.displayName }}</span>?</span>
         </Button>

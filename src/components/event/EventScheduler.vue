@@ -20,7 +20,8 @@
  * settings, with the phone putting three of them behind drawers. A split would
  * have duplicated every prop of every one of them to say so.
  */
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import AdminTools from "./AdminTools.vue";
 import AvailabilityGrid from "./AvailabilityGrid.vue";
 import ColorLegend from "./ColorLegend.vue";
@@ -47,6 +48,7 @@ import {
   getScheduleTimezoneOffset,
   getTimezoneReferenceDateForEvent,
 } from "../../lib/dates";
+import { ENTRY_NAME_PARAM, type EntryRoute } from "../../lib/entry-identity";
 import { buildGrid, buildResponseIndex, maxRespondents, snapshotSlots } from "../../lib/grid";
 import type { EventDoc } from "../../lib/event";
 import { useUndoHistory } from "../../lib/history";
@@ -181,6 +183,7 @@ const {
   guestName,
   editing,
   identityOpen,
+  identityLanding,
   welcome,
   clearOpen,
   deletingKey,
@@ -196,6 +199,7 @@ const {
   declineWelcome,
   closeWelcome,
   closeIdentity,
+  viewOnly,
   clearMine,
   removeRespondent,
   startEditing,
@@ -206,6 +210,62 @@ const {
 // The two things only the page above can tell this component to do: it owns the
 // socket, so it is the only thing that knows a session was taken away.
 defineExpose({ leaveEditing: session.leaveEditing, resumeEditing: session.startEditing });
+
+// --- the URL as state (ARCHITECTURE.md § Routing / SSR) --------------------
+
+const route = useRoute();
+const router = useRouter();
+
+/** How the URL says this page was arrived at, as the entry decision needs it. */
+const entryRoute = computed<EntryRoute>(() => {
+  if (route.name === "event-view") return { kind: "view" };
+  if (route.name === "event-edit")
+    return { kind: "edit", key: String(route.params.userKey ?? "") };
+  const query = route.query[ENTRY_NAME_PARAM];
+  return { kind: "root", queryName: typeof query === "string" ? query : null };
+});
+
+// URL → state: the mount is an arrival, and so is every later route change —
+// the tab switches this page asked for (idempotent by then) and the back and
+// forward buttons it did not.
+onMounted(() => session.applyEntry(entryRoute.value));
+watch(entryRoute, (entry) => session.applyEntry(entry));
+
+/**
+ * State → URL: where the page's own state says the address bar should be.
+ *
+ * Null while an identity prompt is up — a question is not a place, so the URL
+ * holds still (keeping the root landing at `/<slug>`, query and all) until it
+ * is answered. Otherwise the two views map to their two paths, and whichever
+ * internal transition changed the state — a tab, a confirmed identity, a
+ * takeover stepping the page back — the navigation is the same one line.
+ */
+const desiredRoute = computed(() => {
+  if (welcome.value !== null || identityOpen.value) return null;
+  const slug = String(route.params.slug ?? "");
+  if (!slug) return null;
+  if (editing.value && guestKey.value)
+    return {
+      name: "event-edit" as const,
+      params: { slug, userKey: guestKey.value },
+    };
+  return { name: "event-view" as const, params: { slug } };
+});
+
+function routeMatches(target: NonNullable<typeof desiredRoute.value>): boolean {
+  if (route.name !== target.name) return false;
+  if (route.params.slug !== target.params.slug) return false;
+  return !("userKey" in target.params) || route.params.userKey === target.params.userKey;
+}
+
+watch(desiredRoute, (target) => {
+  if (!target || routeMatches(target)) return;
+  // Leaving the root landing replaces it: the question the URL stood for has
+  // been answered, and the back button should not re-ask it. Everything after
+  // that — tab switches, a changed person — is a place worth returning to.
+  if (route.name === "event") void router.replace(target);
+  else void router.push(target);
+});
 
 /**
  * The respondent's bell, for the two places it renders (the identity card,
@@ -394,7 +454,8 @@ const holdThenClose = useHoldThenClose(closePeople);
  *  on top of the prompt it just asked for. */
 function addRespondent() {
   closePeople();
-  identityOpen.value = true;
+  // Asked for mid-page, so the dialog keeps its "Just browsing" exit.
+  changeName();
 }
 
 // --- showing one person ---------------------------------------------------
@@ -777,22 +838,24 @@ function onSolo(person: { key: string; displayName: string } | null) {
       @redo="history.redo"
     />
 
-    <!-- A personalized link's greeting, ahead of the generic dialog: its
-         "Not <name>?" is what opens that dialog, blank as always. Closing it
-         answers nothing, so the session falls back to whatever this device
-         would have been without the query. -->
+    <!-- The landing's greeting, ahead of the generic dialog: its "Not
+         <name>?" is what opens that dialog, blank as always. Closing it
+         answers nothing — the group view shows, and the URL follows. -->
     <GuestWelcomeDialog
       :person="welcome"
       @confirm="confirmWelcome"
       @decline="declineWelcome"
+      @view="viewOnly"
       @close="closeWelcome"
     />
 
     <GuestIdentityDialog
       :open="identityOpen"
       :existing-people="existingPeople"
+      :landing="identityLanding"
       @confirm="confirmIdentity"
       @browse="browseOnly"
+      @view="viewOnly"
       @close="closeIdentity"
     />
 

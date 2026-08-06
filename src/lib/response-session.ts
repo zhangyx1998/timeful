@@ -28,13 +28,13 @@ import {
   type Ref,
 } from "vue";
 import { api, apiError, userPath } from "./api";
-import { consumeEntryName, readEntryName, resolveEntryIdentity } from "./entry-identity";
+import { resolveEntryIdentity, type EntryRoute } from "./entry-identity";
 import { toAvailabilitySets, toIsoArray, type AvailabilityType, type EventDoc } from "./event";
 import type { RealtimeSession, SavePayload } from "./realtime";
 import { createSaveTransport } from "./save-transport";
 import { clearStorage, readStorage, STORAGE_KEYS, writeStorage } from "./storage";
 import { createSyncEngine, type SyncBaseline, type SyncStatus } from "./sync";
-import { adoptDisplayName, guestNameProblem, userKey } from "./user-key";
+import { adoptDisplayName, guestNameProblem, userKey, userKeyFromParam } from "./user-key";
 
 /**
  * The half of the realtime handle this needs: one method that either takes a
@@ -73,7 +73,13 @@ export interface ResponseSession {
   guestName: ComputedRef<string | null>;
   editing: Ref<boolean>;
   identityOpen: Ref<boolean>;
-  /** The person a `?name=` link greeted, while the welcome prompt is up. */
+  /**
+   * Whether the open identity dialog is a *landing* — the page's first
+   * question, whose quiet way out is "View only" — rather than a question the
+   * visitor asked for mid-page, whose way out stays "Just browsing".
+   */
+  identityLanding: Ref<boolean>;
+  /** The person a landing greeted, while the welcome prompt is up. */
   welcome: ComputedRef<{ key: string; displayName: string; matched: boolean } | null>;
   clearOpen: Ref<boolean>;
   deletingKey: Ref<string | null>;
@@ -101,6 +107,8 @@ export interface ResponseSession {
   declineWelcome(): void;
   closeWelcome(): void;
   closeIdentity(): void;
+  viewOnly(): void;
+  applyEntry(entry: EntryRoute): void;
   clearMine(): Promise<void>;
   removeRespondent(key: string): Promise<void>;
   startEditing(): void;
@@ -336,9 +344,6 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     identity.value = person;
     // A fresh claim, whatever the last one ended as.
     surrendered.value = false;
-    // Whoever was being held for a possible restore, the visitor has now
-    // answered the question themselves.
-    heldStoredName = null;
     writeStorage(STORAGE_KEYS.guestName, person.displayName);
     identityOpen.value = false;
     dirtySinceConfirm.value = false;
@@ -366,10 +371,6 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
   function browseOnly() {
     engine.flush();
     clearStorage(STORAGE_KEYS.guestName);
-    // "Do not take me as anyone" withdraws the remembered name entirely; a
-    // held identity quietly coming back afterwards would put them straight
-    // back under it.
-    heldStoredName = null;
     identityOpen.value = false;
     awaitingIdentityRefresh = null;
     identity.value = null;
@@ -382,24 +383,17 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     options.resetFocus();
   }
 
-  // --- arriving by a personalized link --------------------------------------
+  // --- landing --------------------------------------------------------------
 
   /**
-   * The raw name a `?name=` link carried, while the welcome prompt is up. Only
-   * ever set to a name that passed `guestNameProblem` at boot; null once the
-   * prompt has been answered or dismissed.
+   * The name the landing greets, while the welcome prompt is up. Always a name
+   * that passed `guestNameProblem`; null once the prompt has been answered or
+   * dismissed.
    */
-  const entryName = ref<string | null>(null);
+  const pendingName = ref<string | null>(null);
 
-  /**
-   * A remembered identity held back while the welcome prompt (or the generic
-   * dialog behind its "Not you?" button) is up. The query wins the first move,
-   * but declining it must not have cost the device the person it remembered:
-   * only confirming somebody — or "Just browsing", which purges — settles the
-   * question. Closing either dialog without answering restores this silently,
-   * exactly as a visit with no query would have.
-   */
-  let heldStoredName: string | null = null;
+  /** See `ResponseSession.identityLanding`. */
+  const identityLanding = ref(false);
 
   /**
    * Who the welcome prompt greets. Derived rather than stored, so a snapshot
@@ -407,7 +401,7 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
    * spelling and the already-answered line honest.
    */
   const welcome = computed(() => {
-    const raw = entryName.value;
+    const raw = pendingName.value;
     if (raw === null) return null;
     const person = adopt(raw);
     return {
@@ -420,45 +414,95 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
   function confirmWelcome() {
     const person = welcome.value;
     if (!person) return;
-    entryName.value = null;
-    heldStoredName = null;
+    pendingName.value = null;
     confirmIdentity({ key: person.key, displayName: person.displayName });
   }
 
   /**
    * "Not <name>?": the greeting was wrong, so ask properly. The generic dialog
    * opens blank per its own contract — the declined name is not this visitor's
-   * and must not be offered back to them as a prefill.
+   * and must not be offered back to them as a prefill — and keeps its full
+   * mid-page semantics, "Just browsing" included. Declining costs nothing yet:
+   * the remembered name stays stored until the visitor confirms somebody else
+   * or browses.
    */
   function declineWelcome() {
-    entryName.value = null;
+    pendingName.value = null;
+    identityLanding.value = false;
     identityOpen.value = true;
   }
 
-  /** The welcome prompt dismissed without an answer: back to what was. */
+  /**
+   * The two prompts' quiet exits. Dismissing (Escape, the backdrop, the X)
+   * answers nothing: no identity is adopted and the remembered name is not
+   * touched — the next landing simply asks again. "View only" is the same
+   * answer made explicitly; either way the page shows the group, and the view
+   * above navigates accordingly.
+   */
   function closeWelcome() {
-    entryName.value = null;
-    restoreHeldIdentity();
+    pendingName.value = null;
   }
 
-  /** The generic dialog closed without an answer: likewise. */
   function closeIdentity() {
     identityOpen.value = false;
-    restoreHeldIdentity();
+  }
+
+  function viewOnly() {
+    pendingName.value = null;
+    identityOpen.value = false;
   }
 
   /**
-   * Takes the remembered identity back up, silently, the way the boot path
-   * does — unless the visitor became somebody in the meantime, in which case
-   * there is nothing to restore and the hold is simply over.
+   * Takes an arrival — the mount, or any later route change — and puts the
+   * page in the state that URL means (§ Guest UX): the group view asks
+   * nothing, an edit path for the person this page already is resumes their
+   * editing, and any other landing asks — by name where one is known, blank
+   * where none is. Idempotent, because the route watcher above fires for
+   * navigations this session itself asked for.
    */
-  function restoreHeldIdentity() {
-    const stored = heldStoredName;
-    heldStoredName = null;
-    if (stored === null || identity.value !== null) return;
-    identity.value = adopt(stored);
-    loadResponseFor(identity.value.key);
-    editing.value = true;
+  function applyEntry(entry: EntryRoute) {
+    const stored = readStorage(STORAGE_KEYS.guestName)?.trim() ?? "";
+    // A name stored before dashes were illegal cannot be saved under, so it is
+    // not a name this page can be. Dropping it asks once, and the key the
+    // guest retypes lands on the very record the old spelling pointed at.
+    const storedUsable = stored !== "" && guestNameProblem(stored) === null;
+    if (stored && !storedUsable) clearStorage(STORAGE_KEYS.guestName);
+
+    // The person this page already is needs no confirming twice: reaching
+    // their own edit URL — a tab switch, a back button — just resumes.
+    if (
+      entry.kind === "edit" &&
+      identity.value !== null &&
+      userKeyFromParam(entry.key) === identity.value.key
+    ) {
+      pendingName.value = null;
+      identityOpen.value = false;
+      if (!editing.value) startEditing();
+      return;
+    }
+
+    const decision = resolveEntryIdentity(
+      entry,
+      storedUsable ? stored : null,
+      existingPeople.value,
+    );
+    // Whatever this arrival asks, it is not the edit session the page was in.
+    if (editing.value) stopEditing();
+    switch (decision.action) {
+      case "view":
+        pendingName.value = null;
+        identityOpen.value = false;
+        return;
+      case "welcome":
+        identityOpen.value = false;
+        pendingName.value = decision.displayName;
+        return;
+      case "ask":
+        pendingName.value = null;
+        identityLanding.value = true;
+        identityOpen.value = true;
+        return;
+    }
   }
 
   // A refresh triggered by confirming identity re-seeds the grid, unless the
@@ -558,6 +602,14 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
       options.onClaim();
       return;
     }
+    // Nobody yet. A remembered name gets the one-tap welcome — the same
+    // confirmation a landing gives it — and anyone else is asked properly.
+    const stored = readStorage(STORAGE_KEYS.guestName)?.trim() ?? "";
+    if (stored && guestNameProblem(stored) === null) {
+      pendingName.value = stored;
+      return;
+    }
+    identityLanding.value = false;
     identityOpen.value = true;
   }
 
@@ -605,6 +657,8 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
   }
 
   function changeName() {
+    // Asked for mid-page: the dialog keeps "Just browsing", not "View only".
+    identityLanding.value = false;
     identityOpen.value = true;
   }
 
@@ -629,41 +683,10 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     };
   }
 
-  onMounted(() => {
-    const stored = readStorage(STORAGE_KEYS.guestName)?.trim() ?? "";
-    // A name stored before dashes were illegal cannot be saved under, so it is
-    // not a name this page can be. Dropping it asks once, and the key the guest
-    // retypes lands on the very record the old spelling pointed at.
-    const storedUsable = stored !== "" && guestNameProblem(stored) === null;
-    if (stored && !storedUsable) clearStorage(STORAGE_KEYS.guestName);
-
-    // A personalized link may name the visitor. Ask before believing it —
-    // except when this device already is that person, where there is nothing
-    // to ask. Either way the query is consumed off the address bar, so a
-    // reload does not re-prompt and a copied URL does not carry the name on.
-    const query = readEntryName();
-    const decision = resolveEntryIdentity(
-      query,
-      storedUsable ? stored : null,
-      existingPeople.value,
-    );
-    if (decision.action !== "none") consumeEntryName();
-    if (decision.action === "welcome" && query !== null) {
-      entryName.value = query;
-      heldStoredName = storedUsable ? stored : null;
-      return;
-    }
-
-    if (storedUsable) {
-      // A returning guest is not interrupted: their answer is loaded and the
-      // grid opens ready to edit.
-      identity.value = adopt(stored);
-      loadResponseFor(identity.value.key);
-      editing.value = true;
-    } else {
-      identityOpen.value = true;
-    }
-  });
+  // No identity boot here: the arrival is a property of the URL, so the view
+  // that owns the route calls `applyEntry` on mount and on every route change
+  // (§ Guest UX). Nobody is entered silently on a landing any more — a
+  // remembered name gets the one-tap welcome instead.
 
   return {
     availability,
@@ -674,6 +697,7 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     guestName,
     editing,
     identityOpen,
+    identityLanding,
     welcome,
     clearOpen,
     deletingKey,
@@ -693,6 +717,8 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     declineWelcome,
     closeWelcome,
     closeIdentity,
+    viewOnly,
+    applyEntry,
     clearMine,
     removeRespondent,
     startEditing,
