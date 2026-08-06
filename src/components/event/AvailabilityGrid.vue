@@ -1854,13 +1854,17 @@ defineExpose({ measure, clearSelection });
    natural height and the page scrolls past it. On a phone the chart is given a
    bounded height instead and this scrolls both ways, like a spreadsheet.
 
-   Containment is per axis, and deliberately so. On the horizontal one it keeps
-   a swipe that runs off the end of the track from turning into the browser's
-   back gesture. Applied to both, it would also swallow a vertical wheel:
-   `overflow-y: hidden` still makes this a scroll container on that axis, and a
-   contained one refuses to hand the scroll on to the page — so a wheel over the
-   chart would do nothing at all. Vertical chains to the page, which is whose
-   gesture it is. */
+   Overscroll is per axis, and deliberately so. The horizontal one is `none`:
+   `contain` already kept a swipe off the end of the track from becoming the
+   browser's back gesture, but it still allowed the platform's rubber-band —
+   and during that bounce the compositor translates the scrollport's contents
+   wholesale, sticky time gutter included, so day columns slid out from under
+   the gutter and past the stationary edge fade. No stationary mask can cover
+   that without also covering the gutter's own labels, and un-sticking the
+   gutter into an overlay would re-create the synced-scrollports design this
+   chart exists to avoid — so the bounce goes instead, on this one axis of
+   this one scroller. Vertical is untouched and chains to the page: a wheel
+   over the chart is the page's gesture, and the page keeps its own feel. */
 .viewport {
   --focus-ring-inset: calc(var(--focus-ring-offset) * -1);
 
@@ -1869,7 +1873,7 @@ defineExpose({ measure, clearSelection });
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  overscroll-behavior-x: contain;
+  overscroll-behavior-x: none;
   scrollbar-width: none;
 }
 
