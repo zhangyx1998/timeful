@@ -299,19 +299,8 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     if (document.visibilityState === "hidden") engine.flush();
   }
 
-  /**
-   * A stale page instance must not resurrect a purged name.
-   *
-   * "Just browsing" clears the remembered name in localStorage — but a
-   * greeting is in-memory state, and a page instance that read storage before
-   * the purge can outlive it: a second tab sitting on its welcome prompt, or
-   * a bfcache-restored page brought back with its pre-purge state intact.
-   * Both get re-resolved against what storage says *now*: the `storage` event
-   * covers the other-tab case (it only ever fires for another document's
-   * writes), `pageshow` with `persisted` covers the restore. Only while the
-   * page has adopted nobody — an identity in use is live state with a
-   * server-side answer behind it, not a stale suggestion.
-   */
+  // Stale instances re-resolve on cross-tab writes and bfcache restores, so a
+  // purged name cannot be resurrected (ARCHITECTURE.md § Guest UX).
   function reresolveEntry(): void {
     if (identity.value === null) applyEntry(currentEntry);
   }
@@ -497,9 +486,6 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
    * navigations this session itself asked for.
    */
   function applyEntry(entry: EntryRoute) {
-    // Kept for the stale-instance re-resolution above: a storage purge from
-    // another tab, or a bfcache restore, re-asks the same arrival question
-    // against what storage says now.
     currentEntry = entry;
     const stored = readStorage(STORAGE_KEYS.guestName)?.trim() ?? "";
     // A name stored before dashes were illegal cannot be saved under, so it is

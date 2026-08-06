@@ -1617,12 +1617,8 @@ defineExpose({ measure, clearSelection });
         >
           <div ref="sheet" class="sheet">
             <div ref="gutter" class="gutter">
-              <!-- The start-edge fade rides the gutter it borders (see its
-                   rule): gutter, fade and columns then translate as one
-                   assembly during the platform's rubber-band, instead of the
-                   columns sliding past a fade that stayed put. Same
-                   visibility rule the stage-level fade had: only while
-                   something is actually clipped behind the gutter. -->
+              <!-- On the gutter, so the rubber-band moves them as one
+                   (ARCHITECTURE.md § Client model). -->
               <div v-if="moreBefore" class="gutter-fade" aria-hidden="true" />
               <div class="gutter-head" :style="{ height: `${HEADER_HEIGHT}px` }" />
               <template v-for="(row, index) in model.rows" :key="`label-${index}`">
@@ -1740,10 +1736,8 @@ defineExpose({ measure, clearSelection });
         </div>
 
         <!-- Over the chart, not beside it: the end fade and the knobs live
-             outside the scrollport so they stay put while the track runs
-             under them. The start fade is different — it decorates the
-             gutter's boundary, so it lives on the gutter (see above) and
-             moves with it. -->
+             outside the scrollport so they stay put while the track runs under
+             them. The start fade rides the gutter instead (see above). -->
         <div v-if="moreAfter" class="edge edge--end" aria-hidden="true" />
 
         <button
@@ -1865,16 +1859,12 @@ defineExpose({ measure, clearSelection });
 
    Containment is per axis, and deliberately so. On the horizontal one it keeps
    a swipe that runs off the end of the track from turning into the browser's
-   back gesture — while leaving the platform's rubber-band alone, which is a
-   boundary cue worth keeping: the bounce is how a fling says "this is the
-   end". (During that bounce the compositor translates the scrollport's
-   contents wholesale, sticky gutter included — which is why the start-edge
-   fade rides the gutter rather than sitting stationary over the stage; see
-   `.gutter-fade`.) Applied to both axes, containment would also swallow a
-   vertical wheel: `overflow-y: hidden` still makes this a scroll container on
-   that axis, and a contained one refuses to hand the scroll on to the page —
-   so a wheel over the chart would do nothing at all. Vertical chains to the
-   page, which is whose gesture it is. */
+   back gesture, while leaving the rubber-band alone (ARCHITECTURE.md § Client
+   model). Applied to both, it would also swallow a vertical wheel:
+   `overflow-y: hidden` still makes this a scroll container on that axis, and a
+   contained one refuses to hand the scroll on to the page — so a wheel over the
+   chart would do nothing at all. Vertical chains to the page, which is whose
+   gesture it is. */
 .viewport {
   --focus-ring-inset: calc(var(--focus-ring-offset) * -1);
 
@@ -1926,17 +1916,8 @@ defineExpose({ measure, clearSelection });
   background: var(--color-bg);
 }
 
-/* The gutter's opacity, bled a couple of pixels past its own left edge.
-   The columns translate beneath the pinned gutter, and the two live on
-   different compositor layers: at a fractional device-pixel offset — a
-   non-integer DPR, a pinch zoom, a scroll position between device pixels —
-   the scrollport's clip edge and the gutter's painted box can round to
-   different pixels, and the sliver between them shows a strip of whatever
-   column is passing underneath. Painting past the edge means no rounding
-   direction can expose it: the overhang is clipped by the scrollport when the
-   boxes agree and covers the seam when they do not. Rides the gutter, so it
-   holds during the rubber-band too; same bleed on both sides of the edge, so
-   zoom can round either way. */
+/* Bled past the left edge: layer rounding at fractional device pixels must
+   never expose the columns beneath (ARCHITECTURE.md § Client model). */
 .gutter::before {
   content: "";
   position: absolute;
@@ -2096,9 +2077,7 @@ defineExpose({ measure, clearSelection });
 
 /* The clipped end edge, dissolved rather than cut: with the peeked column
    showing through it, the grid reads as continuing under the knob instead of
-   ending. Inert — the cells beneath it take the pointer. Stationary is right
-   for this edge: during a rubber-band the columns simply slide under it, the
-   ordinary look of content scrolling beneath a fade. */
+   ending. Inert — the cells beneath it take the pointer. */
 .edge {
   position: absolute;
   top: 0;
@@ -2113,18 +2092,8 @@ defineExpose({ measure, clearSelection });
   background: linear-gradient(to left, var(--color-bg), transparent);
 }
 
-/* The clipped start edge, riding the gutter it borders instead of sitting
-   stationary over the stage. During the platform's rubber-band the compositor
-   translates the scrollport's contents wholesale, sticky gutter included — a
-   stationary fade sat still while the boundary it decorated moved, and the
-   columns slid visibly past it. Attached here, gutter, fade and columns
-   translate as one assembly, and what a bounce exposes at the container's
-   border is plain page background: the native rubber-band look, which is the
-   boundary cue itself. Starts exactly at the gutter's right border, so the
-   hour labels are never tinted; inert like the stage-level fade it replaces,
-   so the cells beneath it take the pointer; painted in the gutter's own
-   stacking level, which sits above the header and the cells exactly as the
-   old z-index did. */
+/* The clipped start edge, on the gutter it borders so the rubber-band cannot
+   shear them apart (ARCHITECTURE.md § Client model). Inert, like the end fade. */
 .gutter-fade {
   position: absolute;
   top: 0;

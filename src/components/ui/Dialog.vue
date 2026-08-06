@@ -99,14 +99,8 @@ let opener: HTMLElement | null = null;
 function lockPage() {
   if (locks++ > 0) return;
   const root = document.documentElement;
-  // What hiding the root scrollbar is about to hand back to the layout.
-  // Classic scrollbars (Windows, macOS with "always show") take layout space,
-  // so removing them widens the viewport and nudges centred content sideways
-  // — a visible jump on every dialog. The same width goes onto the body as
-  // padding for as long as the lock holds, so the content's box never moves.
-  // Overlay scrollbars measure zero and this is a no-op. Measured here rather
-  // than fixed with `scrollbar-gutter: stable`, which would hold a permanent
-  // empty gutter on every page and is missing from pre-18.2 Safari besides.
+  // The hidden scrollbar's width stays as body padding, or centred content
+  // jumps (ARCHITECTURE.md § Client model).
   const gutter = window.innerWidth - root.clientWidth;
   previousOverflow = {
     root: root.style.overflow,

@@ -168,13 +168,8 @@ defineExpose({ element });
       Undo
     </button>
 
-    <!-- Last: the way out that KEEPS the marks. It used to be a cross, and a
-         cross beside an undo read as "throw my change away" — the opposite of
-         what it does. A checkmark says what dismissal means here: done, keep
-         it, close the strip — the same closing that waiting or pressing
-         elsewhere does. The undo beside it stays the one that moves marks.
-         (A cross remains right where closing accepts nothing: the digest
-         card, the mode pills.) -->
+    <!-- Dismissal keeps the marks, so it says so: a check, not a cross
+         (ARCHITECTURE.md § Client model). -->
     <button
       type="button"
       class="meaning__option meaning__option--dismiss meaning__option--icon"
@@ -300,9 +295,7 @@ defineExpose({ element });
   background: var(--color-subtle);
 }
 
-/* Done keeps the marks, and its hover says so in the affirmative — the
-   counterpart of the undo's warning red. After the generic hover, which it
-   ties on specificity and must beat. */
+/* Affirmative hover for Done; after the generic hover it ties and must beat. */
 .meaning__option--dismiss:hover:not(.meaning__option--on) {
   color: var(--color-success);
   background: var(--color-accent-soft);

@@ -1030,11 +1030,8 @@ function onSolo(person: { key: string; displayName: string } | null) {
 }
 
 /* Who you are, then who else answered — the column beside the grid, in the
-   order you ask the questions. The width is pinned outright, not merely given
-   as a flex basis: a basis still yields to a child's min-content width, so a
-   card appearing with one long unwrappable line — a pinned slot's label, an
-   admin tool, a sync state — would widen the whole column and shove the chart
-   narrower mid-use. Cards wrap or truncate inside; the column never moves. */
+   order you ask the questions. Width pinned outright: a flex basis yields to a
+   child's min-content line, widening the column mid-use. */
 .side {
   display: flex;
   flex: 0 0 14rem;
@@ -1148,10 +1145,7 @@ function onSolo(person: { key: string; displayName: string } | null) {
   .compact .side {
     flex: none;
     width: 100%;
-    /* The desktop cap that keeps the column from resizing under its cards
-       (see .side) would otherwise pin this to 14rem — but here it is not a
-       column beside the chart, it is the identity bar across the bottom of
-       the screen, and it takes the full width back. */
+    /* The desktop cap must not pin the phone's full-width identity bar. */
     max-width: none;
   }
 
