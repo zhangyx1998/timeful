@@ -2,17 +2,20 @@ import { describe, expect, it } from "vitest";
 import { eventPageTitle, parseEventPath } from "./event-routes";
 
 describe("parseEventPath", () => {
-  it("reads the three shapes of an event path", () => {
+  it("classifies the three canonical shapes", () => {
     expect(parseEventPath("/happy-hour")).toEqual({
       slug: "happy-hour",
+      canonical: true,
       sub: { kind: "root" },
     });
     expect(parseEventPath("/happy-hour/view")).toEqual({
       slug: "happy-hour",
+      canonical: true,
       sub: { kind: "view" },
     });
     expect(parseEventPath("/happy-hour/edit/ada-lovelace")).toEqual({
       slug: "happy-hour",
+      canonical: true,
       sub: { kind: "edit", key: "ada-lovelace" },
     });
   });
@@ -20,27 +23,45 @@ describe("parseEventPath", () => {
   it("decodes each segment", () => {
     expect(parseEventPath("/happy%2Dhour/edit/Ada%20Lovelace")).toEqual({
       slug: "happy-hour",
+      canonical: true,
       sub: { kind: "edit", key: "Ada Lovelace" },
     });
+  });
+
+  it("sends every other page-like path under a slug back to the root", () => {
+    // The 302 / router-redirect set: page territory, but not a canonical URL.
+    for (const path of [
+      "/slug/", // bare trailing slash
+      "/slug/view/",
+      "/slug/edit", // edit without a key
+      "/slug/edit/",
+      "/slug/view/extra",
+      "/slug/edit/key/extra",
+      "/slug/other",
+      "/slug/View", // exact word, not a case
+      "/slug/%zz", // malformed escape below the slug is junk under it
+      "/slug//",
+    ]) {
+      expect(parseEventPath(path)).toEqual({ slug: "slug", canonical: false });
+    }
   });
 
   it("keeps the slug rules the single-segment path always had", () => {
     expect(parseEventPath("/")).toBeNull();
     expect(parseEventPath("/favicon.ico")).toBeNull();
     expect(parseEventPath("/style.css/view")).toBeNull();
-    expect(parseEventPath("/%zz")).toBeNull(); // malformed escape
+    expect(parseEventPath("/%zz")).toBeNull(); // malformed escape in the slug
     // A %2F cannot smuggle a separator into a slug.
     expect(parseEventPath("/a%2Fb")).toBeNull();
   });
 
-  it("rejects every shape that is not one of the three", () => {
-    expect(parseEventPath("/slug/edit")).toBeNull(); // edit without a key
-    expect(parseEventPath("/slug/edit/")).toBeNull(); // empty key
-    expect(parseEventPath("/slug/view/extra")).toBeNull();
-    expect(parseEventPath("/slug/edit/key/extra")).toBeNull();
-    expect(parseEventPath("/slug/other")).toBeNull();
-    expect(parseEventPath("/slug/view/")).toBeNull(); // trailing slash
-    expect(parseEventPath("/slug/View")).toBeNull(); // exact word, not a case
+  it("leaves the reserved API sub-segments to the API router", () => {
+    // Never a page and never a redirect: `/…/data`, `/…/users/<key>` and the
+    // rest keep their exact API semantics whatever else the path carries.
+    expect(parseEventPath("/slug/data")).toBeNull();
+    expect(parseEventPath("/slug/data/x")).toBeNull();
+    expect(parseEventPath("/slug/users/ada-lovelace")).toBeNull();
+    expect(parseEventPath("/slug/ws")).toBeNull();
   });
 });
 

@@ -263,12 +263,15 @@ describe("paths that do not resolve", () => {
       });
     }
 
-    // Anything else is a browser, and gets the page. This router sits in front
-    // of the page handler for every multi-segment path, so without the
-    // distinction a mistyped link would answer a person with raw JSON.
-    const page = await call("GET", `/${event.slug}/nonsense`);
-    expect(page.status).toBe(404);
-    expect(String(page.body)).toContain("<!DOCTYPE html>");
+    // Anything else is page territory and no longer this router's to answer:
+    // under a slug that resolves it is sent back to the event root
+    // (ARCHITECTURE.md § Routing / SSR), so a person's mistyped link
+    // self-corrects instead of dead-ending — and is never answered with JSON.
+    const page = await fetch(`${api.base}/${event.slug}/nonsense`, {
+      redirect: "manual",
+    });
+    expect(page.status).toBe(302);
+    expect(page.headers.get("location")).toBe(`/${event.slug}`);
 
     expect(enter).not.toHaveBeenCalled();
   });

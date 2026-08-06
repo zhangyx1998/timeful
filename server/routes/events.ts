@@ -11,7 +11,6 @@ import {
   notifyResponsesChanged,
 } from "../push/deliver.ts";
 import { broadcastEvent, broadcastGone, closeRoom } from "../realtime.ts";
-import { sendNotFoundPage } from "../not-found.ts";
 import { slugProblem } from "../slugs.ts";
 import {
   deleteEvent,
@@ -36,7 +35,6 @@ import { publicEvent, publicResponse } from "../../src/lib/event.ts";
 // Runtime, like the slug rules: the identity dialog has to reject exactly what
 // this rejects, in the same words (src/lib/user-key.ts).
 import { guestNameProblem, userKey, userKeyFromParam } from "../../src/lib/user-key.ts";
-import { parseEventPath } from "../../src/lib/event-routes.ts";
 import { RESERVED_SUBPATHS } from "../../src/lib/slug-rules.ts";
 
 /**
@@ -705,53 +703,41 @@ async function deleteResponse(
 /**
  * Anything else under `/<slug>/…`, any method.
  *
- * Two decisions, and they are independent of each other.
+ * Only the reserved **API** sub-segments are this router's to answer: those
+ * callers are API clients and get JSON — an unresolvable first segment is a
+ * scan and is [tarpitted](../tarpit.ts) first, while a *resolvable* one has
+ * proven it holds the capability URL and gets its 404 at once. That includes
+ * a reserved segment with extra path on it (`/<slug>/data/x`): it stays an
+ * API miss, deliberately, rather than becoming a page.
  *
- * **Delay.** An unresolvable first segment is a scan and is
- * [tarpitted](../tarpit.ts). A *resolvable* one is not: whoever asked has
- * already proved they hold the capability URL, so an unknown sub-segment under
- * it is an ordinary mistake and gets an ordinary, undelayed 404.
- *
- * **Shape.** A reserved sub-segment is somebody's API client and gets JSON.
- * Anything else is somebody's browser following a stale or mistyped link, and
- * gets the same 404 page a bad single-segment URL gets — this router sits in
- * front of the page handler for every multi-segment path, so without the
- * distinction a mistyped link would answer a person with raw JSON.
+ * Every other multi-segment path is **page territory** and falls through to
+ * the SSR handler behind this router, which serves the canonical shapes,
+ * 302-redirects everything else under a resolving slug to the event root, and
+ * tarpits unknown slugs exactly as the bare `/<slug>` always was
+ * (`event-routes.ts` owns the classification).
  *
  * Registered last, so the real sub-paths always win. A plain `GET /<slug>/ws`
  * or `GET /<slug>/users/<key>` lands here too: those are WebSocket upgrades,
  * they never reach Express, and a non-upgrade request for them is not a route.
- *
- * The page sub-paths — `/<slug>/view`, `/<slug>/edit/<key>` — are not this
- * router's to answer at all: an exact page shape falls through to the SSR
- * handler behind it, which applies the same resolve-then-tarpit rule the bare
- * `/<slug>` gets. Only the exact shapes pass; `/<slug>/view/extra` is a miss
- * and stays here, so a resolvable slug keeps its ordinary, undelayed 404.
  */
 async function eventScopedCatchAll(
   req: Request,
   res: Response,
   next: NextFunction,
 ): Promise<void> {
-  const shape = parseEventPath(req.path);
-  if (shape && shape.sub.kind !== "root") {
+  if (!RESERVED_SUBPATHS.has(req.path.split("/")[2] ?? "")) {
     next();
     return;
   }
-  const wantsJson = RESERVED_SUBPATHS.has(req.path.split("/")[2] ?? "");
-  if (wantsJson) res.locals.jsonRoute = true;
-  const miss = () => {
-    if (wantsJson) res.status(404).json({ error: "Event not found" });
-    else sendNotFoundPage(res);
-  };
-
+  res.locals.jsonRoute = true;
   const event = await resolveEvent(param(req.params.slug));
   if (!event) {
-    await tarpitMiss(req, res, miss);
+    await tarpitMiss(req, res, () => {
+      res.status(404).json({ error: "Event not found" });
+    });
     return;
   }
-  if (wantsJson) res.status(404).json({ error: "Not found" });
-  else sendNotFoundPage(res);
+  res.status(404).json({ error: "Not found" });
 }
 
 // ---------------------------------------------------------------------------

@@ -3,53 +3,73 @@
  *
  * An event's path is stateful (ARCHITECTURE.md § Routing / SSR): `/<slug>` is
  * the landing that asks who is answering, `/<slug>/view` is the group chart,
- * and `/<slug>/edit/<userKey>` is the edit view as that person. **Both halves
- * use this one module at runtime** — the server to recognise the shapes and
- * write the SSR `<title>`, the client to derive the same title after
- * hydration — so the two cannot disagree on first paint. That is why every
- * import here carries an explicit `.ts` extension (docs § Conventions).
+ * and `/<slug>/edit/<userKey>` is the edit view as that person. Those three
+ * exact shapes are **canonical** and the only page URLs that serve; every
+ * other page-like path under a slug — junk sub-paths, `/edit` with no key,
+ * trailing-slash forms, the bare `/<slug>/` — classifies as non-canonical and
+ * is sent back to the event root, by a 302 on the server and by a router
+ * redirect in the SPA. **Both guards use this one parser** — the server to
+ * serve, redirect or miss, the client router so an in-SPA navigation cannot
+ * land where a full load could not — so the two cannot drift; that is why
+ * every import here carries an explicit `.ts` extension (docs § Conventions).
  *
- * The slug stays the sole capability: a user key in the path is an address
- * *within* an event already proven reachable, never a secret and never a way
- * to find one.
+ * The one carve-out is the reserved API sub-segments (`RESERVED_SUBPATHS`):
+ * those paths are not pages at all, keep their exact API semantics, and are
+ * never redirected. The slug stays the sole capability: a user key in the
+ * path is an address *within* an event already proven reachable, never a
+ * secret and never a way to find one.
  */
+import { RESERVED_SUBPATHS } from "./slug-rules.ts";
 import { userKeyFromParam } from "./user-key.ts";
 
-/** Which of the event page's three shapes a path is. */
+/** Which of the event page's three canonical shapes a path is. */
 export type EventSubpage =
   | { kind: "root" }
   | { kind: "view" }
   | { kind: "edit"; key: string };
 
+/** What a page-like path under a slug amounts to. */
+export type EventPagePath =
+  /** One of the three canonical shapes: serve it. */
+  | { slug: string; canonical: true; sub: EventSubpage }
+  /** Page territory, but not a canonical URL: redirect to `/<slug>`. */
+  | { slug: string; canonical: false };
+
 /**
- * Parses a request path into an event page shape, or null for a path that is
- * not one — which for the server means the miss handling it always had.
+ * Classifies a request path, or returns null for a path that is not page
+ * territory at all — an unusable first segment (empty, a `.` as in a file
+ * name, a malformed escape), or a reserved API sub-segment, which belongs to
+ * the event-scoped API router whatever else the path says.
  *
- * The slug rules are unchanged: one segment, no `.` (a file extension is a
- * static asset, not a page), decoded before lookup. The edit key is a single
- * further segment, passed through decoded but otherwise untouched — whether it
- * names a respondent is the page's question, not the router's.
+ * Whether the slug *resolves* is the caller's question: for the server a null
+ * here or a failed lookup is the tarpitted miss it always was, and a
+ * non-canonical shape only redirects once the slug has proven to be an event.
  */
-export function parseEventPath(
-  pathname: string,
-): { slug: string; sub: EventSubpage } | null {
+export function parseEventPath(pathname: string): EventPagePath | null {
   if (!pathname.startsWith("/")) return null;
-  let segments: string[];
+  const raw = pathname.slice(1).split("/");
+  let slug: string;
   try {
-    segments = pathname
-      .slice(1)
-      .split("/")
-      .map((segment) => decodeURIComponent(segment));
+    slug = decodeURIComponent(raw[0] ?? "");
   } catch {
-    return null; // malformed percent-encoding
+    return null; // malformed percent-encoding in the slug
   }
-  const [slug, second, third] = segments;
   if (!slug || slug.includes("/") || slug.includes(".")) return null;
-  if (segments.length === 1) return { slug, sub: { kind: "root" } };
-  if (segments.length === 2 && second === "view") return { slug, sub: { kind: "view" } };
-  if (segments.length === 3 && second === "edit" && third)
-    return { slug, sub: { kind: "edit", key: third } };
-  return null;
+  if (raw.length >= 2 && RESERVED_SUBPATHS.has(raw[1] ?? "")) return null;
+
+  let rest: string[];
+  try {
+    rest = raw.slice(1).map((segment) => decodeURIComponent(segment));
+  } catch {
+    // A malformed escape below the slug is junk under a real address.
+    return { slug, canonical: false };
+  }
+  if (rest.length === 0) return { slug, canonical: true, sub: { kind: "root" } };
+  if (rest.length === 1 && rest[0] === "view")
+    return { slug, canonical: true, sub: { kind: "view" } };
+  if (rest.length === 2 && rest[0] === "edit" && rest[1])
+    return { slug, canonical: true, sub: { kind: "edit", key: rest[1] } };
+  return { slug, canonical: false };
 }
 
 /** The slice of the event document a title needs. */

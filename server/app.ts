@@ -26,6 +26,7 @@ import { publicEvent } from "../src/lib/event.ts";
 import {
   eventPageTitle,
   parseEventPath,
+  type EventPagePath,
   type EventSubpage,
 } from "../src/lib/event-routes.ts";
 import { statusOf } from "./http.ts";
@@ -231,7 +232,10 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
       }
 
       // Resolve first: only an actual miss enters the tarpit, whatever the
-      // method. A hit with an unusable method is a plain, undelayed 404.
+      // method or shape. A hit with an unusable method is a plain, undelayed
+      // 404 — and a hit on a non-canonical page path is a 302 to the event
+      // root, query preserved, so SSR only ever renders the canonical URLs
+      // and an odd address self-corrects instead of serving content there.
       const resolved = await resolveSlugPath(req.path);
       if (!resolved) {
         await tarpitMiss(req, res, () => sendHtml(404, NOT_FOUND_HTML));
@@ -241,6 +245,10 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
         sendHtml(404, NOT_FOUND_HTML);
         return;
       }
+      if (!resolved.shape.canonical) {
+        res.redirect(302, `/${resolved.shape.slug}${req.originalUrl.slice(req.path.length)}`);
+        return;
+      }
 
       sendHtml(
         200,
@@ -248,7 +256,7 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
           await renderer.loadTemplate(req.originalUrl),
           resolved.event,
           req,
-          resolved.sub,
+          resolved.shape.sub,
         ),
       );
     } catch (err) {
@@ -362,22 +370,24 @@ function eventHead(
 }
 
 /**
- * Resolves a request path to an event and the page shape asked for. The three
- * shapes — `/<slug>`, `/<slug>/view`, `/<slug>/edit/<key>` — all answer with
- * the same event page (`event-routes.ts` owns the parsing); anything else is
- * the miss it always was. An edit key that names nobody still serves the page:
- * the slug is the sole capability, and the page itself answers the question
- * the key asks.
+ * Resolves a request path to an event and what the path asked of it
+ * (`event-routes.ts` owns the classification). The three canonical shapes —
+ * `/<slug>`, `/<slug>/view`, `/<slug>/edit/<key>` — serve the page; any other
+ * page-like path under a resolving slug is non-canonical and the caller
+ * redirects it to the root; a slug that does not resolve is the miss it
+ * always was, whatever followed it. An edit key that names nobody still
+ * serves the page: the slug is the sole capability, and the page itself
+ * answers the question the key asks.
  */
 async function resolveSlugPath(
   pathname: string,
-): Promise<{ event: StoredEvent; sub: EventSubpage } | null> {
+): Promise<{ event: StoredEvent; shape: EventPagePath } | null> {
   const shape = parseEventPath(pathname);
   if (!shape) return null;
   const links = await readLinks();
   const id = links[shape.slug];
   const event = id ? await readEvent(id) : null;
-  return event ? { event, sub: shape.sub } : null;
+  return event ? { event, shape } : null;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_SLUG_LENGTH,
-  PAGE_SUBPATHS,
   RESERVED_SLUGS,
   RESERVED_SUBPATHS,
   slugProblem,
@@ -90,16 +89,10 @@ describe("slugProblem", () => {
     ]);
     // Sub-segments constrain nothing about slugs: `/logs` is a fine event page.
     for (const sub of RESERVED_SUBPATHS) expect(slugProblem(sub)).toBeNull();
-  });
-
-  it("reserves the page sub-segments apart from the API ones", () => {
-    // Pinned like the API set: these words belong to the page handler, and a
-    // miss under them answers a browser with the 404 page, never JSON.
-    expect([...PAGE_SUBPATHS].sort()).toEqual(["edit", "view"]);
-    for (const sub of PAGE_SUBPATHS) {
-      expect(RESERVED_SUBPATHS.has(sub)).toBe(false);
-      // Still no constraint on slugs: `/view` is a fine event page of its own.
-      expect(slugProblem(sub)).toBeNull();
-    }
+    // The page's own words are deliberately not in the API set: `view` and
+    // `edit` are page territory (event-routes.ts), and a miss under them
+    // answers a browser, never JSON.
+    expect(RESERVED_SUBPATHS.has("view")).toBe(false);
+    expect(RESERVED_SUBPATHS.has("edit")).toBe(false);
   });
 });
