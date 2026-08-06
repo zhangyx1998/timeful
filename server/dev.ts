@@ -35,7 +35,19 @@ export async function createDevRenderer(root: string, server: Server): Promise<R
     },
     async loadTemplate(url) {
       const raw = await fs.readFile(path.join(root, "index.html"), "utf8");
-      return vite.transformIndexHtml(url, raw);
+      const html = await vite.transformIndexHtml(url, raw);
+      // Dev-only softening of the style flash. In production the whole built
+      // stylesheet is inlined into the template (`inlineStylesheets` in
+      // app.ts); dev has no built asset — Vite injects styles from JS modules
+      // well after first paint — so the page briefly renders bare. Inlining
+      // tokens.css, the palette and base html rule, paints the right colors
+      // and font immediately; the real copy Vite injects later in <head> wins
+      // by document order, so an HMR edit of the tokens still applies.
+      const tokens = await fs.readFile(
+        path.join(root, "src", "styles", "tokens.css"),
+        "utf8",
+      );
+      return html.replace("</head>", () => `<style>${tokens}</style>\n  </head>`);
     },
     async loadRender() {
       const mod = await vite.ssrLoadModule("/src/entry-server.ts");
