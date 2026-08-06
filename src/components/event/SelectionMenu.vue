@@ -19,8 +19,8 @@
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { placeOverlay, type OverlayField } from "../../lib/grid";
 import IconCheck from "../../assets/icons/check.svg";
+import IconCheckWide from "../../assets/icons/check-wide.svg";
 import IconHourglass from "../../assets/icons/hourglass.svg";
-import IconClose from "../../assets/icons/close-sm.svg";
 import IconUndo from "../../assets/icons/undo.svg";
 import type { AvailabilityType } from "../../lib/event";
 
@@ -168,19 +168,22 @@ defineExpose({ element });
       Undo
     </button>
 
-    <!-- Last, in the corner a dismissal always sits in, and about the strip
-         rather than about the times: it closes what is open and changes
-         nothing, which is what waiting or pressing elsewhere would have
-         done. The undo beside it is the one that moves the marks. -->
+    <!-- Last: the way out that KEEPS the marks. It used to be a cross, and a
+         cross beside an undo read as "throw my change away" — the opposite of
+         what it does. A checkmark says what dismissal means here: done, keep
+         it, close the strip — the same closing that waiting or pressing
+         elsewhere does. The undo beside it stays the one that moves marks.
+         (A cross remains right where closing accepts nothing: the digest
+         card, the mode pills.) -->
     <button
       type="button"
       class="meaning__option meaning__option--dismiss meaning__option--icon"
-      aria-label="Dismiss"
-      title="Dismiss"
+      aria-label="Done"
+      title="Done"
       :tabindex="live ? undefined : -1"
       @click="emit('dismiss')"
     >
-      <IconClose width="14" height="14" aria-hidden="true" />
+      <IconCheckWide width="14" height="14" aria-hidden="true" />
     </button>
   </div>
 </template>
@@ -295,6 +298,14 @@ defineExpose({ element });
 .meaning__option:hover:not(.meaning__option--on) {
   color: var(--color-text);
   background: var(--color-subtle);
+}
+
+/* Done keeps the marks, and its hover says so in the affirmative — the
+   counterpart of the undo's warning red. After the generic hover, which it
+   ties on specificity and must beat. */
+.meaning__option--dismiss:hover:not(.meaning__option--on) {
+  color: var(--color-success);
+  background: var(--color-accent-soft);
 }
 
 /* The chosen one is tinted with the colour the cells themselves just took, so
