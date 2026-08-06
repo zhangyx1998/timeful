@@ -12,9 +12,11 @@
  * the dialog would refuse is a name the welcome prompt would ignore.
  *
  * Client-only, like the rest of the identity layer: the page mounts it beside
- * the title only after hydration, and the canonical URL is read off the
- * address bar when the dialog opens — after any `?name=` this page itself
- * arrived by has been consumed, and corrected for renames either way.
+ * the title only after hydration. The link is built from the event's slug —
+ * the canonical root URL — never from the address bar, which may be on the
+ * `/view` or `/edit/<key>` shape of the page or still carrying a `?name=` of
+ * its own; the root is where the query is read (§ Guest UX), and renames keep
+ * the slug prop fresh.
  */
 import { computed, ref } from "vue";
 import Button from "../ui/Button.vue";
@@ -26,19 +28,18 @@ import { useCopyFeedback } from "../../lib/copy-feedback";
 import { inviteLink } from "../../lib/entry-identity";
 import { guestNameProblem, MAX_GUEST_NAME_LENGTH } from "../../lib/user-key";
 
+const props = defineProps<{
+  /** The event's current slug — the canonical root URL is built from it. */
+  slug: string;
+}>();
+
 const open = ref(false);
 const name = ref("");
 
-/**
- * The canonical event URL, taken when the dialog opens: origin and path only,
- * so whatever query or fragment the address bar happens to hold can never
- * leak into a link handed to somebody else.
- */
-const base = ref("");
+/** The canonical event URL: this origin, the slug, nothing else. */
+const base = computed(() => `${window.location.origin}/${props.slug}`);
 
 function show(): void {
-  const here = new URL(window.location.href);
-  base.value = here.origin + here.pathname;
   name.value = "";
   open.value = true;
 }
@@ -50,7 +51,7 @@ const problem = computed(() =>
 
 /** The URL being offered, exactly as the copy button will put it on the clipboard. */
 const link = computed(() =>
-  problem.value === null ? inviteLink(base.value, name.value) : null,
+  open.value && problem.value === null ? inviteLink(base.value, name.value) : null,
 );
 
 const { copied, failed, copy } = useCopyFeedback();

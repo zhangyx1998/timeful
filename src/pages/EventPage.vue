@@ -8,6 +8,7 @@
  * cannot know without producing a hydration mismatch.
  */
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import AdminDrawer from "../components/event/AdminDrawer.vue";
 import EventScheduler from "../components/event/EventScheduler.vue";
 import InviteButton from "../components/event/InviteButton.vue";
@@ -25,6 +26,8 @@ import {
   getScheduleTimezoneOffset,
 } from "../lib/dates";
 import { realtimeAllowed, type EventDoc } from "../lib/event";
+import { eventPageTitle, type EventSubpage } from "../lib/event-routes";
+import { userKeyFromParam } from "../lib/user-key";
 import {
   connectRealtime,
   type PresenceEntry,
@@ -34,7 +37,7 @@ import {
 } from "../lib/realtime";
 import { useViewport } from "../lib/viewport";
 
-defineProps<{ slug?: string }>();
+defineProps<{ slug?: string; userKey?: string }>();
 
 const injected = inject<EventDoc | null>("initialEvent", null);
 const event = ref<EventDoc | null>(injected);
@@ -211,6 +214,40 @@ function onSessionOpen(): void {
   scheduler.value?.resumeEditing();
 }
 
+const route = useRoute();
+const router = useRouter();
+
+/** Which of the page's three shapes the URL is on (`lib/event-routes.ts`). */
+const subpage = computed<EventSubpage>(() => {
+  if (route.name === "event-view") return { kind: "view" };
+  if (route.name === "event-edit")
+    return { kind: "edit", key: String(route.params.userKey ?? "") };
+  return { kind: "root" };
+});
+
+/**
+ * The window title, from the same builder the server's SSR head uses — which
+ * is what keeps the hydrated title byte-equal to the served one on first
+ * paint. What the client adds is the identity it has confirmed since: on an
+ * edit path whose key has no stored answer yet (a first-time invitee), the
+ * respondent list cannot name the person, but the page can.
+ */
+const title = computed(() => {
+  if (!event.value) return null;
+  const sub = subpage.value;
+  const editorName =
+    sub.kind === "edit" &&
+    identity.value !== null &&
+    identity.value.key === userKeyFromParam(sub.key)
+      ? identity.value.displayName
+      : undefined;
+  return eventPageTitle(event.value, sub, editorName);
+});
+
+watch(title, (value) => {
+  if (value) document.title = value;
+});
+
 /** SSR has no timezone, so the subtitle renders in UTC and is refined on mount. */
 const subtitleOffset = ref(0);
 
@@ -245,9 +282,15 @@ function applyEvent(next: EventDoc): void {
   if (event.value && next.updatedAt < event.value.updatedAt) return;
   const before = event.value?.slug;
   event.value = next;
-  document.title = `${next.name} · Timeful`;
   if (next.slug && next.slug !== before) {
-    window.history.replaceState(window.history.state, "", `/${next.slug}`);
+    // Through the router rather than raw history, because the path now carries
+    // state (`/view`, `/edit/<key>`) that a bare `/${slug}` would drop — and
+    // the scheduler builds its tab navigation off the route's own params.
+    void router.replace({
+      name: (route.name as string) || "event",
+      params: { ...route.params, slug: next.slug },
+      query: route.query,
+    });
   }
 }
 
@@ -327,9 +370,10 @@ onBeforeUnmount(() => {
            rather than to the page. -->
       <template #lead>
         <h1 v-if="event" class="name" :title="event.name">{{ event.name }}</h1>
-        <!-- Client-only: before hydration the dialog could not read the
-             address bar, let alone copy anything. -->
-        <InviteButton v-if="mounted && event" />
+        <!-- Client-only, like the rest of the identity layer. The slug, not
+             the address bar: the canonical root URL is the only link worth
+             handing out, whatever shape this page is on. -->
+        <InviteButton v-if="mounted && event" :slug="event.slug" />
       </template>
 
       <!-- The dates belong with the name they qualify, so they lead the
