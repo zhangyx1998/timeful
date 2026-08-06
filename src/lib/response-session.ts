@@ -299,15 +299,44 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
     if (document.visibilityState === "hidden") engine.flush();
   }
 
+  /**
+   * A stale page instance must not resurrect a purged name.
+   *
+   * "Just browsing" clears the remembered name in localStorage — but a
+   * greeting is in-memory state, and a page instance that read storage before
+   * the purge can outlive it: a second tab sitting on its welcome prompt, or
+   * a bfcache-restored page brought back with its pre-purge state intact.
+   * Both get re-resolved against what storage says *now*: the `storage` event
+   * covers the other-tab case (it only ever fires for another document's
+   * writes), `pageshow` with `persisted` covers the restore. Only while the
+   * page has adopted nobody — an identity in use is live state with a
+   * server-side answer behind it, not a stale suggestion.
+   */
+  function reresolveEntry(): void {
+    if (identity.value === null) applyEntry(currentEntry);
+  }
+  function onStorage(event: StorageEvent): void {
+    // `key === null` is `clear()`; anything else only matters for the name.
+    if (event.key !== null && event.key !== STORAGE_KEYS.guestName) return;
+    reresolveEntry();
+  }
+  function onPageShow(event: PageTransitionEvent): void {
+    if (event.persisted) reresolveEntry();
+  }
+
   // Registered in `onMounted`, so SSR never sees them, and removed on unmount
   // or a remounted scheduler would leak a listener flushing a dead engine.
   onMounted(() => {
     window.addEventListener("pagehide", flushOnHide);
+    window.addEventListener("pageshow", onPageShow);
+    window.addEventListener("storage", onStorage);
     document.addEventListener("visibilitychange", onVisibility);
   });
 
   onBeforeUnmount(() => {
     window.removeEventListener("pagehide", flushOnHide);
+    window.removeEventListener("pageshow", onPageShow);
+    window.removeEventListener("storage", onStorage);
     document.removeEventListener("visibilitychange", onVisibility);
     engine.flush();
     engine.dispose();
@@ -394,6 +423,9 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
    */
   const pendingGreeting = ref<{ name: string; prefix: string | null } | null>(null);
 
+  /** The last arrival applied, for re-resolution when storage shifts under it. */
+  let currentEntry: EntryRoute = { kind: "view" };
+
   /**
    * Who the welcome prompt greets. Derived rather than stored, so a snapshot
    * arriving while the prompt is up keeps the greeting on the event's own
@@ -465,6 +497,10 @@ export function useResponseSession(options: ResponseSessionOptions): ResponseSes
    * navigations this session itself asked for.
    */
   function applyEntry(entry: EntryRoute) {
+    // Kept for the stale-instance re-resolution above: a storage purge from
+    // another tab, or a bfcache restore, re-asks the same arrival question
+    // against what storage says now.
+    currentEntry = entry;
     const stored = readStorage(STORAGE_KEYS.guestName)?.trim() ?? "";
     // A name stored before dashes were illegal cannot be saved under, so it is
     // not a name this page can be. Dropping it asks once, and the key the

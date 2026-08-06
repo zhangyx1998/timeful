@@ -94,6 +94,18 @@ describe("resolveEntryIdentity on the root landing", () => {
     });
   });
 
+  it("asks, never resurrects, once browsing has purged the remembered name", () => {
+    // The "Just browsing" contract end to end: before the purge the landing
+    // greets the remembered name; after it (`browseOnly` clears the stored
+    // name) the same arrival must ask with a blank dialog — the name being a
+    // respondent on the event must not bring the greeting back.
+    expect(resolveEntryIdentity(root(), "Ada Lovelace", [ada])).toMatchObject({
+      action: "welcome",
+      displayName: "Ada Lovelace",
+    });
+    expect(resolveEntryIdentity(root(), null, [ada])).toEqual({ action: "ask" });
+  });
+
   it("adopts the event's spelling when the key matches a respondent", () => {
     expect(resolveEntryIdentity(root("ada  LOVELACE"), null, [ada])).toEqual({
       action: "welcome",
