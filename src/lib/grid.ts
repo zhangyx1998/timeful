@@ -774,6 +774,11 @@ export const HEADER_HEIGHT = 42;
 /** How much of the neighbouring column shows past the clipped edge. */
 export const PEEK = 15;
 
+/** Labels like "10:30 am" need the wider gutter; it is keyed off the model so SSR and client agree. */
+export function needsWideGutter(model: GridModel): boolean {
+  return model.rows.some((row) => row.isHourStart && /:\d\d [ap]m$/.test(row.label));
+}
+
 /** A slot row's height, floored so tiny increments stay visible. */
 export function rowHeightFor(slotMinutes: number): number {
   return Math.max(14, Math.round((HOUR_HEIGHT * slotMinutes) / 60));

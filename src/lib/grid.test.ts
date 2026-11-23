@@ -17,6 +17,7 @@ import {
   inRectangle,
   isBestTime,
   maxRespondents,
+  needsWideGutter,
   perViewFor,
   placeOverlay,
   rectangleSlots,
@@ -193,6 +194,16 @@ describe("buildGrid — a window crossing local midnight", () => {
     expect(kolkata.bottomRowCount).toBe(5); // 21:30 .. 23:30
     expect(kolkata.topRowCount).toBe(7); // 00:00 .. 03:00
     expect(allSlots(kolkata)).toHaveLength(12);
+  });
+});
+
+describe("needsWideGutter", () => {
+  it("widens only for 12-hour labels that carry minutes", () => {
+    expect(needsWideGutter(buildGrid(makeEvent(), { timezoneOffset: PDT }))).toBe(false);
+    const kolkata = (hour12: boolean) =>
+      buildGrid(makeEvent(), { timezoneOffset: -330, hour12 });
+    expect(needsWideGutter(kolkata(true))).toBe(true);
+    expect(needsWideGutter(kolkata(false))).toBe(false);
   });
 });
 

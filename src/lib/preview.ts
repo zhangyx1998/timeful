@@ -7,6 +7,7 @@ import {
   heatmapAlpha255,
   maxRespondents,
   MIN_COL_WIDTH,
+  needsWideGutter,
   PEEK,
   perViewFor,
   rowHeightFor,
@@ -27,6 +28,8 @@ const SIDE_WIDTH = 224;
 const LAYOUT_GAP = 16;
 const GUTTER_DESKTOP = 56;
 const GUTTER_COMPACT = 44;
+const GUTTER_DESKTOP_WIDE = 60;
+const GUTTER_COMPACT_WIDE = 52;
 
 export interface PreviewCell {
   kind: "disabled" | "empty" | "if_needed" | "heat";
@@ -41,17 +44,20 @@ export interface PreviewModel {
   colWidth: number;
   rowHeight: number;
   trackWidth: number;
+  wideGutter: boolean;
 }
 
 /** Width the day columns get inside the nominal viewport, past the pinned gutter. */
-export function previewChartWidth(compact: boolean): number {
-  if (compact) return PREVIEW_VIEWPORT_COMPACT - 2 * PAGE_PAD - GUTTER_COMPACT;
+export function previewChartWidth(compact: boolean, wideGutter = false): number {
+  if (compact) {
+    return PREVIEW_VIEWPORT_COMPACT - 2 * PAGE_PAD - (wideGutter ? GUTTER_COMPACT_WIDE : GUTTER_COMPACT);
+  }
   return (
     Math.min(PREVIEW_VIEWPORT_DESKTOP, PAGE_MAX) -
     2 * PAGE_PAD -
     SIDE_WIDTH -
     LAYOUT_GAP -
-    GUTTER_DESKTOP
+    (wideGutter ? GUTTER_DESKTOP_WIDE : GUTTER_DESKTOP)
   );
 }
 
@@ -63,6 +69,7 @@ export function previewChartWidth(compact: boolean): number {
  */
 export function buildPreview(event: EventDoc, compact: boolean): PreviewModel {
   const model = buildGrid(event, { timezoneOffset: 0, hour12: true });
+  const wideGutter = needsWideGutter(model);
   const index = buildResponseIndex(event);
   const max = maxRespondents(model, index);
   const total = index.keys.length;
@@ -71,7 +78,7 @@ export function buildPreview(event: EventDoc, compact: boolean): PreviewModel {
     (column, i) => i > 0 && !column.isConsecutive,
   ).length;
   const colWidth = columnWidthFor({
-    availableWidth: previewChartWidth(compact),
+    availableWidth: previewChartWidth(compact, wideGutter),
     columnCount: model.columns.length,
     perView: perViewFor(
       compact ? PREVIEW_VIEWPORT_COMPACT : PREVIEW_VIEWPORT_DESKTOP,
@@ -105,6 +112,7 @@ export function buildPreview(event: EventDoc, compact: boolean): PreviewModel {
     colWidth,
     rowHeight: rowHeightFor(model.slotMinutes),
     trackWidth: model.columns.length * colWidth + gapCount * GAP_WIDTH,
+    wideGutter,
   };
 }
 

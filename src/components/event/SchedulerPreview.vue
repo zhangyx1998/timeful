@@ -18,7 +18,7 @@ const model = computed(() => preview.value.model);
 </script>
 
 <template>
-  <section class="preview" :class="{ compact }">
+  <section class="preview" :class="{ compact, 'wide-gutter': preview.wideGutter }">
     <div class="bar" />
 
     <div class="layout">
@@ -119,6 +119,11 @@ const model = computed(() => preview.value.model);
 
 /* Space the scheduler's view switch will occupy — its 2.25rem minimum plus
    its border — so the chart does not jump at mount. */
+/* Mirrors the live grid's wide gutter for "10:30 am" labels. */
+.preview.wide-gutter {
+  --gutter: 3.75rem;
+}
+
 .bar {
   height: 2.375rem;
   margin: 0.75rem 0 1.75rem;
@@ -289,6 +294,10 @@ const model = computed(() => preview.value.model);
     --gutter: 2.75rem;
 
     gap: 0.5rem;
+  }
+
+  .preview.wide-gutter {
+    --gutter: 3.25rem;
   }
 
   .preview.compact {

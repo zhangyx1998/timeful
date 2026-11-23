@@ -19,6 +19,7 @@ import {
   inRectangle,
   isBestTime,
   MIN_COL_WIDTH,
+  needsWideGutter,
   overlayCenterX,
   PEEK,
   rectangleSlots,
@@ -135,6 +136,7 @@ const reducedMotion = ref(false);
 const coarsePointer = ref(false);
 
 const rowHeight = computed(() => rowHeightFor(props.model.slotMinutes));
+const wideGutter = computed(() => needsWideGutter(props.model));
 
 const columns = computed(() => props.model.columns);
 
@@ -233,6 +235,8 @@ onMounted(() => {
     if (viewport.value) observer.observe(viewport.value);
     // The track's own width decides how far there is to scroll.
     if (sheet.value) observer.observe(sheet.value);
+    // The gutter widens when the labels gain minutes.
+    if (gutter.value) observer.observe(gutter.value);
   }
   window.addEventListener("resize", measure);
 });
@@ -1203,7 +1207,7 @@ defineExpose({ measure, clearSelection });
 </script>
 
 <template>
-  <div class="grid" :class="{ scrollable }">
+  <div class="grid" :class="{ scrollable, 'wide-gutter': wideGutter }">
     <div class="wrap">
       <div class="stage" :class="{ dragging: gesturing }">
         <!-- One scrollport; the gutter and headings are pinned inside it. -->
@@ -1427,6 +1431,11 @@ defineExpose({ measure, clearSelection });
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
+}
+
+/* Room for "10:30 am"; preview.ts mirrors both widths. */
+.grid.wide-gutter {
+  --gutter: 3.75rem;
 }
 
 .wrap {
@@ -1912,6 +1921,10 @@ defineExpose({ measure, clearSelection });
     display: flex;
     flex-direction: column;
     min-height: 0;
+  }
+
+  .grid.wide-gutter {
+    --gutter: 3.25rem;
   }
 
   .wrap,
