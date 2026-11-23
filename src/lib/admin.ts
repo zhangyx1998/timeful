@@ -6,16 +6,22 @@
  * sign-out both ask the server what the answer is now.
  */
 import { readonly, ref } from "vue";
-import { api, fetchIsAdmin } from "./api";
+import { api, fetchAdminStatus, PASSWORD_ONLY, type LoginMethods } from "./api";
 
 const authed = ref(false);
+const methods = ref<LoginMethods>(PASSWORD_ONLY);
 
 /** Reactive, read-only: only the two functions below may move it. */
 export const isAdmin = readonly(authed);
 
+/** How the owner may sign in here, from the same probe. */
+export const loginMethods = readonly(methods);
+
 /** Asks the server. Fails closed, so this can be called from anywhere. */
 export async function refreshAdmin(): Promise<boolean> {
-  authed.value = await fetchIsAdmin();
+  const status = await fetchAdminStatus();
+  authed.value = status.authed;
+  methods.value = status.login;
   return authed.value;
 }
 

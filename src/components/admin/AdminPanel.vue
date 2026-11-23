@@ -18,7 +18,10 @@ import IconSliders from "../../assets/icons/sliders.svg";
 import type { EventSummary } from "../../lib/api";
 import type { EventDoc } from "../../lib/event";
 
-const props = withDefaults(defineProps<{ email?: string }>(), { email: "" });
+const props = withDefaults(defineProps<{ email?: string; passwordLogin?: boolean }>(), {
+  email: "",
+  passwordLogin: true,
+});
 const emit = defineEmits<{ (e: "signed-out", message: string): void }>();
 
 const events = ref<EventSummary[]>([]);
@@ -160,6 +163,7 @@ onMounted(loadEvents);
         <SessionsSection @signed-out="emit('signed-out', 'You were signed out.')" />
 
         <AccountSection
+          v-if="props.passwordLogin"
           :email="props.email"
           @signed-out="(message: string) => emit('signed-out', message)"
         />

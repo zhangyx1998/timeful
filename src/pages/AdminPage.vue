@@ -6,7 +6,7 @@
  */
 import { computed, onMounted, ref } from "vue";
 import AdminPanel from "../components/admin/AdminPanel.vue";
-import { api, apiError } from "../lib/api";
+import { api, apiError, loginMethodsOf, oidcStartUrl } from "../lib/api";
 import LoginView from "../components/admin/LoginView.vue";
 import SetupView from "../components/admin/SetupView.vue";
 import AppHeader from "../components/ui/AppHeader.vue";
@@ -28,11 +28,27 @@ const view = computed<View>(() => {
 });
 
 const email = computed(() => status.value?.email ?? "");
+const methods = computed(() => loginMethodsOf(status.value));
+
+const SIGNIN_NOTICES: Record<string, string> = {
+  failed: "Sign-in did not complete. Try again.",
+  unavailable: "The sign-in provider could not be reached.",
+};
+
+/** Set by the server after a failed provider round-trip; also stops the auto-redirect. */
+const signinParam = new URLSearchParams(window.location.search).get("signin");
 
 async function refresh(): Promise<void> {
   error.value = "";
   try {
-    status.value = await api.get<StatusResponse>("/api/status");
+    const next = await api.get<StatusResponse>("/api/status");
+    const login = loginMethodsOf(next);
+    // The server normally redirects `/` itself; this covers a cached shell.
+    if (!next.authed && !login.password && login.oidc && signinParam === null) {
+      window.location.replace(oidcStartUrl());
+      return;
+    }
+    status.value = next;
   } catch (err) {
     error.value = apiError(err, "Could not reach the server").message;
   }
@@ -58,26 +74,38 @@ async function retry(): Promise<void> {
 
 function onAuthed(nextEmail: string): void {
   notice.value = "";
-  status.value = { needsSetup: false, authed: true, email: nextEmail };
+  status.value = { ...status.value, needsSetup: false, authed: true, email: nextEmail };
 }
 
 function onSignedOut(message = ""): void {
   notice.value = message;
-  status.value = { needsSetup: false, authed: false };
+  status.value = { needsSetup: false, authed: false, login: status.value?.login };
+  // A reload must not sign straight back in through the provider.
+  if (!methods.value.password) history.replaceState(null, "", "/?signin=signedout");
 }
 
 onMounted(() => {
   document.title = "Admin · Timeful";
+  if (signinParam !== null) {
+    notice.value = SIGNIN_NOTICES[signinParam] ?? "";
+    history.replaceState(null, "", "/");
+  }
   void refresh();
 });
 </script>
 
 <template>
   <SetupView v-if="view === 'setup'" @authed="onAuthed" />
-  <LoginView v-else-if="view === 'login'" :notice="notice" @authed="onAuthed" />
+  <LoginView
+    v-else-if="view === 'login'"
+    :notice="notice"
+    :methods="methods"
+    @authed="onAuthed"
+  />
   <AdminPanel
     v-else-if="view === 'panel'"
     :email="email"
+    :password-login="methods.password"
     @signed-out="(message: string) => onSignedOut(message)"
   />
   <div v-else class="page">

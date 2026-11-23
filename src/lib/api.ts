@@ -173,6 +173,25 @@ export interface StatusResponse {
   needsSetup: boolean;
   authed: boolean;
   email?: string;
+  login?: LoginMethods;
+}
+
+/** Which sign-in paths the server offers; `oidc` is the provider's display name. */
+export interface LoginMethods {
+  password: boolean;
+  oidc?: string;
+}
+
+/** Password only, which is what a server that predates OIDC means. */
+export const PASSWORD_ONLY: LoginMethods = { password: true };
+
+/** A full-page navigation, not a fetch: the provider's pages need the top-level window. */
+export function oidcStartUrl(options: { persist?: boolean; returnTo?: string } = {}): string {
+  const params = new URLSearchParams();
+  if (options.persist) params.set("persist", "1");
+  if (options.returnTo && options.returnTo !== "/") params.set("return", options.returnTo);
+  const query = params.toString();
+  return `/api/auth/oidc/start${query ? `?${query}` : ""}`;
 }
 
 /** Only an explicit `authed: true` counts; anything else reads as "no". */
@@ -183,11 +202,30 @@ export function isAuthedStatus(value: unknown): boolean {
 
 /** Fails closed: any failure resolves false. The server enforces the real boundary. */
 export async function fetchIsAdmin(options?: CallOptions): Promise<boolean> {
+  return (await fetchAdminStatus(options)).authed;
+}
+
+/** `authed` fails closed; `login` falls back to password-only on any failure. */
+export async function fetchAdminStatus(
+  options?: CallOptions,
+): Promise<{ authed: boolean; login: LoginMethods }> {
   try {
-    return isAuthedStatus(await api.get<unknown>("/api/status", options));
+    const status = await api.get<unknown>("/api/status", options);
+    return { authed: isAuthedStatus(status), login: loginMethodsOf(status) };
   } catch {
-    return false;
+    return { authed: false, login: PASSWORD_ONLY };
   }
+}
+
+export function loginMethodsOf(status: unknown): LoginMethods {
+  if (typeof status !== "object" || status === null) return PASSWORD_ONLY;
+  const login = (status as { login?: unknown }).login;
+  if (typeof login !== "object" || login === null) return PASSWORD_ONLY;
+  const { password, oidc } = login as { password?: unknown; oidc?: unknown };
+  const methods: LoginMethods = { password: password !== false };
+  if (typeof oidc === "string" && oidc) methods.oidc = oidc;
+  // A server that offers neither is misreporting; the password form is the safe fallback.
+  return methods.password || methods.oidc ? methods : PASSWORD_ONLY;
 }
 
 /** `POST /api/auth/setup` and `POST /api/auth/login` */

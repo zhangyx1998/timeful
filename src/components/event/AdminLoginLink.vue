@@ -1,13 +1,25 @@
 <script setup lang="ts">
 // In-page admin sign-in: the same LoginForm in a dialog; the admin state is
-// reactive, so no redirect and nothing on the page is disturbed.
+// reactive, so no redirect and nothing on the page is disturbed. Provider-only
+// sign-in has no form to show, so the link goes straight to the provider.
 import { ref } from "vue";
+import { oidcStartUrl } from "../../lib/api";
 import Dialog from "../ui/Dialog.vue";
 import LoginForm from "../admin/LoginForm.vue";
 import IconShield from "../../assets/icons/shield-half.svg";
-import { refreshAdmin } from "../../lib/admin";
+import { loginMethods, refreshAdmin } from "../../lib/admin";
 
 const open = ref(false);
+
+function start(): void {
+  if (loginMethods.value.password) {
+    open.value = true;
+    return;
+  }
+  window.location.assign(
+    oidcStartUrl({ returnTo: window.location.pathname + window.location.search }),
+  );
+}
 
 // Re-probes rather than trusting the form: whether this browser holds a session is the server's answer.
 async function onAuthed(): Promise<void> {
@@ -17,14 +29,19 @@ async function onAuthed(): Promise<void> {
 </script>
 
 <template>
-  <button type="button" class="link" @click="open = true">
+  <button type="button" class="link" @click="start">
     <IconShield class="link__mark" aria-hidden="true" />
     <span class="link__text">Administrator Login</span>
   </button>
 
   <Dialog :open="open" title="Administrator sign-in" @close="open = false">
     <template #icon><IconShield /></template>
-    <LoginForm id-prefix="event-login" autofocus @authed="onAuthed" />
+    <LoginForm
+      id-prefix="event-login"
+      autofocus
+      :methods="loginMethods"
+      @authed="onAuthed"
+    />
   </Dialog>
 </template>
 
