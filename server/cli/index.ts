@@ -85,12 +85,18 @@ async function main(argv: readonly string[]): Promise<void> {
 async function runAuto(args: CliArgs, cwd: string): Promise<void> {
   const file = await readConfigFile(cwd);
   if (file) {
-    await start(mergeConfig({ cwd, file, env: envOverrides(), flags: args.overrides }), args);
+    await start(mergeConfig({
+      cwd,
+      file,
+      env: envOverrides(),
+      flags: args.overrides,
+      processEnv: process.env,
+    }), args);
     return;
   }
 
   if (args.yes) {
-    const config = mergeConfig({ cwd, env: envOverrides(), flags: args.overrides });
+    const config = mergeConfig({ cwd, env: envOverrides(), flags: args.overrides, processEnv: process.env });
     await initialize(cwd, config, args);
     await start(config, args);
     return;
@@ -136,7 +142,13 @@ async function runServe(args: CliArgs, cwd: string): Promise<void> {
         "directory that already is one.",
       ].join("\n"),
     );
-  await start(mergeConfig({ cwd, file, env: envOverrides(), flags: args.overrides }), args);
+  await start(mergeConfig({
+      cwd,
+      file,
+      env: envOverrides(),
+      flags: args.overrides,
+      processEnv: process.env,
+    }), args);
 }
 
 const notAWebroot = (dir: string): string =>
@@ -212,6 +224,7 @@ async function start(config: ResolvedConfig, args: CliArgs): Promise<void> {
     port: config.port,
     trustProxy: config.trustedProxy,
     realtime: config.realtime,
+    oidc: config.oidc,
     renderer: createStaticRenderer(assets),
   });
   console.log(`Data directory: ${config.varDir}`);

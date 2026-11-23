@@ -67,6 +67,8 @@ export interface SessionRecord {
   lastSeenAt: string;
   userAgent: string;
   persistent: boolean;
+  /** Set on sessions opened through the OIDC provider: the verified email it vouched for. */
+  oidcEmail?: string;
 }
 
 /** `var/sessions.json` — token -> session. */

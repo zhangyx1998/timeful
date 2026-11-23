@@ -89,9 +89,11 @@ export function newToken(): string {
 export async function createSession({
   userAgent = "",
   persistent = false,
+  oidcEmail,
 }: {
   userAgent?: string;
   persistent?: boolean;
+  oidcEmail?: string;
 }): Promise<string> {
   const token = newToken();
   const now = new Date().toISOString();
@@ -101,6 +103,7 @@ export async function createSession({
       lastSeenAt: now,
       userAgent: String(userAgent).slice(0, 400),
       persistent: Boolean(persistent),
+      ...(oidcEmail ? { oidcEmail } : {}),
     };
     return sessions;
   });

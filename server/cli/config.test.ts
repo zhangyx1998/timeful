@@ -187,3 +187,25 @@ describe("writeConfigFile", () => {
     expect(serializeConfig(config)).toContain(`"varDir": "./data"`);
   });
 });
+
+describe("oidc", () => {
+  it("reads the block, takes the secret from the environment, and never serializes it", async () => {
+    await write({
+      oidc: { issuer: "https://id.example.com", clientId: "abc", allowedEmails: ["a@b.co"], passwordLogin: false },
+    });
+    const config = mergeConfig({
+      cwd,
+      file: await readConfigFile(cwd),
+      processEnv: { TIMEFUL_OIDC_CLIENT_SECRET: "shh" },
+    });
+    expect(config.oidc).toMatchObject({ clientId: "abc", clientSecret: "shh", passwordLogin: false });
+    expect(serializeConfig(config)).not.toContain("oidc");
+  });
+
+  it("names the config file in a validation error", async () => {
+    await write({ oidc: { issuer: "http://id.example.com", clientId: "abc" } });
+    const file = await readConfigFile(cwd);
+    expect(() => mergeConfig({ cwd, file })).toThrow(CliError);
+    expect(() => mergeConfig({ cwd, file })).toThrow(/timeful\.config\.json oidc\.issuer/);
+  });
+});

@@ -8,6 +8,12 @@ import {
   TrustedProxyError,
   type TrustProxySetting,
 } from "../proxy.ts";
+import {
+  OidcConfigError,
+  resolveOidcSettings,
+  type OidcInput,
+  type OidcSettings,
+} from "../oidc.ts";
 import type { Overrides } from "./args.ts";
 import { CliError } from "./errors.ts";
 
@@ -21,6 +27,8 @@ export interface FileConfig {
   trustedProxy?: string | string[];
   /** Server-wide kill switch above the per-event setting; false means no event gets realtime. */
   realtime?: boolean;
+  /** Owner sign-in through an OIDC provider; hand-written, the wizard never asks. */
+  oidc?: OidcInput;
 }
 
 export interface ResolvedConfig {
@@ -32,6 +40,7 @@ export interface ResolvedConfig {
   varDir: string;
   trustedProxy: TrustProxySetting;
   realtime: boolean;
+  oidc: OidcSettings | null;
 }
 
 export const DEFAULT_PORT = 3000;
@@ -120,6 +129,11 @@ export async function readConfigFile(cwd: string): Promise<FileConfig | null> {
       throw new CliError(`${CONFIG_FILE} trustedProxy: expected a string or an array of strings.`);
     config.trustedProxy = value as string | string[];
   }
+  if (raw.oidc !== undefined) {
+    if (typeof raw.oidc !== "object" || raw.oidc === null || Array.isArray(raw.oidc))
+      throw new CliError(`${CONFIG_FILE} oidc: expected an object.`);
+    config.oidc = raw.oidc as OidcInput;
+  }
   return config;
 }
 
@@ -128,10 +142,18 @@ export interface MergeInput {
   file?: FileConfig | null;
   env?: Overrides;
   flags?: Overrides;
+  /** Where `TIMEFUL_OIDC_*` is read from; tests pass their own. */
+  processEnv?: NodeJS.ProcessEnv;
 }
 
 /** Applies the precedence chain and validates the result. */
-export function mergeConfig({ cwd, file, env, flags }: MergeInput): ResolvedConfig {
+export function mergeConfig({
+  cwd,
+  file,
+  env,
+  flags,
+  processEnv = {},
+}: MergeInput): ResolvedConfig {
   const port = flags?.port ?? env?.port ?? file?.port ?? DEFAULT_PORT;
   const host = flags?.host ?? env?.host ?? file?.host ?? DEFAULT_HOST;
   const varDirRaw = flags?.varDir ?? env?.varDir ?? file?.varDir ?? DEFAULT_VAR_DIR;
@@ -145,7 +167,17 @@ export function mergeConfig({ cwd, file, env, flags }: MergeInput): ResolvedConf
     varDir: path.resolve(cwd, readString(varDirRaw, "varDir")),
     trustedProxy: resolveTrustedProxy(trustedProxyRaw),
     realtime,
+    oidc: resolveOidc(file?.oidc, processEnv),
   };
+}
+
+function resolveOidc(file: OidcInput | undefined, env: NodeJS.ProcessEnv): OidcSettings | null {
+  try {
+    return resolveOidcSettings(file, env);
+  } catch (err) {
+    if (err instanceof OidcConfigError) throw new CliError(`${CONFIG_FILE} ${err.message}`);
+    throw err;
+  }
 }
 
 // `loopback` is expanded to the two literal addresses here: only IPs and CIDRs ever reach
@@ -168,7 +200,7 @@ function resolveTrustedProxy(value: string | string[] | undefined): TrustProxySe
 
 /** The JSON written to disk: defaults included, so the file documents itself. */
 export function serializeConfig(config: ResolvedConfig): string {
-  const body: Required<FileConfig> = {
+  const body: Required<Omit<FileConfig, "oidc">> = {
     port: config.port,
     host: config.host,
     varDir: config.varDirRaw,

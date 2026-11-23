@@ -21,6 +21,12 @@ import { statusOf } from "./http.ts";
 import type { AssetPaths } from "./paths.ts";
 import { describeTrustedProxies, type TrustProxySetting } from "./proxy.ts";
 import { NOT_FOUND_HTML, sendNotFoundPage } from "./not-found.ts";
+import {
+  oidcSettings,
+  resolveOidcSettings,
+  setOidcSettings,
+  type OidcSettings,
+} from "./oidc.ts";
 import { attachRealtime } from "./realtime.ts";
 import { authRouter } from "./routes/auth.ts";
 import {
@@ -139,9 +145,13 @@ export function createStaticRenderer(assets: AssetPaths): Renderer {
 export interface AppOptions {
   trustProxy: TrustProxySetting;
   renderer: Renderer;
+  /** OIDC sign-in; defaults to the `TIMEFUL_OIDC_*` reading, null turns it off. */
+  oidc?: OidcSettings | null;
 }
 
-export function createApp({ trustProxy, renderer }: AppOptions): Express {
+export function createApp({ trustProxy, renderer, oidc }: AppOptions): Express {
+  const oidcActive = oidc === undefined ? resolveOidcSettings(undefined) : oidc;
+  setOidcSettings(oidcActive);
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", trustProxy);
@@ -219,6 +229,13 @@ export function createApp({ trustProxy, renderer }: AppOptions): Express {
         if (!isRead) {
           sendHtml(404, NOT_FOUND_HTML);
           return;
+        }
+        // Provider-only sign-in skips the sign-in screen entirely; `?signin=` means it just failed or signed out.
+        if (oidcActive && !oidcActive.passwordLogin && req.query.signin === undefined) {
+          if (!(await loadSession(req))) {
+            res.set("Cache-Control", "no-store").redirect(302, "/api/auth/oidc/start");
+            return;
+          }
         }
         sendHtml(200, renderShell(await renderer.loadTemplate(req.originalUrl)));
         return;
@@ -403,7 +420,7 @@ export async function serve(options: ServeOptions): Promise<Server> {
     typeof options.renderer === "function"
       ? await options.renderer(server)
       : options.renderer;
-  const app = createApp({ trustProxy: options.trustProxy, renderer });
+  const app = createApp({ trustProxy: options.trustProxy, renderer, oidc: options.oidc });
   server.on("request", app);
 
   const realtime = options.realtime ?? realtimeEnabled();
@@ -447,6 +464,12 @@ function startupLines(options: ServeOptions, realtime: boolean): string[] {
   }
   lines.push(`Trusted proxies: ${describeTrustedProxies(options.trustProxy)}`);
   lines.push(`Realtime updates: ${realtime ? "on" : "off"}`);
+  const oidc = oidcSettings();
+  if (oidc) {
+    lines.push(
+      `OIDC sign-in: ${oidc.issuer}${oidc.passwordLogin ? "" : " (password sign-in disabled)"}`,
+    );
+  }
   return lines;
 }
 
