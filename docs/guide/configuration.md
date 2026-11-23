@@ -26,6 +26,9 @@ Written by the [first-run wizard](/guide/), and yours to edit afterwards:
 | `trustedProxy` | `["127.0.0.1", "::1"]` | Peers allowed to speak `X-Forwarded-For` on a client's behalf. `"none"` ignores forwarded headers; `"loopback"` is shorthand for the default pair. |
 | `realtime`     | `true`                 | Server-wide switch for [live updates](#live-updates). `false` turns them off for every event, whatever the events themselves say. |
 
+The wizard never writes an `oidc` block; add one by hand to turn on
+[OIDC sign-in](#oidc-sign-in).
+
 The file's presence is what makes a directory a webroot. Delete it and the next
 `npx timeful` will offer to set the directory up again.
 
@@ -61,6 +64,8 @@ the defaults are sensible for a group of humans sharing a link.
 | `MISS_DELAY_MS`  | `100`     | How long each failed lookup waits before its 404.                   |
 | `MISS_QUEUE_CAP` | `10`      | How many failed lookups one IP may have queued before it gets 429s. |
 | `LEASE_TTL_MS`   | `900000`  | Lifetime of a slug reservation while an event is being created (15 minutes). |
+| `TIMEFUL_OIDC_ISSUER`, `TIMEFUL_OIDC_CLIENT_ID`, `TIMEFUL_OIDC_CLIENT_SECRET`, `TIMEFUL_OIDC_ALLOWED_EMAILS`, `TIMEFUL_OIDC_NAME` | — | Override the matching `oidc` key, or configure OIDC without a config file. `ALLOWED_EMAILS` is comma-separated. |
+| `TIMEFUL_PASSWORD_LOGIN` | `1` | Overrides `oidc.passwordLogin`. |
 
 Raising `MISS_DELAY_MS` makes URL guessing slower and costs a guest who
 mistypes a link nothing they will notice. Lowering `MISS_QUEUE_CAP` makes
@@ -104,6 +109,61 @@ WebSocket upgrades through, or pages will simply never connect and quietly fall
 back. For nginx that is `proxy_set_header Upgrade $http_upgrade;` and
 `proxy_set_header Connection "upgrade";` on the location block — see
 [Deployment](/guide/deployment).
+
+## OIDC sign-in
+
+You can sign in to the admin side through your own OpenID Connect provider,
+such as Pocket ID, Authelia, Authentik or Keycloak, instead of a password or as
+well as one. Guests are unaffected: they never sign in to anything.
+
+```json
+{
+  "oidc": {
+    "issuer": "https://id.example.com",
+    "clientId": "4b1c…",
+    "clientSecret": "…",
+    "allowedEmails": ["you@example.com"],
+    "passwordLogin": false,
+    "name": "Example ID"
+  }
+}
+```
+
+| Key             | Default             | Meaning |
+| --------------- | ------------------- | ------- |
+| `issuer`        | required            | The provider's issuer URL, exactly as its discovery document states it. Must be `https` (plain `http` only for `localhost`). |
+| `clientId`      | required            | The client registered at the provider. |
+| `clientSecret`  | none                | The client's secret. Leave it out for a public client, which then relies on PKCE alone. Can come from `TIMEFUL_OIDC_CLIENT_SECRET` instead of the file. |
+| `allowedEmails` | the password account's email | Who may sign in. The provider must vouch for the address (`email_verified`). Required when `passwordLogin` is `false`. |
+| `passwordLogin` | `true`              | `false` removes the password form. Opening the admin page then goes straight to the provider, with no Timeful sign-in screen in between. |
+| `name`          | the issuer's host   | The label on the "Continue with …" button. |
+
+At the provider, register a client with this callback URL:
+
+```
+https://<your timeful host>/api/auth/oidc/callback
+```
+
+PKCE is always used, so turn it on there if the provider makes it optional.
+Restricting the client to a group of users at the provider is a good second
+lock, but it is not the first one: Timeful checks `allowedEmails` itself, so an
+account the provider knows but you did not list is still turned away.
+
+The callback URL is built from the address the request arrived on. Behind a
+reverse proxy that means the proxy must pass `Host` and `X-Forwarded-Proto`, and
+[`--trusted-proxy`](#trusted-proxy) must name it. Otherwise the provider will
+reject the callback as unregistered.
+
+Signing out of Timeful does not sign you out of the provider. With
+`passwordLogin: false`, the sign-in screen after a sign-out offers a
+"Continue with …" button instead of sending you straight back.
+
+::: tip Keep a way in
+If the provider is down, provider-only sign-in has no fallback. Set
+`TIMEFUL_PASSWORD_LOGIN=1` for one run to bring the password form back. It
+needs the password account to exist, so create one before you switch passwords
+off.
+:::
 
 ## `--trusted-proxy`
 

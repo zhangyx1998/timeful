@@ -39,6 +39,7 @@ server/
   paths.ts      locates dist/client + dist/server relative to the entry module
   storage.ts    the only module that touches the filesystem
   auth.ts       scrypt hashing, session tokens, requireAdmin
+  oidc.ts       owner sign-in through an OIDC provider: settings, discovery, ID-token checks
   slugs.ts      slug alphabet, generation, validation, reserved names
   leases.ts     in-memory slug reservations
   tarpit.ts     per-IP serial miss queue
@@ -49,7 +50,7 @@ server/
   config.ts     env-only runtime knobs
   http.ts       small helpers
   types.ts      type-only re-exports from src/lib (see below)
-  registry.ts   the npm lookup — one of the two outbound calls (see § The update check)
+  registry.ts   the npm lookup — one of the outbound calls (see § The update check)
   push/         Web Push: crypto.ts, vapid.ts, subscriptions.ts, deliver.ts
   routes/       auth.ts, sessions.ts, leases.ts, events.ts, update.ts, push.ts
   cli/          index.ts, args.ts, config.ts, wizard.ts, tui.ts,
@@ -272,6 +273,7 @@ Record<token, {
   lastSeenAt: string;
   userAgent: string;    // sliced to 400 chars
   persistent: boolean;
+  oidcEmail?: string;   // set only on sessions opened through the OIDC provider
 }>
 
 // links.json
@@ -351,11 +353,13 @@ credential.
 
 | Route | Auth | Body | Response |
 | ----- | ---- | ---- | -------- |
-| `GET /api/status` | public | — | `{ needsSetup, authed, email? }` — `email` only when authed |
+| `GET /api/status` | public | — | `{ needsSetup, authed, email?, login }` — `email` only when authed; `login` is `{ password: boolean, oidc?: string }` |
 | `POST /api/auth/setup` | public, first run only | `{ email, password, persist? }` | `201 { ok: true, email }` |
 | `POST /api/auth/login` | public | `{ email, password, persist }` | `{ ok: true, email }` |
 | `POST /api/auth/logout` | public | — | `{ ok: true }`, always; clears the cookie |
 | `PUT /api/auth/credentials` | admin | `{ currentPassword, email?, password? }` | `{ ok: true, email }` |
+| `GET /api/auth/oidc/start` | public, OIDC configured | query `persist=1`, `return=<path>` | `302` to the provider |
+| `GET /api/auth/oidc/callback` | public, OIDC configured | query `code`, `state` | `302` to `return`, or to `/?signin=failed` |
 
 - Passwords must be **at least 8 characters**; emails must match
   `/^[^\s@]+@[^\s@]+\.[^\s@]+$/`.
@@ -363,6 +367,14 @@ credential.
   answers `403 "Setup required"` when none does, and `401 "Incorrect email or
   password"` otherwise — deliberately not distinguishing which half was wrong.
 - **Every failing `setup` and `login` goes through the [tarpit](#the-tarpit).**
+- `needsSetup` is true only while no credential exists **and** password sign-in
+  is on. `login.oidc` is the provider's display name and is present only when
+  [OIDC sign-in](#oidc-sign-in) is configured. `authed` holds for a session
+  opened through the provider even when no credential exists, and `email` is
+  then the address the provider vouched for.
+- With password sign-in off, `setup`, `login` and `credentials` all answer
+  `403 "Password sign-in is disabled"` (the first two tarpitted, as above).
+  The OIDC routes answer `404` when OIDC is not configured.
 - `PUT /api/auth/credentials` requires the current password (`401` if wrong —
   this one is *not* tarpitted, since it already required a session), **purges
   every session including the caller's**, and clears the caller's cookie. It
@@ -384,13 +396,15 @@ All admin-only.
 | ----- | ---- | -------- |
 | `GET /api/update-check` | admin | `{ current, latest, updateAvailable, problem?, webroot, development }` |
 
-**This is one of exactly two kinds of outbound network call in the entire
-application.** The other is [push delivery](#notifications): POSTs of
+**This is one of only three kinds of outbound network call in the entire
+application.** The second is [push delivery](#notifications): POSTs of
 end-to-end-encrypted notices, made only to endpoints that a browser explicitly
 registered and only after something those subscribers asked to hear about
-happened. Both are strictly opt-in — a Timeful nobody subscribed to and whose
-owner never presses "Check for updates" initiates no connection to anything,
-ever. What the update check costs and why it is acceptable:
+happened. The third is [OIDC sign-in](#oidc-sign-in), which talks only to the
+issuer the owner configured, and only while someone is signing in. All three
+are strictly opt-in — a Timeful nobody subscribed to, with no `oidc` block, and
+whose owner never presses "Check for updates" initiates no connection to
+anything, ever. What the update check costs and why it is acceptable:
 
 - It is **admin-triggered and nothing else**. There is no interval, no check on
   page load, no probe at startup. The handler runs when the owner presses
@@ -1171,6 +1185,55 @@ attempts.
   routes have nothing to forge — anyone who can make the request already has the
   capability URL.
 
+### OIDC sign-in
+
+The owner may sign in through an OpenID Connect provider instead of, or as
+well as, the password (`server/oidc.ts`, the `oidc` block in
+[Configuration](/guide/configuration#oidc-sign-in)). It is off unless
+configured, owner-only, and changes nothing for guests.
+
+- **The flow** is the authorization-code flow with PKCE (`S256`), a `state`
+  and a `nonce`, `scope=openid email`. `GET /api/auth/oidc/start` records the
+  pending flow in memory (ten minutes, at most 200 at once, oldest dropped
+  first, since unauthenticated callers can start them), sets the `state` in an
+  `httpOnly`, `SameSite=Lax` cookie scoped to `/api/auth/oidc`, and redirects to
+  the provider. The callback requires the query `state` to equal the cookie's,
+  consumes the flow whether or not the rest succeeds, exchanges the code with
+  `client_secret_basic` (or `client_id` alone for a public client), and opens
+  an ordinary session. Nothing new is persisted except `oidcEmail` on that
+  session.
+- **The ID token is verified, not trusted**, even though it arrives straight
+  from the token endpoint over TLS: an `RS256` or `ES256` signature against the
+  provider's JWKS (refetched on an unknown `kid`, at most once a minute),
+  `iss` equal to the configured issuer, `aud` containing the client id (`azp`
+  checked when there are several), `exp`/`iat` within 60 s of skew, and the
+  `nonce`. `alg: none` and HMAC are refused. Discovery is cached for an hour,
+  and its advertised `issuer` must match the configured one exactly.
+- **Who gets in** is decided here, never by the provider alone: the token's
+  `email` must be present, `email_verified` must be `true`, and the address must
+  be on `allowedEmails` — or, when that list is empty, equal the password
+  account's email. Anyone else the provider knows is turned away.
+- **The return path stays home.** `return` must be a path on this origin
+  (no `//`, no backslash, no control characters; anything else becomes `/`), it
+  is kept server-side in the pending flow, and it is never sent to the
+  provider — an event page's slug must not leave for a third party. The
+  `redirect_uri` is built from the request's own scheme and host, which is why
+  [trusted proxies](#trusted-proxies) must be right; a forged `Host` only
+  produces a `redirect_uri` the provider refuses.
+- **Failures** — a provider error, a missing or mismatched state, a bad token,
+  an address not allowed — go through the [tarpit](#the-tarpit) and land on
+  `/?signin=failed`. The server log records the refusal, the reason and the
+  redacted address prefix, never the email that was tried. An unreachable
+  provider lands on `/?signin=unavailable` with no delay.
+- **Password sign-in can be switched off** (`passwordLogin: false`, which
+  requires `allowedEmails`). Then a signed-out `GET /` is answered with a `302`
+  to `/api/auth/oidc/start` before any page is sent, the event page's
+  Administrator Login link navigates straight to the provider, the password
+  routes answer `403`, and the Account card is hidden. `?signin=` on `/` —
+  set after a failure, and by the client after signing out — suppresses the
+  redirect so the screen can say what happened instead of looping. Signing out
+  ends the Timeful session only; the provider's own session is its business.
+
 ### Trusted proxies
 
 `--trusted-proxy=<ip-or-cidr>[,…]` decides who may speak `X-Forwarded-For` and
@@ -1200,7 +1263,9 @@ There are exactly four kinds of URL.
 
 `GET`/`HEAD` return the template with the SSR placeholders replaced by empty
 strings: no `data-ssr`, no `window.__EVENT__`, the title left as `Timeful`. The
-client then shows Setup (first run) → Login → the admin panel. Any other method
+client then shows Setup (first run) → Login → the admin panel. The one
+exception: with password sign-in switched off, a signed-out `GET`/`HEAD` with no
+`signin` query parameter is a `302` to the provider instead (§ OIDC sign-in). Any other method
 on `/` gets the 404 page, with no delay.
 
 ### `/api/*` — the global API
@@ -1766,7 +1831,13 @@ the sidebar (or of the settings drawer) opens the admin app's own form —
 It stays in the settings drawer on a phone precisely because the admin drawer
 is not there yet for somebody who is not signed in.
 
-::: tip Neither signing in nor signing out reloads anything.
+[OIDC sign-in](#oidc-sign-in) is the one way signing in *does* leave: the
+provider's pages need the whole window. With both methods on, the dialog adds a
+"Continue with …" button above the password form; with password sign-in off
+there is no form to show, so the link itself goes to the provider. Either way
+`return` is the current path, so the round trip lands back on the same event.
+
+::: tip Neither a password sign-in nor signing out reloads anything.
 Both re-probe `GET /api/status` rather than writing down what they expect, so a
 login that half-succeeded cannot leave controls on screen that do not work. The
 flag is reactive, so the tools group appears and disappears where it stands and
@@ -2207,7 +2278,7 @@ Rules that fall out of it:
 Timeful is a rewrite of a much larger hosted product, and most of that product
 was deliberately left behind. Absent, and intended to stay absent:
 
-ads; analytics; payments and pricing tiers; OAuth sign-in; calendar
+ads; analytics; payments and pricing tiers; OAuth sign-in for guests; calendar
 integrations of any kind; contacts, friends, groups and folders; chat-bot
 integrations; transactional email; scheduled reminders; sign-up-sheet event
 types; blind availability; marketing pages, privacy policy and cookie consent;
@@ -2221,6 +2292,11 @@ the worker receives pushes and does nothing else, and the caching/offline
 layer the entry was really about remains out of scope, enforced by the danger
 box in § Notifications.
 
+"OAuth sign-in" narrowed the same way. Guests still never sign in to anything,
+and there is no "Sign in with Google". What exists is [OIDC sign-in for the
+owner](#oidc-sign-in), against a provider the owner runs or chooses, off
+unless configured.
+
 Dropped from the event model and not coming back: `daysOnly`,
 `blindAvailabilityEnabled`, `collectEmails` (guest **name** only — no email is
 ever collected from a guest), `hasSpecificTimes`/`times`, sign-up blocks,
@@ -2232,6 +2308,6 @@ respondents list, a timezone selector, 12/24-hour display, and a best-times
 toggle.
 
 The through-line: **no account for guests, no state that is not a JSON file
-you can read, and no outbound connection except the two a person explicitly
-asked for** — the owner's update check, and push deliveries to browsers that
-subscribed.
+you can read, and no outbound connection except the ones a person explicitly
+asked for** — the owner's update check, push deliveries to browsers that
+subscribed, and the owner's own OIDC provider when one is configured.

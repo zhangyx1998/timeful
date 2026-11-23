@@ -78,6 +78,7 @@ server/
   paths.ts            finds dist/client + dist/server relative to the entry module
   storage.ts          atomic JSON store (temp file + rename, per-file queue)
   auth.ts             scrypt hashing, session tokens, requireAdmin
+  oidc.ts             owner sign-in through an OIDC provider
   slugs.ts leases.ts tarpit.ts proxy.ts config.ts http.ts not-found.ts
   log.ts              in-memory admin log: ring buffers, redaction — see
                       architecture § The server log
