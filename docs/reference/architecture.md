@@ -1233,6 +1233,12 @@ configured, owner-only, and changes nothing for guests.
   set after a failure, and by the client after signing out — suppresses the
   redirect so the screen can say what happened instead of looping. Signing out
   ends the Timeful session only; the provider's own session is its business.
+- **Recovery is the shell's job.** Provider-only mode assumes the owner has
+  shell access, so no password account has to exist beforehand and there is no
+  in-app escape hatch. Turning `passwordLogin` back on (config or
+  `TIMEFUL_PASSWORD_LOGIN=1`) restores the password routes. With no credential,
+  that means first-run setup, because `needsSetup` is `!credential &&
+  passwordLogin`.
 
 ### Trusted proxies
 

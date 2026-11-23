@@ -158,11 +158,14 @@ Signing out of Timeful does not sign you out of the provider. With
 `passwordLogin: false`, the sign-in screen after a sign-out offers a
 "Continue with …" button instead of sending you straight back.
 
-::: tip Keep a way in
-If the provider is down, provider-only sign-in has no fallback. Set
-`TIMEFUL_PASSWORD_LOGIN=1` for one run to bring the password form back. It
-needs the password account to exist, so create one before you switch passwords
-off.
+::: tip Getting back in from the shell
+Provider-only sign-in assumes you have shell access to the server. That shell
+is the recovery path if the provider is down or misconfigured. Set
+`"passwordLogin": true` in the config, or start one run with
+`TIMEFUL_PASSWORD_LOGIN=1`, and restart. The password form comes back. If no
+password account was ever created, the first-run setup screen appears instead,
+and whoever reaches it first claims the account. So finish setup before you
+step away, or do it over an SSH tunnel with Timeful bound to loopback.
 :::
 
 ## `--trusted-proxy`
